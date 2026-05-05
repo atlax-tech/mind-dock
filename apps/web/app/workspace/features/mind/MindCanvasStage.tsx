@@ -19,6 +19,7 @@ import {
   Lightbulb,
   HelpCircle,
   Clock,
+  LayoutList,
 } from 'lucide-react'
 import type { StoredMindNode, StoredMindEdge } from '@/lib/repository'
 import {
@@ -34,6 +35,7 @@ interface MindCanvasStageProps {
   nodes: StoredMindNode[]
   edges: StoredMindEdge[]
   onOpenEditor: (id: number) => void
+  onOpenInDock?: (dockItemId: number) => void
   onToast: (msg: string) => void
   activeModule?: string
   onCreateEdge?: (sourceId: string, targetId: string, edgeType: MindEdgeType) => void
@@ -402,7 +404,7 @@ function calculateTargetPositions(nodes: GNode[], edges: GEdge[], layoutMode: La
   }
 }
 
-export default function MindCanvasStage({ nodes: storedNodes, edges: storedEdges, onOpenEditor, onToast, onCreateEdge, onDeleteEdge }: MindCanvasStageProps) {
+export default function MindCanvasStage({ nodes: storedNodes, edges: storedEdges, onOpenEditor, onOpenInDock, onToast, onCreateEdge, onDeleteEdge }: MindCanvasStageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const animFrameRef = useRef<number>(0)
 
@@ -1090,8 +1092,13 @@ export default function MindCanvasStage({ nodes: storedNodes, edges: storedEdges
               }) : <p className="text-xs text-gray-500 text-center py-2">No connections.</p>}
             </div>
           </div>
-          <div className="p-5 border-t border-[var(--border-line)] bg-white/[0.02]">
+          <div className="p-5 border-t border-[var(--border-line)] bg-white/[0.02] flex flex-col gap-2">
             <button onClick={() => { if (focusedNode.documentId) onOpenEditor(focusedNode.documentId); else onToast('This node has no linked document') }} className="w-full py-2 bg-white/10 hover:bg-white/20 border border-[var(--border-line)] rounded-lg text-white font-medium text-sm transition-colors flex items-center justify-center gap-2"><PenTool size={16} /> Open in Editor</button>
+            {onOpenInDock && focusedNode.documentId && (
+              <button onClick={() => {
+                if (focusedNode.documentId != null) onOpenInDock(focusedNode.documentId)
+              }} className="w-full py-2 bg-white/5 hover:bg-white/10 border border-[var(--border-line)] rounded-lg text-[var(--text-muted)] hover:text-white font-medium text-sm transition-colors flex items-center justify-center gap-2"><LayoutList size={16} /> Open in Dock</button>
+            )}
           </div>
         </div>
       )}

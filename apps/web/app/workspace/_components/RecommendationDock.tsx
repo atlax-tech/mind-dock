@@ -11,6 +11,9 @@ import {
 
 interface RecommendationDockProps {
   userId: string
+  refreshKey?: number
+  onApplyRecommendation?: (recommendationId: string) => Promise<void>
+  onToast?: (msg: string) => void
 }
 
 const STATUS_LABELS: Record<string, { label: string; color: string }> = {
@@ -32,7 +35,18 @@ function formatConfidence(score: number): string {
   return `${Math.round(score * 100)}%`
 }
 
-export default function RecommendationDock({ userId }: RecommendationDockProps) {
+function describeAction(item: RecommendationDockQueueItem): string {
+  const candidateId = item.candidateId
+  const shortId = candidateId.length > 30 ? candidateId.slice(0, 30) + '…' : candidateId
+  switch (item.recommendationType) {
+    case 'tag_suggestion': return `建议添加标签: #${shortId}`
+    case 'project_suggestion': return `建议关联项目: ${shortId}`
+    case 'mindNode_suggestion': return `建议关联知识节点: ${shortId}`
+    default: return `${item.recommendationType.replace(/_/g, ' ')}: ${shortId}`
+  }
+}
+
+export default function RecommendationDock({ userId, refreshKey, onApplyRecommendation, onToast }: RecommendationDockProps) {
   const [items, setItems] = useState<RecommendationDockQueueItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -56,7 +70,7 @@ export default function RecommendationDock({ userId }: RecommendationDockProps) 
 
   useEffect(() => {
     loadQueue()
-  }, [loadQueue])
+  }, [loadQueue, refreshKey])
 
   useEffect(() => {
     if (items.length === 0) return
@@ -77,6 +91,14 @@ export default function RecommendationDock({ userId }: RecommendationDockProps) 
     if (actionLoading) return
     setActionLoading(itemId)
     try {
+      if (feedbackType === 'accepted' && onApplyRecommendation) {
+        try {
+          await onApplyRecommendation(itemId)
+          onToast?.('建议已应用，标签/项目/图谱已更新')
+        } catch (e) {
+          onToast?.(`建议应用失败: ${e instanceof Error ? e.message : '未知错误'}`)
+        }
+      }
       await recordRecommendationDockQueueItemFeedback({
         userId,
         recommendationId: itemId,
@@ -94,7 +116,7 @@ export default function RecommendationDock({ userId }: RecommendationDockProps) 
     } finally {
       setActionLoading(null)
     }
-  }, [userId, actionLoading])
+  }, [userId, actionLoading, onApplyRecommendation, onToast])
 
   const toggleExpand = useCallback((id: string) => {
     setExpandedId((prev) => (prev === id ? null : id))
@@ -207,8 +229,8 @@ export default function RecommendationDock({ userId }: RecommendationDockProps) 
                     </span>
                   </div>
                   <div className="flex items-center gap-3">
-                    <span className="text-[10px] text-slate-500 font-mono uppercase">
-                      {item.candidateType}
+                    <span className="text-[10px] text-[var(--accent)]/80 font-light">
+                      {describeAction(item)}
                     </span>
                     <div className="h-2 w-px bg-white/5" />
                     <span className="text-[10px] text-slate-500">

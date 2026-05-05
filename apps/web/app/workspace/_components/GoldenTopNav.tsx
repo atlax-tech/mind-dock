@@ -60,6 +60,7 @@ interface GoldenTopNavProps {
   onExpandRequest?: () => void
   onToast?: (msg: string) => void
   onSearchAction?: (label: string) => void
+  searchSuggestions?: SearchSuggestion[]
 }
 
 const GoldenTopNav: FC<GoldenTopNavProps> = ({
@@ -72,9 +73,11 @@ const GoldenTopNav: FC<GoldenTopNavProps> = ({
   onExpandRequest,
   onToast,
   onSearchAction,
+  searchSuggestions: externalSearchSuggestions,
 }) => {
   const [internalCollapsed, setInternalCollapsed] = useState<boolean | null>(null)
   const isCollapsed = internalCollapsed !== null ? internalCollapsed : (isCollapsedProp ?? false)
+  const effectiveSearchSuggestions = externalSearchSuggestions && externalSearchSuggestions.length > 0 ? externalSearchSuggestions : SEARCH_SUGGESTIONS
 
   useEffect(() => {
     if (isCollapsedProp) {
@@ -413,7 +416,7 @@ const GoldenTopNav: FC<GoldenTopNavProps> = ({
           transform: navPosition.isPercentLeft ? 'translateX(-50%)' : undefined
         }}
       >
-        {SEARCH_SUGGESTIONS.map((suggestion, idx) => {
+        {effectiveSearchSuggestions.map((suggestion, idx) => {
           const Icon = suggestion.icon
           const toneClasses = {
             document: 'text-[var(--node-doc)]',

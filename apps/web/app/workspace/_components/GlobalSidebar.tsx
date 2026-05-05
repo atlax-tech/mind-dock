@@ -32,6 +32,10 @@ interface GlobalSidebarProps {
   onProjectClick: (project: string) => void
   onCreateProjectFolder: (name?: string) => void
   documents: { label: string; dockItemId: number | null }[]
+  sidebarData?: {
+    projects: { name: string; documents: string[] }[]
+    tags: string[]
+  }
 }
 
 interface WidgetItem {
@@ -42,7 +46,7 @@ interface WidgetItem {
   content: React.ReactNode
 }
 
-export default function GlobalSidebar({ userName, onSwitchToEditor: _onSwitchToEditor, onSwitchToDock: _onSwitchToDock, onSwitchToMind: _onSwitchToMind, onNewNote, onCapture, onToast, onOpenDocument, onSwitchToDockWithSearch, onProjectClick, onCreateProjectFolder, documents }: GlobalSidebarProps) {
+export default function GlobalSidebar({ userName, onSwitchToEditor: _onSwitchToEditor, onSwitchToDock: _onSwitchToDock, onSwitchToMind: _onSwitchToMind, onNewNote, onCapture, onToast, onOpenDocument, onSwitchToDockWithSearch, onProjectClick, onCreateProjectFolder, documents, sidebarData }: GlobalSidebarProps) {
   const [isPinned, setIsPinned] = useState(false)
   const [isVisible, setIsVisible] = useState(false)
   const [isSearchExpanded, setIsSearchExpanded] = useState(false)
@@ -52,7 +56,7 @@ export default function GlobalSidebar({ userName, onSwitchToEditor: _onSwitchToE
   const [chatInput, setChatInput] = useState('')
   const [widgets, setWidgets] = useState<WidgetItem[]>([])
   const [isWidgetsCollapsed, setIsWidgetsCollapsed] = useState(false)
-  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set(['Personal Growth']))
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set())
 
   const sidebarRef = useRef<HTMLElement>(null)
   const triggerRef = useRef<HTMLDivElement>(null)
@@ -321,82 +325,52 @@ export default function GlobalSidebar({ userName, onSwitchToEditor: _onSwitchToE
         {!isChatMode ? (
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto no-scrollbar px-2 py-2 space-y-0.5">
-              <div className="px-2 text-[10px] font-bold text-[var(--text-muted)] tracking-wider mb-2 mt-1">PRIVATE</div>
+              <div className="px-2 text-[10px] font-bold text-[var(--text-muted)] tracking-wider mb-2 mt-1">{userName ? `${userName}'s Space` : 'Documents'}</div>
 
-              <div className="tree-folder group">
-                <div
-                  className="flex items-center gap-1.5 px-2 py-1.5 text-sm text-gray-300 hover:bg-white/5 rounded-md cursor-pointer transition-colors select-none"
-                  onClick={() => { toggleFolder('Core Architecture'); onProjectClick('Core Architecture') }}
-                >
-                  <ChevronDown
-                    size={14}
-                    className={`text-[var(--text-muted)] transition-transform duration-300 ${
-                      collapsedFolders.has('Core Architecture') ? '-rotate-90' : ''
-                    }`}
-                  />
-                  <Folder size={16} className="text-[var(--node-domain)]" />
-                  <span className="truncate">Core Architecture</span>
-                </div>
-                {!collapsedFolders.has('Core Architecture') ? (
-                  <div className="sidebar-accordion expanded pl-6 space-y-0.5 border-l border-[var(--border-line)] ml-3.5 mt-0.5">
-                    <div
-                      onClick={() => resolveDocument('Graph Engine Physics')}
-                      className="flex items-center gap-2 px-2 py-1.5 text-sm text-[var(--text-muted)] hover:bg-white/5 hover:text-white rounded-md cursor-pointer transition-colors"
-                    >
-                      <FileText size={14} className="text-[var(--node-doc)]" />
-                      <span className="truncate">Graph Engine Physics</span>
-                    </div>
-                    <div
-                      onClick={() => resolveDocument('Algorithm Design')}
-                      className="flex items-center gap-2 px-2 py-1.5 text-sm text-[var(--text-muted)] hover:bg-white/5 hover:text-white rounded-md cursor-pointer transition-colors"
-                    >
-                      <FileText size={14} className="text-[var(--node-doc)]" />
-                      <span className="truncate">Algorithm Design</span>
-                    </div>
+              {(sidebarData?.projects || []).map(project => (
+                <div key={project.name} className="tree-folder group">
+                  <div
+                    className="flex items-center gap-1.5 px-2 py-1.5 text-sm text-gray-300 hover:bg-white/5 rounded-md cursor-pointer transition-colors select-none"
+                    onClick={() => { toggleFolder(project.name); onProjectClick(project.name) }}
+                  >
+                    <ChevronDown
+                      size={14}
+                      className={`text-[var(--text-muted)] transition-transform duration-300 ${
+                        collapsedFolders.has(project.name) ? '-rotate-90' : ''
+                      }`}
+                    />
+                    <Folder size={16} className="text-[var(--node-domain)]" />
+                    <span className="truncate">{project.name}</span>
                   </div>
-                ) : (
-                  <div className="sidebar-accordion collapsed pl-6 space-y-0.5 border-l border-[var(--border-line)] ml-3.5 mt-0.5" />
-                )}
-              </div>
-
-              <div className="tree-folder group">
-                <div
-                  className="flex items-center gap-1.5 px-2 py-1.5 text-sm text-gray-300 hover:bg-white/5 rounded-md cursor-pointer transition-colors select-none"
-                  onClick={() => { toggleFolder('Personal Growth'); onProjectClick('Personal Growth') }}
-                >
-                  <ChevronDown
-                    size={14}
-                    className={`text-[var(--text-muted)] transition-transform duration-300 ${
-                      collapsedFolders.has('Personal Growth') ? '-rotate-90' : ''
-                    }`}
-                  />
-                  <Folder size={16} className="text-blue-400" />
-                  <span className="truncate">Personal Growth</span>
-                </div>
-                {!collapsedFolders.has('Personal Growth') ? (
-                  <div className="sidebar-accordion expanded pl-6 space-y-0.5 border-l border-[var(--border-line)] ml-3.5 mt-0.5">
-                    <div
-                      onClick={() => resolveDocument('Reading Notes')}
-                      className="flex items-center gap-2 px-2 py-1.5 text-sm text-[var(--text-muted)] hover:bg-white/5 hover:text-white rounded-md cursor-pointer transition-colors"
-                    >
-                      <FileText size={14} className="text-[var(--node-doc)]" />
-                      <span className="truncate">Reading Notes</span>
+                  {!collapsedFolders.has(project.name) ? (
+                    <div className="sidebar-accordion expanded pl-6 space-y-0.5 border-l border-[var(--border-line)] ml-3.5 mt-0.5">
+                      {project.documents.map(docName => (
+                        <div
+                          key={docName}
+                          onClick={() => resolveDocument(docName)}
+                          className="flex items-center gap-2 px-2 py-1.5 text-sm text-[var(--text-muted)] hover:bg-white/5 hover:text-white rounded-md cursor-pointer transition-colors"
+                        >
+                          <FileText size={14} className="text-[var(--node-doc)]" />
+                          <span className="truncate">{docName}</span>
+                        </div>
+                      ))}
                     </div>
-                  </div>
-                ) : (
-                  <div className="sidebar-accordion collapsed pl-6 space-y-0.5 border-l border-[var(--border-line)] ml-3.5 mt-0.5" />
-                )}
-              </div>
-
-              <div className="group mt-1">
-                <div
-                  onClick={() => { onNewNote(); onToast('Created new draft') }}
-                  className="flex items-center gap-1.5 px-2 py-1.5 text-sm text-gray-300 hover:bg-white/5 rounded-md cursor-pointer transition-colors select-none"
-                >
-                  <FileText size={16} className="text-[var(--text-muted)] ml-5" />
-                  <span className="truncate">Untitled Note</span>
+                  ) : (
+                    <div className="sidebar-accordion collapsed pl-6 space-y-0.5 border-l border-[var(--border-line)] ml-3.5 mt-0.5" />
+                  )}
                 </div>
-              </div>
+              ))}
+
+              {(sidebarData?.tags || []).length > 0 && (
+                <>
+                  <div className="px-4 text-[10px] font-bold text-[var(--text-muted)] tracking-wider mt-4 mb-2">TAGS</div>
+                  <div className="space-y-0.5 px-2 flex flex-wrap gap-1">
+                    {sidebarData?.tags.map(tag => (
+                      <span key={tag} onClick={() => onProjectClick(tag)} className="px-2 py-1 border rounded-md text-xs cursor-pointer hover:text-white transition-colors bg-white/5 border-[var(--border-line)] text-[var(--text-muted)]">#{tag}</span>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
 
             {widgets.length > 0 && (

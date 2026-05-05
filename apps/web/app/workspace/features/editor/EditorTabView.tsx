@@ -57,8 +57,6 @@ export default function EditorTabView({
   const [slashFilter, setSlashFilter] = useState('')
   const [splitRatio, setSplitRatio] = useState(50)
   const [isResizingSplit, setIsResizingSplit] = useState(false)
-  const [dragBlockIdx, setDragBlockIdx] = useState<number | null>(null)
-  const [dropTargetIdx, setDropTargetIdx] = useState<number | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const slashMenuRef = useRef<HTMLDivElement>(null)
   const splitContainerRef = useRef<HTMLDivElement>(null)
@@ -205,31 +203,8 @@ export default function EditorTabView({
     })
   }, [onContentChange])
 
-  const handleBlockDragStart = useCallback((idx: number) => {
-    setDragBlockIdx(idx)
-  }, [])
-
-  const handleBlockDragOver = useCallback((e: React.DragEvent, idx: number) => {
-    e.preventDefault()
-    setDropTargetIdx(idx)
-  }, [])
-
-  const handleBlockDrop = useCallback((e: React.DragEvent, targetIdx: number) => {
-    e.preventDefault()
-    if (dragBlockIdx === null || dragBlockIdx === targetIdx) {
-      setDragBlockIdx(null)
-      setDropTargetIdx(null)
-      return
-    }
-    onToast?.(`Block moved from ${dragBlockIdx} to ${targetIdx} (mock reorder)`)
-    setDragBlockIdx(null)
-    setDropTargetIdx(null)
-  }, [dragBlockIdx, onToast])
-
-  const handleBlockDragEnd = useCallback(() => {
-    setDragBlockIdx(null)
-    setDropTargetIdx(null)
-  }, [])
+  const handleBlockDragStart = useCallback((_idx: number) => {}, [])
+  const handleBlockDragEnd = useCallback(() => {}, [])
 
   const filteredCommands = SLASH_COMMANDS.filter(cmd =>
     cmd.label.toLowerCase().includes(slashFilter) || cmd.desc.toLowerCase().includes(slashFilter)
@@ -267,20 +242,6 @@ export default function EditorTabView({
       default: return null
     }
   }
-
-  const contentLines = editorContent.split('\n')
-  const blockRows = contentLines.map((line, idx) => {
-    let className = 'blk-text'
-    let displayLine = line
-    if (line.startsWith('### ')) { className = 'blk-h3'; displayLine = line.slice(4) }
-    else if (line.startsWith('## ')) { className = 'blk-h2'; displayLine = line.slice(3) }
-    else if (line.startsWith('# ')) { className = 'blk-h1'; displayLine = line.slice(2) }
-    else if (line.startsWith('> ')) { className = 'blk-quote'; displayLine = line.slice(2) }
-    else if (line.startsWith('```')) { className = 'blk-code'; displayLine = line }
-    else if (line.startsWith('- [ ] ')) { className = 'blk-text'; displayLine = '☐ ' + line.slice(6) }
-    else if (line.startsWith('- ')) { className = 'blk-list'; displayLine = line.slice(2) }
-    return { idx, line, displayLine, className }
-  })
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-[#1A1A1A]">
@@ -335,28 +296,7 @@ export default function EditorTabView({
                 </div>
                 <input type="text" value={editorTitle} onChange={(e) => handleTitleChange(e.target.value)} className="w-full bg-transparent text-3xl font-semibold outline-none text-white placeholder-slate-600 px-2 -mx-2" placeholder="Page Title" />
               </div>
-              <div className="mt-2 space-y-0.5">
-                {blockRows.map((block, i) => (
-                  <div
-                    key={i}
-                    className={`block-row group ${dragBlockIdx === i ? 'is-dragging' : ''} ${dropTargetIdx === i && dragBlockIdx !== i ? 'drop-indicator-top' : ''}`}
-                    draggable
-                    onDragStart={() => handleBlockDragStart(i)}
-                    onDragOver={(e) => handleBlockDragOver(e, i)}
-                    onDrop={(e) => handleBlockDrop(e, i)}
-                    onDragEnd={handleBlockDragEnd}
-                  >
-                    <div className="block-handle-container">
-                      <button className="block-btn" title="Add block" onClick={() => onToast?.('Add block below (mock)')}><Plus size={14} /></button>
-                      <button className="block-btn drag-handle" title="Drag"><GripVertical size={14} /></button>
-                    </div>
-                    <div className={`w-full min-h-[1.5rem] px-2 -mx-2 ${block.className}`}>
-                      {block.displayLine || '\u00A0'}
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-0.5 space-y-0.5 relative">
+              <div className="mt-4 space-y-0.5 relative">
                 <div className="block-row group">
                   <div className="block-handle-container">
                     <button className="block-btn" title="Add block"><Plus size={14} /></button>
@@ -367,7 +307,7 @@ export default function EditorTabView({
                     value={editorContent}
                     onChange={(e) => handleContentChange(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    className="w-full min-h-[1.5rem] bg-transparent resize-none outline-none text-base font-light leading-relaxed text-slate-300 placeholder-slate-600 px-2 -mx-2"
+                    className="w-full min-h-[200px] bg-transparent resize-none outline-none text-base font-light leading-relaxed text-slate-300 placeholder-slate-600 px-2 -mx-2"
                     placeholder="Type '/' for commands, or # > - for shortcuts"
                   />
                 </div>

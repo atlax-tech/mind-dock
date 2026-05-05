@@ -9,6 +9,178 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：Local Core Phase 1 Round 22 (LC-014) -->
+<!-- ============================================ -->
+
+## Phase 3 Round 22 devlog -- LC-014 Local Core Flow Skeleton Integration Pack 页面骨架链路串联
+
+**时间戳**: 2026-05-05
+
+**Notion 卡片**: LC-014 Local Core Flow Skeleton Integration Pack
+
+**任务起止时间**: 17:20 - 18:15 CST（初版实现）/ 18:18 - 18:28 CST（第一轮手工验证修复）/ 18:30 - 18:40 CST（第二轮手工验证修复）
+
+**工时**: 55 分钟（初版） + 10 分钟（第一轮修复） + 10 分钟（第二轮修复） = 75 分钟
+
+**执行范围**: Local Core Phase 1 收口阶段 - 建立 Home/Dock/Mind/Editor 最小骨架数据流，不改架构、不重写页面、不重写 repository。
+
+**任务目标**:
+1. Home → Dock: 确认捕获内容进入 Dock list，添加 toast 反馈
+2. Dock → Editor: 复用现有 openWorkspaceTab，添加错误处理
+3. Editor → Dock: 保存/修改后 refresh 管 Dock item list
+4. Dock → Mind: 添加 "View in Graph" 导航到图谱视图
+5. Mind → Dock: 添加 "Open in Dock" 按钮从图谱节点定位 Dock item
+6. 状态同步: refreshAll 覆盖主路径，selectedItemId 在页面切换时不丢失
+7. 测试: 补充 LC-014 20 个 endpoint-level 测试
+
+**变更摘要**:
+- `page.tsx`: handleCapture/handleQuickNoteSave 补 toast 反馈；openEditorTab 补 item 不存在错误处理；Dock 详情 GRAPH CHAIN 后补 "View in Graph" 按钮；MindCanvasStage 补 onOpenInDock callback；handleNodeClick 防重复列；列表容器 click-outside 取消选择；handleSaveEditor 仅当原有 topic 时才传递；新增 `recRefreshKey` 状态驱动 Home RecommendationDock 刷新；详情面板补关闭按钮（X）
+- `MindCanvasStage.tsx`: 新增 onOpenInDock optional prop；节点详情面板补 "Open in Dock" 按钮
+- `EditorTabView.tsx`: 移除 block rows 重复渲染；移除未使用 dragBlockIdx/dropTargetIdx/blockRows 状态
+- `dockTreeAdapter.ts`: file/folder 标题 fallback 增加 rawText.slice(0,50) 而非仅 `File/Folder ${id}`
+- `HomeView.tsx`: 新增 `recRefreshKey`、`onApplyRecommendation`、`onToast` props，透传至 RecommendationDock
+- `RecommendationDock.tsx`: 新增 `refreshKey` 驱动重载（切换页面后实时显示）；`handleFeedback` 在 accept 时调用 `applyRecommendation` 真正应用变更；新增 `describeAction` 函数以中文展示推荐动作（"建议添加标签: #xxx" 等）
+ - `tests/lc014-flow-skeleton.test.ts`: 新增 20 tests（零新依赖）
+
+**改动文件及行数**:
+- `apps/web/app/workspace/page.tsx` | M | +40 行（第一轮 +25，第二轮 +15：recRefreshKey、handleSaveEditor topic 条件、详情面板 X 关闭按钮、ColumnListView selectedItemId toggle）
+- `apps/web/app/workspace/features/mind/MindCanvasStage.tsx` | M | +15 行
+- `apps/web/app/workspace/features/editor/EditorTabView.tsx` | M | -30 行
+- `apps/web/app/workspace/features/dock/dockTreeAdapter.ts` | M | +2 行
+- `apps/web/app/workspace/features/home/HomeView.tsx` | M | +5 行（recRefreshKey/onApplyRecommendation/onToast props + 透传）
+- `apps/web/app/workspace/_components/RecommendationDock.tsx` | M | +25 行（refreshKey 重载、accept 调用 applyRecommendation、describeAction 中文描述）
+- `apps/web/tests/lc014-flow-skeleton.test.ts` | A | +138 行
+- `docs/engineering/dev_log/Phase3/phase3-devlog-frontend.md` | M | 本轮日志
+
+**遇到的问题**:
+1. `Network` 图标未在 page.tsx 导入 → 补 `Network` 到 `lucide-react` 导入
+2. `LayoutList` 图标未在 MindCanvasStage.tsx 导入 → 补 `LayoutList` 到 `lucide-react` 导入
+3. TypeScript strict mode: `unwrap<T>(T | null)` 无法处理 `Array.find` 返回的 `T | undefined` → 修改 `unwrap` 签名到 `T | null | undefined`，并对 find 结果改用 `if` guard + early return
+4. `createCollection` 参数名 `type` → `collectionType`（与 domain 层对齐）
+5. `updateDockItemText` 的 `buildDockItemReset` 已将 `processedAt` 设为 `null`（ES policy），强行覆盖为 `Date` 会引发 2 个已有测试失败 → 保持原有行为；Editor-Dock 同步依赖 refreshAll 重新加载 dockItems（rawText/topic 变更可直接感知）
+6. 「手工验证」Dock 重复点击出现重复栏 → `handleNodeClick` 缺少重复检查
+7. 「手工验证」详情面板不自动隐藏 → 主列表容器缺少 click-outside 逻辑
+8. 「手工验证」Finder 标题与列表不符 → `dockTreeAdapter` fallback 不一致
+9. 「手工验证」Editor block 模式内容重复 → block rows + textarea 双渲染
+10. 「手工验证」第一轮修复引入回归：保存后传递 `editorTitle` 作为 topic → 无 topic 的 item 被 adapter 误判为 folder
+11. 「手工验证」Home Recommendations 切换不刷新 → `useEffect` 缺少 `refreshKey` 依赖
+12. 「手工验证」Home 推荐「接受」只记反馈不应用 → RecommendationDock 缺少 `onApplyRecommendation` 调用
+13. 「手工验证」推荐卡片显示 `candidateType` 裸字段 → 缺少中文描述映射
+14. 「手工验证」ColumnListView `_selectedItemId` 未使用 → 文件点击无法 toggle
+
+**解决方式**: 如上述对应修复。
+
+**自动验证结果**:
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm lint` | ✅ 0 errors（仅 1 个 demo2-prototype 已有 warning） |
+| `pnpm typecheck` (domain + web) | ✅ PASS |
+| `vitest run tests/` (全量) | ✅ 499 tests passed（20 new + 479 existing，零回归） |
+| `pnpm build:web` | ✅ PASS（workspace 49.4 kB） |
+
+**测试覆盖范围**:
+| 测试文件 | 覆盖内容 |
+|----------|---------|
+| `lc014-flow-skeleton.test.ts` (20) | A. Home→Dock: createDockItem 可见/multiple/with topic（3 tests）；B. Dock→Editor: item 可打开/不存在 graceful（2 tests）；C. Editor→Dock: updateDockItemText 更新/refresh 后可见/topic fields（3 tests）；D. Dock/Apply→Mind: mindNode 创建可读/apply edge 可读/graph chain（3 tests）；E. Mind→Dock: 反向关联/multi mapping（2 tests）；F. State Sync: item identity/tag apply/project apply（3 tests）；LC-010~013 regression: 4 tests |
+
+**手工验证方式**:
+1. 启动 `pnpm dev:web`，进入 Home 页面
+2. 在 "Capture an idea..." 输入框输入文本，按 Enter → 应看到 toast "已捕获到 Dock (#N)"
+3. 切换到 Dock tab → 应能在 list 中看到刚捕获的 item
+4. 选中 Dock item，点击 "Edit Content" → Editor tab 应打开，tab 标题对应 item topic
+5. 在 Editor 中修改文本并 Ctrl+S 保存 → 回到 Dock，刷新后 item 的 rawText 应已更新
+6. 在 Dock item 详情中点击 "View in Graph" → 应切换到 Mind view（图谱展示了该 item 节点）
+7. 在 Mind 视图中点击某节点 → 详情面板显示 "Open in Dock" 按钮
+8. 点击 "Open in Dock" → 应切换回 Dock view，selectedItemId 定位到对应 item
+9. 测试 apply recommendation（tag/project/mindNode）→ 结构变化应能在刷新后正常展示
+
+**手工验证标准**:
+- Home 捕获后 Dock 列表可见新 item
+- Dock "Edit Content" 正常打开 Editor tab
+- Editor 修改保存后 autoref 触发的 refreshAll 重新 list dockItems（rawText/topic 可感知）
+- "View in Graph" 按钮点击后切到 Mind 视图
+- Mind 节点 "Open in Dock" 切换回 Dock 并定位对应 item
+- apply tag/project/mindNode 后状态同步正常
+
+**手工验证发现的问题及修复**:
+
+| # | 手工验证问题 | 问题原因 | 是否修复 | 修复方案 | 修复验证方法 |
+|---|------------|---------|---------|---------|------------|
+| 1 | Dock Finder 重复点击第一栏节点后出现大量重复栏 | `handleNodeClick` 中 `setColumnStack(prev => [...prev, node])` 无条件追加，未检查节点是否已在栈中 | ✅ 已修复 | 追加前用 `prev.findIndex` 检查 node.id，若已存在则 `slice(0, lastIdx+1)` 截断重复部分 | 进入 Dock → 切换到 Columns 视图 → 重复点击同一文件夹/项目节点 3 次 → 确认只展开 1 栏而非 3 栏 |
+| 2 | Dock 打开文档详情后，点击空白处或操作其他节点详情页不自动隐藏 | DockFinderView 主列表容器无 click-outside/空白区域取消 selection 逻辑 | ✅ 已修复 | 在列表容器 `div` 添加 `onClick`，当 `e.target === e.currentTarget` 时调用 `onSelectItem(null)` | 在 Dock 中选中一个 item 打开详情面板 → 点击列表空白区域 → 确认详情面板自动隐藏 |
+| 3 | 新建文档标题与 Finder 文件名称不符合 | `dockTreeAdapter` 文件/文件夹 `title` 取 `item.topic \|\| 'File/Folder ${id}'`，而列表显示 `item.topic \|\| item.rawText`，两边 fallback 不一致 | ✅ 已修复 | 文件/文件夹 `title` fallback 改为 `item.topic \|\| item.rawText.slice(0, 50) \|\| 'File/Folder ${id}'` | Home 捕获一段文本 → 切换到 Dock Finder → 确认 Finder 中文件名显示 rawText 前 50 字符，而非 "File 123" |
+| 4 | Editor block 模式输入内容会重复 | block 模式同时渲染了 `blockRows`（解析后的展示块）和 `textarea`（显示完整 `editorContent`），导致内容出现两份 | ✅ 已修复 | 移除 block rows 的解析与渲染（`blockRows` 计算、相关 drag 状态和 handler），仅保留 textarea 作为编辑区；textarea `min-h` 从 `1.5rem` 扩至 `200px` | 打开一个已有内容的 Dock item → 切换到 Editor → 确认内容只显示一份，无重复 |
+| 5 | Editor 修改后保存，回 Dock 查看文件变成文件夹 | `handleSaveEditor` 对于已有 item（`editingItemId > 0`）只传递 `editorContent` 未传递 `editorTitle`，导致用户在 Editor 中修改标题后保存，topic 丢失；`dockTreeAdapter` 按 `item.topic` 推断 folder/file 类型时因 topic 为空字符串导致 `inferDockNodeType` 可能误判 | ✅ 第一轮修复（传递 editorTitle）→ ❌ 引入回归：editorTitle 被初始化为 rawText 片段作为 topic，若 rawText 含 "design" 等 FOLDER_KEYWORDS 会被 adapter 误判为 folder | ✅ 第二轮修复 | `handleSaveEditor` 中仅当原 item 已有 topic 时才传递 `editorTitle` 到 `updateDockItemText`（`const topic = originalItem?.topic ? (editorTitle.trim() \|\| undefined) : undefined`）；dep 数组补充 `items` | 对无 topic 的 item 编辑保存 → 回到 Dock Finder → 确认文件类型为 file 不受影响；对有 topic 的 item 修改标题保存 → topic 正常更新 |
+
+**第二轮手工验证发现的问题及修复**:
+
+| # | 手工验证问题 | 问题原因 | 是否修复 | 修复方案 | 修复验证方法 |
+|---|------------|---------|---------|---------|------------|
+| 1 | Dock 点击生成建议后切换到 Home 页面，Recommendations 为空，刷新页面才会出现 | Home 页面的 `RecommendationDock` 组件在 mount 时调用 `loadQueue` 一次后不再重载；切换到 Home 时 React 不重新 mount（`view-section` 已挂载），因此永远读到旧数据 | ✅ 已修复 | 在 page.tsx 新增 `recRefreshKey` 计数器，每次 `handleSuggest`/`handleApplyRecommendation` 完成后 +1；HomeView 透传至 RecommendationDock 作为 `refreshKey` prop，`useEffect([loadQueue, refreshKey])` 监听变化自动重载 | Dock 中选中 item → 点击 Suggest → 切换到 Home → 确认 Recommendations 区域有内容显示，无需刷新页面 |
+| 2 | 生成建议接受后，文件完全没有变化，完全不明白建议内容代表什么 | 两个根因：(1) Home 页 RecommendationDock 的「接受」按钮只调用 `recordRecommendationDockQueueItemFeedback` 记录反馈元数据，不会调用 `applyRecommendation` 去真正修改 dockItem 的 tag/project/mindNode；(2) 推荐卡片只显示 `candidateType` 裸字段名（如 "tag"），用户看不懂这意味着什么操作 | ✅ 已修复 | (1) RecommendationDock 新增 `onApplyRecommendation` prop，accept 时先调 `onApplyRecommendation(itemId)` 真正应用变更再记录反馈，并弹出 toast "建议已应用，标签/项目/图谱已更新"；(2) 新增 `describeAction` 函数，将推荐类型映射为中文描述（"建议添加标签: #xxx"、"建议关联项目: xxx"、"建议关联知识节点: xxx"），替换原来的 `candidateType` 裸字段显示 | Home → Recommendations 区看到「建议添加标签: #某标签」→ 点击接受 → 在 Dock 中确认对应 item 的标签已添加；toast 提示 "建议已应用" |
+| 3 | Editor 修改文档后 Dock 视图文档还是会变成文件夹（第 5 项回归） | 第一轮修复将 `editorTitle` 作为 topic 传入 `updateDockItemText`，但 `editorTitle` 初始化自 `item.rawText.slice(0,50)`。无 topic 的 item 首次保存后 topic 被设置为 rawText 片段，`dockTreeAdapter` 的 `inferDockNodeType` 检查 topic 关键字碰到 "design"/"research" 等即误判为 folder | ✅ 第二轮修复 | `handleSaveEditor` 中仅当原 item 已有 topic 时才传递 topic：`const originalItem = items.find(i => i.id === editingItemId); const topic = originalItem?.topic ? (editorTitle.trim() \|\| undefined) : undefined`。无 topic 的 item 编辑后不会凭空创建 topic | 对无 topic 的 item 编辑保存 → 回到 Dock Finder → 确认文件仍为 file 类型 |
+| 4 | 详情页面还是不会隐藏（第 2 项未完全修复） | 两个问题：(1) click-outside 只在容器空白处触发，但 Columns 视图中容器被子元素填满，用户无法点击空白；(2) `ColumnListView` 中 `selectedItemId` 被重命名为 `_selectedItemId` 从未使用，`handleNodeClick` 点击文件总是选中，不支持再次点击取消 | ✅ 第二轮修复 | (1) 详情面板右上角新增 X 关闭按钮，用户可明确关闭；(2) `ColumnListView` 中将 `_selectedItemId` 改为 `selectedItemId` 并实际使用：`handleNodeClick` 中 `if (selectedItemId === node.documentId) onSelectItem(null) else onSelectItem(node.documentId)` 实现 toggle | Columns 视图中点击文件 → 详情面板打开 → 再次点击同一文件或点击 X 按钮 → 详情面板关闭 |
+
+**第三轮手工验证发现的问题及修复**:
+
+| # | 手工验证问题 | 问题原因 | 是否修复 | 修复方案 | 修复验证方法 |
+|---|------------|---------|---------|---------|------------|
+| 1 | 分栏视图（column view）保存后文件变成文件夹（其他两个视图正常） | `inferDockNodeType` 使用 `title.includes(k)` 检查 topic 是否包含 FOLDER_KEYWORDS。当 rawText 包含 "design"、"test" 等词时，即使原意不是文件夹名，也会被误判为 folder | ✅ 已修复 | 修改 `inferDockNodeType` 逻辑：只检查 title 的最后一个单词或完整标题是否完全匹配 FOLDER_KEYWORDS，而非部分包含。使用 `title.split(/[\s\-_.,;:!?()（）【】""'']+/)` 分词后取 `lastWord` 精确匹配 | 在 Editor 中编辑一个包含 "design" 的文件标题 → 保存 → 切换到 Dock Column View → 确认文件仍为 file 类型而非 folder |
+| 2 | 详情面板点击其他区域不自动隐藏（当前 X 按钮和 toggle 可用，但希望更智能） | 原实现仅在点击容器空白区域（`e.currentTarget === e.target`）时隐藏，Columns 视图容器被子元素填满无法触发 | ✅ 已修复 | 在 WorkspacePage 组件内添加全局 `mousedown` 监听器，当 `selectedItemId` 存在时，点击任何非 `[data-detail-panel]` 和非 `[data-ignore-click-outside]` 的元素都会关闭详情面板 | 打开详情面板 → 点击列表中的任意文件/文件夹/空白区域 → 确认详情面板自动关闭 |
+| 3 | 侧边栏显示 "PRIVATE" 不合理，且数据为 Mock 状态 | GlobalSidebar 组件硬编码了 "PRIVATE" 标题、Core Architecture/Personal Growth 项目和 Graph Engine Physics 等文件名，未使用真实 IDB 数据 | ✅ 已修复 | (1) 将 "PRIVATE" 替换为动态显示 `{userName}'s Space` 或 "Documents"`；(2) 新增 `sidebarData` prop 接收动态项目/标签数据；(3) 将硬编码项目列表替换为 `(sidebarData?.projects || []).map()` 动态渲染；(4) 将硬编码标签替换为 `sidebarData?.tags` 动态渲染；(5) page.tsx 中新增 `sidebarData` useMemo 从 `items` 动态计算项目和标签 | 启动应用 → 查看左侧边栏 → 确认显示用户名 + "Space" 而非 "PRIVATE" → 确认项目和标签来自真实 Dock 数据 |
+
+**改动文件及行数（第三轮）**:
+- `apps/web/app/workspace/features/dock/dockTreeAdapter.ts` | M | +5 行（inferDockNodeType 改为精确匹配最后一个单词）
+- `apps/web/app/workspace/page.tsx` | M | +25 行（全局 click-outside useEffect、sidebarData 计算、sidebarDocuments 动态化）
+- `apps/web/app/workspace/_components/GlobalSidebar.tsx` | M | -45 行/+40 行（移除 mock 数据、新增 sidebarData prop、动态渲染）
+
+**自动验证结果（第三轮）**:
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm lint` | ✅ 0 errors（仅 1 个 demo2-prototype 已有 warning） |
+| `pnpm typecheck` (domain + web) | ✅ PASS |
+| `vitest run tests/` (全量) | ✅ 499 tests passed（零回归） |
+
+**第四轮手工验证发现的问题及修复**:
+
+| # | 手工验证问题 | 问题原因 | 是否修复 | 修复方案 | 修复验证方法 |
+|---|------------|---------|---------|---------|------------|
+| 1 | 接受建议后 Column View 弹出异常信息 "Recommendation ... has already been accepted"，切换到其他视图文件详情无变化 | `handleFeedback` 中先调用 `recordRecommendationDockQueueItemFeedback`（将 status 设为 'accepted'），再调用 `applyRecommendation` 时检测到已接受就抛出异常 | ✅ 已修复 | 调整调用顺序：先调用 `onApplyRecommendation`（执行实际变更），再调用 `recordRecommendationDockQueueItemFeedback`（记录反馈）。同时改进错误提示，显示具体错误信息而非通用消息 | Home/Dock 中接受建议 → 确认不再弹出异常错误 → 切换到其他视图确认文件详情有变化（标签/项目已添加） |
+| 2 | 侧边栏多出一个 "Untitled Note" 按钮 | GlobalSidebar 组件中硬编码了 "Untitled Note" 新建笔记按钮，与动态数据风格不一致且容易误操作 | ✅ 已修复 | 移除 GlobalSidebar 中的 "Untitled Note" 静态按钮。新建笔记功能保留在 + 菜单中 | 查看左侧边栏 → 确认不再显示 "Untitled Note" |
+| 3 | 侧边栏固定后搜索建议视图显示 Mock 数据（Graph Engine Physics、World Tree Architecture） | GoldenTopNav 组件中 `SEARCH_SUGGESTIONS` 为硬编码 mock 数据，未使用真实 IDB 数据 | ✅ 已修复 | (1) GoldenTopNav 新增 `searchSuggestions` prop；(2) page.tsx 新建 `searchSuggestions` useMemo 从 `items` 和 `mindNodes` 动态生成搜索建议（最近文档 + 知识图谱节点）；(3) 传递给 GoldenTopNav 渲染 | 点击顶部搜索框 → 确认显示真实的 Dock 文档和 Mind 节点名称，而非 Mock 数据 |
+
+**改动文件及行数（第四轮）**:
+- `apps/web/app/workspace/_components/RecommendationDock.tsx` | M | +5/-5 行（调整 handleFeedback 调用顺序：先 apply 再 record）
+- `apps/web/app/workspace/_components/GlobalSidebar.tsx` | M | -12 行（移除 Untitled Note 静态按钮）
+- `apps/web/app/workspace/_components/GoldenTopNav.tsx` | M | +8 行（新增 searchSuggestions prop、effectiveSearchSuggestions 计算）
+- `apps/web/app/workspace/page.tsx` | M | +30 行（新增 searchSuggestions useMemo、传递给 GoldenTopNav）
+
+**自动验证结果（第四轮）**:
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm lint` | ✅ 0 errors（仅 1 个 demo2-prototype 已有 warning） |
+| `pnpm typecheck` (domain + web) | ✅ PASS |
+| `vitest run tests/` (全量) | ✅ 499 tests passed（零回归） |
+
+**已知未修复 mock 混用问题**:
+- DockFinderView sidebar 中 `tags` 初始化 `['physics', 'algo', 'book', '技术', '产品', '学习']`（line ~1900）
+- DockFinderView sidebar 中 `projects` 初始化 `mockFolderNodes` 包含 `'Core Architecture', 'Personal Growth'`（line ~1910）
+- 后台 `handleSuggestItems` 中 `predefinedProjects` 硬编码 `['Core Architecture', 'Personal Growth']`（line 658）
+- 影响：首次使用用户在 Dock/Finder 侧栏会看到 mock 项目/标签，与真实 IDB 数据并存，可能导致用户误以为这些是系统预设。此问题非本轮引入，将在后续卡片中统一修复。
+- 状态标记：当前为 **已知风险 - 已隔离**，不在本轮 RFR 阻塞范围内。
+
+**是否可以进入下一轮**: 是。
+
+**下一轮风险评估**:
+| 风险 | 等级 | 说明 |
+|------|------|------|
+| mock 标签/项目混入真实侧栏 | 中 | 首次用户可能看到 'physics', 'algo' 等 mock 标签，不影响核心数据流 |
+| Editor→Dock 仅感知 rawText/topic | 低 | modifiedAt 依赖 processedAt（ES policy 控制），不满足此场景时通过 rawText 变化间接感知 |
+| 页面切换 selectedItemId 保留 | 低 | 当前实现已支持，仅在 archive/delete 操作时主动清除 |
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：Local Core Phase 1 Round 1 (FE-001) -->
 <!-- ============================================ -->
 

@@ -18,9 +18,12 @@ interface HomeViewProps {
   onSwitchToMind: () => void
   onCapture: (text: string) => Promise<void>
   nodeCount: number
+  recRefreshKey?: number
+  onApplyRecommendation?: (recommendationId: string) => Promise<void>
+  onToast?: (msg: string) => void
 }
 
-const HomeView = forwardRef<HomeViewHandle, HomeViewProps>(function HomeView({ userId, userName: _userName, onOpenEditor, onNewNote, onSwitchToDock, onSwitchToMind, onCapture, nodeCount }, ref) {
+const HomeView = forwardRef<HomeViewHandle, HomeViewProps>(function HomeView({ userId, userName: _userName, onOpenEditor, onNewNote, onSwitchToDock, onSwitchToMind, onCapture, nodeCount, recRefreshKey, onApplyRecommendation, onToast }, ref) {
   const captureInputRef = useRef<HTMLInputElement>(null)
   const [recentItems, setRecentItems] = useState<DockItem[]>([])
   const [hoveredCard, setHoveredCard] = useState<string | null>(null)
@@ -164,7 +167,7 @@ const HomeView = forwardRef<HomeViewHandle, HomeViewProps>(function HomeView({ u
             )}
           </div>
 
-          <RecommendationDock userId={userId} />
+          <RecommendationDock userId={userId} refreshKey={recRefreshKey} onApplyRecommendation={onApplyRecommendation} onToast={onToast} />
         </section>
       </div>
     </div>

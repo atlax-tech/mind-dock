@@ -28,8 +28,11 @@ export interface DockTreeViewModel {
 const FOLDER_KEYWORDS = ['notes', '笔记', 'reading', '阅读', 'research', '调研', 'meeting', '会议', 'concept', '构想', 'design', '设计', 'spec', 'test', '测试', 'report', '报告', 'strategy', '策略', 'plan', '计划']
 
 function inferDockNodeType(item: DockItem): DockTreeNode['type'] {
-  const title = (item.topic || '').toLowerCase()
-  if (FOLDER_KEYWORDS.some(k => title.includes(k))) return 'folder'
+  const title = (item.topic || '').toLowerCase().trim()
+  if (!title) return 'file'
+  const words = title.split(/[\s\-_.,;:!?()（）【】""'']+/)
+  const lastWord = words[words.length - 1] || ''
+  if (FOLDER_KEYWORDS.some(k => lastWord === k || title === k)) return 'folder'
   return 'file'
 }
 
@@ -88,7 +91,7 @@ export function toDockTreeViewModel(items: DockItem[]): DockTreeViewModel {
 
   folderItems.forEach(item => {
     const parentProject = resolveProjectForItem(item)
-    const title = item.topic || `Folder ${item.id}`
+    const title = item.topic || (item.rawText || '').slice(0, 50) || `Folder ${item.id}`
     const description = (item.rawText || '').slice(0, 100)
     const folderNode: DockTreeNode = {
       id: item.id,
@@ -112,7 +115,7 @@ export function toDockTreeViewModel(items: DockItem[]): DockTreeViewModel {
 
   fileItems.forEach(item => {
     const parentProject = resolveProjectForItem(item)
-    const title = item.topic || `File ${item.id}`
+    const title = item.topic || (item.rawText || '').slice(0, 50) || `File ${item.id}`
     const titleLower = title.toLowerCase()
     const description = (item.rawText || '').slice(0, 300)
 

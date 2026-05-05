@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { Sparkles, Loader2, MoreHorizontal, LayoutList, FileCode2, Pencil, FolderOutput, Download, Trash2, Check, Package, Archive, FileText, LayoutGrid, List, Columns, Search, Folder, Plus, PenTool, Circle, RotateCcw, Lightbulb, ChevronRight, X, EyeOff } from 'lucide-react'
+import { Sparkles, Loader2, MoreHorizontal, LayoutList, FileCode2, Pencil, FolderOutput, Download, Trash2, Check, Package, Archive, FileText, LayoutGrid, List, Columns, Search, Folder, Plus, PenTool, Circle, RotateCcw, Lightbulb, ChevronRight, X, EyeOff, Network } from 'lucide-react'
 
 import { getCurrentUser, registerUser, logoutUser, type LocalUser } from '@/lib/auth'
 import GoldenTopNav from './_components/GoldenTopNav'
@@ -111,6 +111,7 @@ export default function WorkspacePage() {
   const flushSaveRef = useRef<() => Promise<void>>(() => Promise.resolve())
 
   const homeViewRef = useRef<HomeViewHandle>(null)
+  const [recRefreshKey, setRecRefreshKey] = useState(0)
 
   const [registerName, setRegisterName] = useState('')
 
@@ -400,11 +401,12 @@ export default function WorkspacePage() {
       const newId = await createDockItem(userId, text.trim())
       await createSourceNodeWithRoot(text.trim(), newId)
       refreshAll()
+      showToast(`已捕获到 Dock (#${newId})`)
       recordEvent(userId, { type: 'capture_created', sourceType: 'text', dockItemId: newId })
     } catch (e) {
       setError(e instanceof Error ? e.message : '创建失败')
     }
-  }, [userId, refreshAll, createSourceNodeWithRoot])
+  }, [userId, refreshAll, createSourceNodeWithRoot, showToast])
 
   const handleQuickNoteSave = useCallback(async (text: string, title: string) => {
     if (!text.trim() || !userId) return
@@ -412,11 +414,12 @@ export default function WorkspacePage() {
       const newId = await createDockItem(userId, text.trim(), 'text', { topic: title })
       await createSourceNodeWithRoot(text.trim(), newId)
       refreshAll()
+      showToast(`Quick Note 已保存到 Dock (#${newId})`)
       recordEvent(userId, { type: 'capture_created', sourceType: 'text', dockItemId: newId })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Quick Note 保存失败')
     }
-  }, [userId, refreshAll, createSourceNodeWithRoot])
+  }, [userId, refreshAll, createSourceNodeWithRoot, showToast])
 
   const loadItemRecommendations = useCallback(async (itemId: number) => {
     if (!userId) return
@@ -462,6 +465,7 @@ export default function WorkspacePage() {
     try {
       await applyRecommendation({ userId, recommendationId })
       refreshAll()
+      setRecRefreshKey(k => k + 1)
       if (selectedItemId !== null) {
         await loadItemRecommendations(selectedItemId)
       }
@@ -500,6 +504,7 @@ export default function WorkspacePage() {
         subjectId: itemId,
       })
       await loadItemRecommendations(itemId)
+      setRecRefreshKey(k => k + 1)
     } catch (e) {
       setRecommendationsError(e instanceof Error ? e.message : '建议生成失败')
       setItemRecommendations([])
@@ -554,7 +559,11 @@ export default function WorkspacePage() {
 
   const openEditorTab = useCallback((itemId: number) => {
     const item = items.find(i => i.id === itemId)
-    if (!item) return
+    if (!item) {
+      showToast(`Dock item #${itemId} not found`)
+      console.error(`[Workspace] Cannot open Editor: Dock item #${itemId} not found`)
+      return
+    }
     const tabId = `tab-editor-${itemId}`
     const existing = tabs.find(t => t.id === tabId)
     if (existing) {
@@ -597,7 +606,7 @@ export default function WorkspacePage() {
     setEditorTitle(item.topic || item.rawText.slice(0, 50))
     setEditorContent(item.rawText)
     setActiveModule('editor')
-  }, [items, tabs, userId])
+  }, [items, tabs, userId, showToast])
 
   const createDraftTab = useCallback(() => {
     draftCounterRef.current -= 1
@@ -674,13 +683,15 @@ export default function WorkspacePage() {
       }
     } else if (editingItemId && editingItemId > 0) {
       try {
-        await updateDockItemText(userId, editingItemId, editorContent)
+        const originalItem = items.find(i => i.id === editingItemId)
+        const topic = originalItem?.topic ? (editorTitle.trim() || undefined) : undefined
+        await updateDockItemText(userId, editingItemId, editorContent, topic)
         refreshAll()
       } catch (e) {
         setError(e instanceof Error ? e.message : '保存失败')
       }
     }
-  }, [editingItemId, userId, drafts, editorContent, refreshAll, createSourceNodeWithRoot])
+  }, [editingItemId, userId, drafts, editorContent, editorTitle, items, refreshAll, createSourceNodeWithRoot])
 
   const handleActivateTab = useCallback((tabId: string) => {
     if (activeTabId !== tabId && activeTabId.startsWith('tab-editor-') && editingItemId != null) {
@@ -884,16 +895,59 @@ export default function WorkspacePage() {
   }, [])
 
   const sidebarDocuments = useMemo(() => {
-    const descriptors = [
-      'Graph Engine Physics',
-      'Algorithm Design',
-      'Reading Notes',
-    ]
-    return descriptors.map(label => {
-      const match = workspaceMapping.findDockItemByLabel(label)
-      return { label, dockItemId: match ? match.id : null }
+    return items.slice(0, 20).map(item => ({
+      label: item.topic || item.rawText.slice(0, 50),
+      dockItemId: item.id,
+    }))
+  }, [items])
+
+  const sidebarData = useMemo(() => {
+    const projectMap = new Map<string, string[]>()
+    items.forEach(item => {
+      const project = item.selectedProject || 'Dock'
+      const existing = projectMap.get(project)
+      if (existing) {
+        existing.push(item.topic || item.rawText.slice(0, 50))
+      } else {
+        projectMap.set(project, [item.topic || item.rawText.slice(0, 50)])
+      }
     })
-  }, [workspaceMapping])
+    const projects = Array.from(projectMap.entries()).slice(0, 5).map(([name, documents]) => ({
+      name,
+      documents: documents.slice(0, 5),
+    }))
+    const allTags = new Set<string>()
+    items.forEach(item => item.userTags?.forEach(tag => allTags.add(tag)))
+    return {
+      projects,
+      tags: Array.from(allTags).slice(0, 10),
+    }
+  }, [items])
+
+  const searchSuggestions = useMemo(() => {
+    const suggestions: { id: string; label: string; icon: typeof FileText; tone: 'document' | 'accent' | 'muted'; section?: string }[] = []
+    items.slice(0, 5).forEach(item => {
+      suggestions.push({
+        id: `doc-${item.id}`,
+        label: item.topic || item.rawText.slice(0, 40),
+        icon: FileText,
+        tone: 'document' as const,
+        section: suggestions.length === 0 ? 'RECENT DOCUMENTS' : undefined,
+      })
+    })
+    if (mindNodes.length > 0) {
+      mindNodes.slice(0, 3).forEach(node => {
+        suggestions.push({
+          id: `mind-${node.id}`,
+          label: node.label,
+          icon: Network,
+          tone: 'accent' as const,
+          section: suggestions.filter(s => s.section).length === 1 ? 'KNOWLEDGE GRAPH' : undefined,
+        })
+      })
+    }
+    return suggestions
+  }, [items, mindNodes])
 
   const handleSwitchToMind = useCallback(() => {
     handleModuleChange('mind')
@@ -929,6 +983,17 @@ export default function WorkspacePage() {
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
   }, [])
+
+  useEffect(() => {
+    if (!selectedItemId) return
+    const h = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      if (target.closest('[data-detail-panel]') || target.closest('[data-ignore-click-outside]')) return
+      setSelectedItemId(null)
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [selectedItemId, setSelectedItemId])
 
   if (!authChecked) {
     return (
@@ -1014,6 +1079,7 @@ export default function WorkspacePage() {
           onCollapseRequest={() => setEditorNavExpanded(false)}
           onExpandRequest={() => setEditorNavExpanded(true)}
           onToast={showToast}
+          searchSuggestions={searchSuggestions}
           onSearchAction={(label: string) => {
             const match = workspaceMapping.findDockItemByLabel(label)
             if (match) {
@@ -1038,6 +1104,7 @@ export default function WorkspacePage() {
           onCapture={handleCapture}
           onToast={showToast}
           documents={sidebarDocuments}
+          sidebarData={sidebarData}
           onOpenDocument={(documentRef: number | string) => {
             if (typeof documentRef === 'number') {
               const item = items.find(i => i.id === documentRef)
@@ -1155,6 +1222,9 @@ export default function WorkspacePage() {
                 onSwitchToMind={() => handleModuleChange('mind')}
                 onCapture={handleCapture}
                 nodeCount={nodeCount}
+                recRefreshKey={recRefreshKey}
+                onApplyRecommendation={handleApplyRecommendation}
+                onToast={showToast}
               />
             </div>
           </div>
@@ -1202,6 +1272,11 @@ export default function WorkspacePage() {
                   console.error('[MindCanvas] Failed to delete edge:', err)
                   showToast('Edge removed locally (sync failed)')
                 }
+              }}
+              onOpenInDock={(dockItemId: number) => {
+                setSelectedItemId(dockItemId)
+                handleModuleChange('dock')
+                showToast(`已定位到 Dock item #${dockItemId}`)
               }}
             />
           </div>
@@ -1713,7 +1788,9 @@ function DockFinderView({ items, selectedItemId, loading, error, onSelectItem, o
           </div>
         </div>
 
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 flex flex-col overflow-hidden" onClick={(e) => {
+          if (e.currentTarget === e.target) onSelectItem(null)
+        }}>
           {viewMode === 'columns' && (
             <div className="flex-1 flex overflow-x-auto overflow-y-hidden no-scrollbar">
               <ColumnListView
@@ -1811,7 +1888,14 @@ function DockFinderView({ items, selectedItemId, loading, error, onSelectItem, o
         </div>
 
         {effectiveSelectedItem && (
-          <div className="w-80 bg-[#161616] border-l border-[var(--border-line)] flex flex-col shrink-0 overflow-y-auto no-scrollbar shadow-xl">
+          <div data-detail-panel className="w-80 bg-[#161616] border-l border-[var(--border-line)] flex flex-col shrink-0 overflow-y-auto no-scrollbar shadow-xl relative">
+            <button
+              onClick={() => onSelectItem(null)}
+              className="absolute top-3 right-3 p-1.5 rounded-lg text-[var(--text-muted)] hover:text-white hover:bg-white/10 transition-colors z-10"
+              title="关闭详情面板"
+            >
+              <X size={14} />
+            </button>
             <div className="flex-1 overflow-y-auto no-scrollbar p-6 flex flex-col items-center">
               <div className="w-24 h-24 rounded-2xl bg-white/5 border border-[var(--border-line)] flex items-center justify-center mb-6 mt-4 shadow-inner">
                 <FileText size={40} className="text-[var(--node-doc)]" />
@@ -1855,6 +1939,15 @@ function DockFinderView({ items, selectedItemId, loading, error, onSelectItem, o
                   <div className="text-[10px] text-blue-400 bg-blue-400/10 border border-blue-400/20 px-2 py-1.5 rounded-lg leading-relaxed">
                     {graphChainForItem(effectiveSelectedItem.id).join(' > ')}
                   </div>
+                  <button
+                    onClick={() => {
+                      onSwitchToMind()
+                      onToast(`导航到图谱视图: ${effectiveSelectedItem.topic || effectiveSelectedItem.rawText.slice(0, 30)}`)
+                    }}
+                    className="mt-1 w-full py-1.5 text-[10px] bg-blue-500/10 border border-blue-500/20 text-blue-400 hover:bg-blue-500/20 rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Network size={12} /> View in Graph
+                  </button>
                 </div>
 
                 <div className="flex flex-col gap-1.5 border-t border-[var(--border-line)] pt-4">
@@ -1967,7 +2060,7 @@ function DockFinderView({ items, selectedItemId, loading, error, onSelectItem, o
   )
 }
 
-function ColumnListView({ columnStack, setColumnStack, selectedColumnNode, setSelectedColumnNode, filteredRoots, loading, error, filteredItems, onSelectItem, selectedItemId: _selectedItemId, itemContent: _itemContent }: {
+function ColumnListView({ columnStack, setColumnStack, selectedColumnNode, setSelectedColumnNode, filteredRoots, loading, error, filteredItems, onSelectItem, selectedItemId, itemContent: _itemContent }: {
   columnStack: DockTreeNode[]
   setColumnStack: React.Dispatch<React.SetStateAction<DockTreeNode[]>>
   selectedColumnNode: DockTreeNode | null
@@ -1990,11 +2083,19 @@ function ColumnListView({ columnStack, setColumnStack, selectedColumnNode, setSe
     if (node.type === 'project' || node.type === 'folder') {
       setSelectedColumnNode(node)
       if (node.children.length > 0) {
-        setColumnStack(prev => [...prev, node])
+        setColumnStack(prev => {
+          const lastIdx = prev.findIndex(n => n.id === node.id)
+          if (lastIdx >= 0) return prev.slice(0, lastIdx + 1)
+          return [...prev, node]
+        })
       }
     } else {
       if (node.documentId != null) {
-        onSelectItem(node.documentId)
+        if (selectedItemId === node.documentId) {
+          onSelectItem(null)
+        } else {
+          onSelectItem(node.documentId)
+        }
         setSelectedColumnNode(node)
       }
     }
