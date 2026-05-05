@@ -37,6 +37,17 @@ import {
   type StoredWorkspaceOpenTab,
   type RecommendationDockQueueItem,
 } from '@/lib/repository'
+import {
+  describeRecommendationAction,
+  describeRecommendationReason,
+  describeApplyPreview,
+  describeApplyResult,
+  formatConfidenceLevel,
+  isSupportedCandidateType,
+  isRecommendationResolved,
+  CANDIDATE_TYPE_LABELS,
+  STATUS_LABELS as REC_STATUS_LABELS,
+} from '@/lib/recommendation-i18n'
 import { db } from '@/lib/db'
 import type { EntryStatus } from '@/lib/types'
 import { recordEvent } from '@/lib/events'
@@ -459,18 +470,22 @@ export default function WorkspacePage() {
     }
   }, [selectedItemId, loadItemRecommendations])
 
-  const handleApplyRecommendation = useCallback(async (recommendationId: string) => {
+  const handleApplyRecommendation = useCallback(async (recommendationId: string): Promise<string | void> => {
     if (!userId) return
     setApplyLoading(recommendationId)
     try {
-      await applyRecommendation({ userId, recommendationId })
+      const result = await applyRecommendation({ userId, recommendationId })
       refreshAll()
       setRecRefreshKey(k => k + 1)
       if (selectedItemId !== null) {
         await loadItemRecommendations(selectedItemId)
       }
+      if (result.appliedChanges) {
+        return describeApplyResult(result.appliedChanges.candidateType, result.appliedChanges.candidateId, result.appliedChanges.changeDetail)
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : '应用推荐失败')
+      throw e
     } finally {
       setApplyLoading(null)
     }
@@ -1436,7 +1451,7 @@ function DockFinderView({ items, selectedItemId, loading, error, onSelectItem, o
   recommendationsError: string | null
   itemRecommendations: RecommendationDockQueueItem[]
   applyLoading: string | null
-  onApplyRecommendation: (recommendationId: string) => Promise<void>
+  onApplyRecommendation: (recommendationId: string) => Promise<string | void>
   onFeedbackRecommendation: (recommendationId: string, feedbackType: 'accepted' | 'rejected' | 'ignored') => Promise<void>
 }) {
   const [filterStatus, setFilterStatus] = useState<EntryStatus | null>(null)
@@ -1970,45 +1985,79 @@ function DockFinderView({ items, selectedItemId, loading, error, onSelectItem, o
                   ) : (
                     <div className="space-y-2 max-h-64 overflow-y-auto no-scrollbar">
                       {itemRecommendations.map((rec) => {
-                        const isResolved = rec.status === 'accepted' || rec.status === 'rejected' || rec.status === 'ignored'
+                        const isResolved = isRecommendationResolved(rec.status)
                         const isApplying = applyLoading === rec.id
+                        const isUnsupported = !isSupportedCandidateType(rec.candidateType)
+                        const actionText = describeRecommendationAction(rec.candidateType, rec.candidateId)
+                        const reasonText = describeRecommendationReason(rec.candidateType, rec.reasonSummary, rec.evidenceSummary)
+                        const previewText = describeApplyPreview(rec.candidateType, rec.candidateId)
+                        const confidenceLevel = formatConfidenceLevel(rec.confidenceScore)
+                        const typeLabel = CANDIDATE_TYPE_LABELS[rec.candidateType] ?? rec.candidateType
+                        const recStatusConfig = REC_STATUS_LABELS[rec.status as keyof typeof REC_STATUS_LABELS]
                         return (
                           <div key={rec.id} className={`p-2 rounded-lg border text-[10px] ${isResolved ? 'bg-white/[0.01] border-white/[0.03] opacity-60' : 'bg-white/[0.02] border-white/[0.06]'}`}>
                             <div className="flex items-center justify-between mb-1">
-                              <span className="text-white/70 font-medium truncate max-w-[120px]">
-                                {rec.candidateType === 'tag' ? `Tag: ${rec.candidateId}` : rec.candidateType === 'project' ? `Project: ${rec.candidateId}` : `${rec.candidateType}`}
+                              <span className="text-white/70 font-medium truncate max-w-[180px]">
+                                {actionText}
                               </span>
-                              <span className={`shrink-0 ${rec.status === 'accepted' ? 'text-emerald-400' : rec.status === 'rejected' ? 'text-red-400' : rec.status === 'ignored' ? 'text-gray-500' : 'text-yellow-400'}`}>
-                                {rec.status === 'generated' ? '待处理' : rec.status === 'shown' ? '已查看' : rec.status === 'accepted' ? '已接受' : rec.status === 'rejected' ? '已拒绝' : rec.status === 'ignored' ? '已忽略' : rec.status}
+                              <span className={`shrink-0 ${recStatusConfig?.color ?? 'text-yellow-400'}`}>
+                                {recStatusConfig?.label ?? rec.status}
                               </span>
                             </div>
-                            <div className="text-[var(--text-muted)] mb-1.5 truncate">{rec.reasonSummary.reason}</div>
+                            <div className="text-[var(--text-muted)] mb-1 truncate">{reasonText}</div>
+                            <div className="text-[var(--text-muted)]/60 mb-1.5 truncate text-[9px]">{previewText}</div>
                             <div className="flex items-center justify-between">
-                              <span className="text-[var(--accent)]">{Math.round(rec.confidenceScore * 100)}%</span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-[var(--accent)]">{Math.round(rec.confidenceScore * 100)}%</span>
+                                <span className="text-[var(--text-muted)]/60 text-[9px]">可信度: {confidenceLevel}</span>
+                                <span className="text-[var(--text-muted)]/40 text-[9px]">{typeLabel}</span>
+                              </div>
                               {!isResolved && (
                                 <div className="flex gap-1">
-                                  <button
-                                    onClick={() => onApplyRecommendation(rec.id)}
-                                    disabled={isApplying}
-                                    className="px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50 transition-colors flex items-center gap-1"
-                                  >
-                                    {isApplying ? <Loader2 size={10} className="animate-spin" /> : <Check size={10} />}
-                                    {isApplying ? '应用' : '接受'}
-                                  </button>
-                                  <button
-                                    onClick={() => onFeedbackRecommendation(rec.id, 'rejected')}
-                                    disabled={isApplying}
-                                    className="px-2 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500/20 disabled:opacity-50 transition-colors"
-                                  >
-                                    <X size={10} />
-                                  </button>
-                                  <button
-                                    onClick={() => onFeedbackRecommendation(rec.id, 'ignored')}
-                                    disabled={isApplying}
-                                    className="px-2 py-0.5 rounded bg-gray-500/10 border border-gray-500/20 text-gray-400 hover:bg-gray-500/20 disabled:opacity-50 transition-colors"
-                                  >
-                                    <EyeOff size={10} />
-                                  </button>
+                                  {isUnsupported ? (
+                                    <>
+                                      <span className="text-yellow-400/80 text-[9px]">暂不支持自动应用</span>
+                                      <button
+                                        onClick={() => onFeedbackRecommendation(rec.id, 'ignored')}
+                                        disabled={isApplying}
+                                        className="px-2 py-0.5 rounded bg-gray-500/10 border border-gray-500/20 text-gray-400 hover:bg-gray-500/20 disabled:opacity-50 transition-colors"
+                                      >
+                                        <EyeOff size={10} />
+                                      </button>
+                                      <button
+                                        onClick={() => onFeedbackRecommendation(rec.id, 'rejected')}
+                                        disabled={isApplying}
+                                        className="px-2 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500/20 disabled:opacity-50 transition-colors text-[9px]"
+                                      >
+                                        不再推荐
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button
+                                        onClick={() => onApplyRecommendation(rec.id).then((summary) => { if (summary) onToast?.(summary) }).catch((e) => { onToast?.(`建议应用失败: ${e instanceof Error ? e.message : '未知错误'}`) })}
+                                        disabled={isApplying}
+                                        className="px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50 transition-colors flex items-center gap-1"
+                                      >
+                                        {isApplying ? <Loader2 size={10} className="animate-spin" /> : <Check size={10} />}
+                                        {isApplying ? '应用' : '接受'}
+                                      </button>
+                                      <button
+                                        onClick={() => onFeedbackRecommendation(rec.id, 'rejected')}
+                                        disabled={isApplying}
+                                        className="px-2 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500/20 disabled:opacity-50 transition-colors"
+                                      >
+                                        <X size={10} />
+                                      </button>
+                                      <button
+                                        onClick={() => onFeedbackRecommendation(rec.id, 'ignored')}
+                                        disabled={isApplying}
+                                        className="px-2 py-0.5 rounded bg-gray-500/10 border border-gray-500/20 text-gray-400 hover:bg-gray-500/20 disabled:opacity-50 transition-colors"
+                                      >
+                                        <EyeOff size={10} />
+                                      </button>
+                                    </>
+                                  )}
                                 </div>
                               )}
                             </div>

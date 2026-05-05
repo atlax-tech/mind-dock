@@ -5,6 +5,7 @@ export type RecommendationStatus =
   | 'rejected'
   | 'modified'
   | 'ignored'
+  | 'superseded'
 
 export type RecommendationSubjectType = 'dockItem' | 'entry' | 'document' | 'mindNode'
 
@@ -179,6 +180,7 @@ export type RecommendationEventType =
   | 'recommendation_rejected'
   | 'recommendation_modified'
   | 'recommendation_ignored'
+  | 'recommendation_superseded'
 
 export interface RecommendationEvent {
   id: string
@@ -242,6 +244,29 @@ export function makeRecommendationEventId(userId: string, recommendationId: stri
 }
 
 export type RecommendationFeedbackType = 'accepted' | 'rejected' | 'modified' | 'ignored'
+
+export const SUPPORTED_CANDIDATE_TYPES_FOR_APPLY: RecommendationCandidateType[] = ['tag', 'project', 'mindNode']
+
+export function isSupportedCandidateTypeForApply(candidateType: RecommendationCandidateType): boolean {
+  return SUPPORTED_CANDIDATE_TYPES_FOR_APPLY.includes(candidateType)
+}
+
+export function isRecommendationTerminalStatus(status: RecommendationStatus): boolean {
+  return status === 'accepted' || status === 'rejected' || status === 'ignored' || status === 'superseded'
+}
+
+export function isRecommendationPendingStatus(status: RecommendationStatus): boolean {
+  return status === 'generated' || status === 'shown'
+}
+
+export function makeRecommendationDedupeKey(
+  subjectType: RecommendationSubjectType,
+  subjectId: number | string,
+  candidateType: RecommendationCandidateType,
+  candidateId: string,
+): string {
+  return `${subjectType}:${subjectId}:${candidateType}:${candidateId}`
+}
 
 export interface RecommendationFeedbackInput {
   recommendationId: string

@@ -19,7 +19,7 @@ interface HomeViewProps {
   onCapture: (text: string) => Promise<void>
   nodeCount: number
   recRefreshKey?: number
-  onApplyRecommendation?: (recommendationId: string) => Promise<void>
+  onApplyRecommendation?: (recommendationId: string) => Promise<string | void>
   onToast?: (msg: string) => void
 }
 

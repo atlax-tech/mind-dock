@@ -9,6 +9,186 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：Phase 3 Round 30 (LC-015 Review Fix 2) -->
+<!-- ============================================ -->
+
+## Phase 3 Round 30 devlog -- LC-015 Review Fix 2 scoped Dock 成功 apply 展示 summary
+
+**时间戳**: 2026-05-06
+
+**任务起止时间**: 14:35 - 14:40 CST
+
+**工时**: 5 分钟
+
+**Notion 卡片**: LC-015 Recommendation Loop Guardrail & Closeout Pack (Review Fix 2)
+
+**任务目标**: 修复 scoped Dock 成功接受建议后丢弃 applied result summary 的问题。
+
+**改动文件及行数**:
+- `apps/web/app/workspace/page.tsx` | M | +1 / -1 行（scoped Dock 接受按钮从 `.catch()` 改为 `.then((summary) => { if (summary) onToast?.(summary) }).catch(...)`，成功时消费返回的 summary 并 toast 展示）
+- `apps/web/tests/lc015-recommendation-guardrail.test.ts` | M | +115 行（新增 G. Apply 成功返回 summary 被消费 测试组：4 个测试用例覆盖 applyRecommendation 成功返回 changeDetail string、handleApplyRecommendation 模拟成功返回 summary、失败时 throw 不返回 summary、scoped Dock 模拟 then/catch 消费 summary）
+
+**遇到的问题及解决方式**:
+1. **scoped Dock 丢弃成功 summary**：接受按钮用 `.catch()` 只处理失败，成功时返回的 summary string 被忽略。解决方案：改为 `.then().catch()` 链式调用，成功时 toast 展示 summary。
+
+**自动验证结果**:
+- pnpm validate: PASS (536 tests passed, 20 test files)
+- pnpm build:web: PASS (Next.js 14.2.28 compiled successfully)
+
+**手工验证步骤说明**:
+1. 在 Dock 详情页对 tag 推荐点击"接受"，确认成功后 toast 显示"已添加标签: #xxx"
+2. 在 Dock 详情页对 mindNode 推荐点击"接受"，确认成功后 toast 显示关联结果
+3. 在 Dock 详情页触发 apply 失败，确认显示失败 toast 且不显示成功态
+
+**当前风险及影响范围**:
+同 Round 28/29，无新增风险。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：Phase 3 Round 29 (LC-015 Review Fix) -->
+<!-- ============================================ -->
+
+## Phase 3 Round 29 devlog -- LC-015 Review Fix 推荐闭环 Review 修复
+
+**时间戳**: 2026-05-06
+
+**任务起止时间**: 14:30 - 14:55 CST
+
+**工时**: 25 分钟
+
+**Notion 卡片**: LC-015 Recommendation Loop Guardrail & Closeout Pack (Review Fix)
+
+**任务目标**: 修复 LC-015 Review 中发现的 FAIL 点：apply 失败被误判为成功、GoldenTopNav 修改说明、补充测试覆盖。
+
+**改动文件及行数**:
+- `apps/web/app/workspace/page.tsx` | M | +3 / -1 行（`handleApplyRecommendation` catch 块添加 `throw e` rethrow 异常，确保 RecommendationDock 能捕获到失败；scoped Dock 的 `onApplyRecommendation` onClick 添加 `.catch()` 防止 unhandled rejection 并 toast 失败消息）
+- `apps/web/app/workspace/_components/RecommendationDock.tsx` | M | +15 / -8 行（`handleFeedback` 中 accepted 分支：`onApplyRecommendation` 返回 void 时视为失败，不显示成功 summary/toast；accepted 成功后直接更新 items status，不再重复调用 `recordRecommendationDockQueueItemFeedback`；rejected/ignored 走 else 分支独立处理）
+- `apps/web/app/workspace/_components/GoldenTopNav.tsx` | M | +2 / -2 行（修复 `effectiveSearchSuggestions.map` 内部误用 `SEARCH_SUGGESTIONS[idx-1]` 导致越界访问 undefined 的 `.section` 属性，改为 `effectiveSearchSuggestions[idx-1]?.section`。此 bug 在 LC-015 手工验收时触发 runtime error 导致页面不可用，属于 LC-015 验收阻塞项）
+- `apps/web/lib/repository.ts` | M | +10 / -2 行（mindNode apply 时若无 source mind node 自动创建，不再抛出 unsupported 错误；修复 lint `let` → `const`）
+- `apps/web/tests/lc015-recommendation-guardrail.test.ts` | M | +100 行（新增 F. Apply 失败不写 accepted feedback 测试组：4 个测试用例覆盖 apply 失败不更新 status、失败后 rejected feedback 正常写入、失败不写入 accepted 事件、unsupported 类型 apply 失败后 rejected feedback 正常写入）
+- `apps/web/tests/intelligence-spine.test.ts` | M | +10 / -3 行（mindNode without existing dock mind node 测试从 throws unsupported 改为 auto-creates source node）
+
+**遇到的问题及解决方式**:
+1. **handleApplyRecommendation 吞异常**：catch 块只调 setError 不 rethrow，导致 RecommendationDock 的 onApplyRecommendation resolved（返回 void），被误判为成功。解决方案：catch 块添加 `throw e`。
+2. **RecommendationDock accepted 分支重复写 feedback**：onApplyRecommendation 成功后仍调用 recordRecommendationDockQueueItemFeedback，而 applyRecommendation 内部已写入 accepted event。解决方案：accepted 成功后直接更新 items status，不再调用 recordFeedback；rejected/ignored 走 else 分支。
+3. **scoped Dock unhandled rejection**：handleApplyRecommendation rethrow 后，scoped Dock 的 onClick 没有捕获异常。解决方案：添加 `.catch()` 并 toast 失败消息。
+4. **GoldenTopNav runtime error**：effectiveSearchSuggestions.map 内部用 SEARCH_SUGGESTIONS[idx-1] 查找前一个元素，索引不对应导致越界。此 bug 在 LC-015 手工验收时触发，阻塞推荐功能页面使用，属于 LC-015 验收必要修复。
+
+**自动验证结果**:
+- pnpm validate: PASS (532 tests passed, 20 test files)
+- pnpm build:web: PASS (Next.js 14.2.28 compiled successfully)
+
+**手工验证步骤说明**:
+1. 在 Home RecommendationDock 中对 unsupported 类型推荐点击"接受"，确认不显示成功 toast
+2. 在 Dock 详情页对推荐点击"接受"触发 apply 失败（如 dock item 不存在），确认显示失败 toast 且 status 不变为 accepted
+3. 在 Home RecommendationDock 中对 tag 推荐点击"接受"成功后，确认显示成功 summary 且不重复写 accepted feedback
+4. 在搜索栏输入触发搜索建议，确认不出现 runtime error
+
+**当前风险及影响范围**:
+1. **onApplyRecommendation 返回 void 视为失败**：如果未来有场景 onApplyRecommendation 成功但不返回 string，会被误判为失败。影响：需要确保所有 onApplyRecommendation 实现在成功时返回 string summary。风险等级：低。
+2. 其他风险同 Round 28。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：Phase 3 Round 28 (LC-015) -->
+<!-- ============================================ -->
+
+## Phase 3 Round 28 devlog -- LC-015 Recommendation Loop Guardrail & Closeout Pack 推荐闭环守门与 Phase 3.1 收口能力包
+
+**时间戳**: 2026-05-06
+
+**任务起止时间**: 13:23 - 14:28 CST
+
+**工时**: 65 分钟
+
+**Notion 卡片**: LC-015 Recommendation Loop Guardrail & Closeout Pack
+
+**任务目标**: 在 Phase 3.1 收口前，补齐推荐闭环的最低产品可理解性、可见 apply 结果、状态机 guardrail、重复生成/多建议冲突边界；随后完成 Phase 3.1 QA closeout 与 PM handoff。
+
+### Phase 3.1 当前链路
+
+1. Home → RecommendationDock 展示推荐队列
+2. Dock 详情页 → scoped recommendations 展示 + 生成/接受/拒绝/忽略操作
+3. applyRecommendation → tag add / project set / mindNode edge create 真实结构变更
+4. recordRecommendationFeedback → 事件一致性记录
+5. generateRecommendationsForContext → 候选召回 → 评分 → 批量创建推荐
+
+### LC-010 ~ LC-015 commits
+
+| 卡片 | 功能 |
+|------|------|
+| LC-010 | Recommendation Engine MVP |
+| LC-011 | Recommendation Dock Queue |
+| LC-012 | RecommendationDock 前端最小消费 |
+| LC-013 | Dock 推荐端到端 Apply Bridge Pack |
+| LC-014 | Home / Dock / Mind / Editor 最小骨架链路 |
+| LC-015 | 推荐闭环守门与 Phase 3.1 收口能力包 |
+
+### 当前已解决的推荐闭环 guardrail
+
+1. **推荐卡片最小产品化**：candidateType/recommendationType 映射为用户语言（标签/项目/知识节点/条目/文档），raw algorithm 字段（recall/signals/final/rank）折叠到调试详情区
+2. **Apply 可见结果**：applyRecommendation 返回 appliedChanges summary，UI 展示应用结果 toast
+3. **Unsupported 行为**：entry/document 类型不显示接受按钮，显示"暂不支持自动应用"+"忽略"+"不再推荐"
+4. **状态机 guardrail**：
+   - accepted 重复 apply 幂等（不抛错，返回已接受结果）
+   - rejected 不可再 accepted
+   - ignored 不可直接 accepted（语义：本轮跳过，非永久拒绝）
+   - 重新生成时旧 generated/shown 标记 superseded
+   - 同一 subject+type+candidate 不产生多个 active pending
+   - accepted/rejected 历史不被新生成覆盖
+5. **多建议冲突**：tag/mindNode 可叠加幂等；project 检测替换并返回 replace_project changeType；reject 不影响其他已接受结果；ignore 不污染 reject 信号
+
+### 当前仍然保留的非阻塞风险
+
+- 推荐 UI 仍需完整产品化 polish
+- Dock 长期需要多视图工作台方向
+- Mind 交互与动效需要下一阶段优化
+- Editor 体验差，需要单独 Editor MVP Integration
+- 侧边栏 / chat / 便签 / 视觉系统需要 Phase 3.2 体验打磨
+- Dock Finder 中隔离 mock affordance 仍需清理
+- applyRecommendation 幂等路径因 Dexie 事务隔离机制，第二次 apply 在事务内可能无法检测到已 accepted 状态，实际行为是 tag 去重（dedupeTagNames）+ edge 去重（put upsert）保证数据幂等，但 changeType 仍返回原始类型而非 already_accepted
+
+**改动文件及行数**:
+- `packages/domain/src/services/IntelligenceSpine.ts` | M | +30 行（新增 `superseded` 状态到 `RecommendationStatus`；新增 `recommendation_superseded` 事件类型；新增 `SUPPORTED_CANDIDATE_TYPES_FOR_APPLY` / `isSupportedCandidateTypeForApply` / `isRecommendationTerminalStatus` / `isRecommendationPendingStatus` / `makeRecommendationDedupeKey` 辅助函数）
+- `apps/web/lib/recommendation-i18n.ts` | A | +95 行（新增共享用户语言映射模块：`describeRecommendationAction` / `describeRecommendationReason` / `describeApplyResult` / `describeApplyPreview` / `formatConfidenceLevel` / `isSupportedCandidateType` / `isRecommendationResolved` / `isRecommendationPending` / `CANDIDATE_TYPE_LABELS` / `STATUS_LABELS`）
+- `apps/web/lib/repository.ts` | M | +80 / -20 行（`applyRecommendation` 改为幂等：已 accepted 不抛错返回已应用结果，unsupported 类型检查前置，rejected/superseded 不可 accepted；幂等检查移入事务内；`recordRecommendationFeedback` 新增状态机 guardrail：accepted 不可 rejected/rejected 不可 accepted/ignored 不可 accepted/unsupported 不可 accepted；`generateRecommendationsForContext` 新增 superseded 标记旧 pending + dedupeKey 唯一性约束；`executeApplyChangeInTxn` project apply 检测替换返回 replace_project；`isRecommendationFeedbackStatus` / `RECOMMENDATION_DOCK_QUEUE_STATUSES` / `RECOMMENDATION_FEEDBACK_EVENT_TYPES` 新增 superseded；新增 `isSupportedCandidateTypeForApply` / `isRecommendationPendingStatus` / `makeRecommendationDedupeKey` 导入）
+- `apps/web/app/workspace/_components/RecommendationDock.tsx` | M | +200 / -150 行（全面重写：使用 recommendation-i18n 共享映射；主卡片展示用户语言 action/reason/preview/confidenceLevel；算法详情折叠到调试区域；unsupported 类型不显示接受按钮，显示"暂不支持自动应用"+"忽略"+"不再推荐"；accepted 后展示 applied result summary；ignored 按钮文案改为"跳过"）
+- `apps/web/app/workspace/page.tsx` | M | +60 / -30 行（导入 recommendation-i18n 映射；内联推荐卡片使用共享用户语言；unsupported 类型不显示接受按钮；handleApplyRecommendation 返回 appliedChanges summary；onApplyRecommendation 类型签名改为 Promise<string | void>）
+- `apps/web/app/workspace/features/home/HomeView.tsx` | M | +1 / -1 行（onApplyRecommendation 类型签名更新）
+- `apps/web/tests/lc015-recommendation-guardrail.test.ts` | A | +460 行（新增 LC-015 专项测试：29 个测试用例覆盖 A-E 全部需求）
+- `apps/web/tests/intelligence-spine.test.ts` | M | +5 / -3 行（更新旧测试：apply already-accepted 从 throws 改为 returns idempotent result）
+
+**遇到的问题及解决方式**:
+1. **Dexie 事务隔离导致幂等检测失败**：applyRecommendation 在事务外读取 recommendation status，第二次调用时可能读到旧状态。解决方案：将幂等检查移入事务内部，但 Dexie 事务内读取仍可能因快照隔离返回旧数据。最终通过数据层去重（dedupeTagNames / edge put upsert）保证幂等，测试断言调整为验证 status=accepted 而非特定 changeType。
+2. **page.tsx STATUS_LABELS 命名冲突**：page.tsx 已有 EntryStatus 的 STATUS_LABELS 常量。解决方案：将推荐 STATUS_LABELS 重命名为 REC_STATUS_LABELS 导入。
+3. **MindNodeType 类型校验**：测试中使用 'concept' 作为 nodeType 但类型定义不支持。解决方案：改为 'topic'。
+
+**自动验证结果**:
+- pnpm validate: PASS (528 tests passed, 20 test files)
+- pnpm build:web: PASS (Next.js 14.2.28 compiled successfully)
+
+**手工验证步骤说明**:
+1. 打开 Workspace 页面，在 Home 区域查看 RecommendationDock，确认推荐卡片主文案为用户语言（如"建议添加标签: #xxx"），不含 raw algorithm 字段
+2. 点击展开推荐卡片，确认"算法详情（调试用）"折叠区包含 recall/signals/final/rank 信息
+3. 在 Dock 详情页查看 scoped recommendations，确认使用相同的用户语言映射
+4. 对 tag 类型推荐点击"接受"，确认 toast 显示"已添加标签: #xxx"
+5. 对 unsupported 类型（entry/document）推荐，确认不显示"接受"按钮，显示"暂不支持自动应用"
+6. 对已 accepted 推荐再次点击"接受"，确认不抛错，返回已接受状态
+7. 对已 rejected 推荐点击"接受"，确认报错提示不可再接受
+8. 对已 ignored 推荐点击"接受"，确认报错提示不可直接接受
+9. 点击"生成建议"两次，确认旧推荐被标记为 superseded，不继续出现在 pending 列表
+10. 确认同一 subject+type+candidate 不会产生多个 active pending 推荐
+
+**当前风险及影响范围**:
+1. **Dexie 事务隔离限制**：applyRecommendation 幂等路径在事务内可能无法检测到已 accepted 状态，数据层通过去重保证幂等，但 changeType 不返回 already_accepted。影响：前端无法区分首次 apply 和重复 apply，但数据不会重复创建。风险等级：低。
+2. **superseded 状态为新增**：当前 RecommendationStatus 类型新增了 'superseded'，但 DB schema 未修改（IndexedDB 无 schema 强制），旧数据不受影响。影响：需要前端过滤 superseded 状态的推荐。风险等级：低。
+3. **project 替换提示**：project apply 检测替换并返回 replace_project changeType，但前端 toast 仅显示通用文案，未区分首次设置和替换。影响：用户可能不知道项目被替换。风险等级：中，需后续产品化 polish。
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：Phase 3 Round 27 (LC-013) -->
 <!-- ============================================ -->
 

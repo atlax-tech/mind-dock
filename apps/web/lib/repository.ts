@@ -68,6 +68,9 @@ import {
   type UserBehaviorEventInput,
   feedbackTypeToStatus,
   feedbackTypeToEventType,
+  isSupportedCandidateTypeForApply,
+  isRecommendationPendingStatus,
+  makeRecommendationDedupeKey,
   type RelationDirection,
   type RelationSource,
   type SourceType,
@@ -2114,8 +2117,17 @@ export async function applyRecommendation(
   if (recommendation.userId !== input.userId) {
     throw new Error(`User ${input.userId} does not own recommendation ${input.recommendationId}`)
   }
-  if (recommendation.status === 'accepted') {
-    throw new Error(`Recommendation ${input.recommendationId} has already been accepted`)
+  if (!isSupportedCandidateTypeForApply(recommendation.candidateType)) {
+    throw new Error(
+      `Cannot apply recommendation: candidateType "${recommendation.candidateType}" is not supported for automatic apply. ` +
+      `Supported types: tag, project, mindNode.`,
+    )
+  }
+  if (recommendation.status === 'rejected' || recommendation.status === 'superseded') {
+    throw new Error(
+      `Cannot apply recommendation in "${recommendation.status}" status. ` +
+      `Rejected or superseded recommendations cannot be accepted.`,
+    )
   }
 
   const subjectId = typeof recommendation.subjectId === 'string'
@@ -2130,7 +2142,29 @@ export async function applyRecommendation(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     [recommendationsTable, recommendationEventsTable, userBehaviorEventsTable, dockItemsTable, tagsTable, collectionsTable, mindNodesTable, mindEdgesTable] as any,
     async () => {
-      const changeResult = await executeApplyChangeInTxn(recommendation, subjectId)
+      const currentRec = await recommendationsTable.get(input.recommendationId)
+      if (currentRec && currentRec.status === 'accepted') {
+        const acceptedEvent = await recommendationEventsTable
+          .where('recommendationId')
+          .equals(input.recommendationId)
+          .and((e) => e.eventType === 'recommendation_accepted')
+          .first()
+        const appliedChanges = acceptedEvent?.metadata?.appliedChanges as ApplyRecommendationResult['appliedChanges'] | undefined
+        return {
+          recommendationId: input.recommendationId,
+          status: 'accepted' as RecommendationStatus,
+          appliedChanges: appliedChanges ?? {
+            candidateType: currentRec.candidateType,
+            candidateId: currentRec.candidateId,
+            changeType: 'already_accepted',
+            changeDetail: 'Recommendation was already accepted',
+          },
+          recommendationEventId: acceptedEvent?.id ?? '',
+          userBehaviorEventId: '',
+        }
+      }
+
+      const changeResult = await executeApplyChangeInTxn(currentRec ?? recommendation, subjectId)
 
       await recommendationsTable.update(input.recommendationId, {
         status: 'accepted',
@@ -2150,12 +2184,12 @@ export async function applyRecommendation(
         metadata,
       })
 
-      const behaviorMetadata = buildRecommendationBehaviorMetadata(recommendation, metadata)
+      const behaviorMetadata = buildRecommendationBehaviorMetadata(currentRec ?? recommendation, metadata)
       const behaviorEvent = await recordUserBehaviorEvent({
         userId: input.userId,
         eventType: 'recommendation_accepted',
-        subjectType: recommendation.subjectType,
-        subjectId: String(recommendation.subjectId),
+        subjectType: (currentRec ?? recommendation).subjectType,
+        subjectId: String((currentRec ?? recommendation).subjectId),
         metadata: behaviorMetadata,
       })
 
@@ -2213,12 +2247,16 @@ async function executeApplyChangeInTxn(
     if (!dockItem) {
       throw new Error(`Dock item not found: ${subjectId}`)
     }
+    const previousProject = dockItem.selectedProject
+    const isReplacing = previousProject !== null && previousProject !== collection.name
     await dockItemsTable.update(dockItem.id, { selectedProject: collection.name })
     return {
       candidateType: 'project',
       candidateId,
-      changeType: 'set_project',
-      changeDetail: `Set project "${collection.name}" on dock item #${subjectId}`,
+      changeType: isReplacing ? 'replace_project' : 'set_project',
+      changeDetail: isReplacing
+        ? `Replaced project "${previousProject}" with "${collection.name}" on dock item #${subjectId}`
+        : `Set project "${collection.name}" on dock item #${subjectId}`,
     }
   }
 
@@ -2236,9 +2274,17 @@ async function executeApplyChangeInTxn(
       .equals(userId)
       .and((n) => n.documentId === subjectId)
       .toArray()
-    const sourceNode = dockMindNodes[0]
+    let sourceNode = dockMindNodes[0]
+    let createdSource = false
     if (!sourceNode) {
-      throw new Error(`No mind node linked to dock item #${subjectId}. Apply mindNode recommendation is unsupported without an existing mind node.`)
+      sourceNode = await upsertMindNode({
+        userId,
+        nodeType: 'document',
+        label: dockItem.topic || dockItem.rawText?.slice(0, 40) || `Dock Item #${subjectId}`,
+        documentId: subjectId,
+        state: 'drifting',
+      })
+      createdSource = true
     }
     const edgeId = makeMindEdgeId(userId, sourceNode.id, targetNode.id, 'suggested')
     const existingEdge = await mindEdgesTable.get(edgeId)
@@ -2260,7 +2306,9 @@ async function executeApplyChangeInTxn(
       candidateType: 'mindNode',
       candidateId,
       changeType: 'create_edge',
-      changeDetail: `Created edge from "${sourceNode.label}" to "${targetNode.label}"`,
+      changeDetail: createdSource
+        ? `Created mind node "${sourceNode.label}" and linked to "${targetNode.label}"`
+        : `Created edge from "${sourceNode.label}" to "${targetNode.label}"`,
     }
   }
 
@@ -2277,6 +2325,7 @@ const RECOMMENDATION_DOCK_QUEUE_STATUSES: RecommendationStatus[] = [
   'rejected',
   'modified',
   'ignored',
+  'superseded',
 ]
 const RECOMMENDATION_DOCK_QUEUE_CANDIDATE_TYPES: RecommendationCandidateType[] = [
   'tag',
@@ -2302,6 +2351,7 @@ const RECOMMENDATION_FEEDBACK_EVENT_TYPES: RecommendationEventType[] = [
   'recommendation_rejected',
   'recommendation_modified',
   'recommendation_ignored',
+  'recommendation_superseded',
 ]
 
 function validateRecommendationDockQueueQuery(query: RecommendationDockQueueQuery): void {
@@ -2501,7 +2551,7 @@ function parseRecommendationReasonJson(reasonJson: string | null): Record<string
 }
 
 function isRecommendationFeedbackStatus(status: RecommendationStatus): boolean {
-  return status === 'accepted' || status === 'rejected' || status === 'modified' || status === 'ignored'
+  return status === 'accepted' || status === 'rejected' || status === 'modified' || status === 'ignored' || status === 'superseded'
 }
 
 function compareRecommendationDockQueueItems(
@@ -2717,11 +2767,63 @@ export async function generateRecommendationsForContext(input: {
     recommendationsTable,
     recommendationEventsTable,
     async () => {
+      const existingPending = await recommendationsTable
+        .where('userId')
+        .equals(input.userId)
+        .and((rec) =>
+          isRecommendationPendingStatus(rec.status) &&
+          rec.subjectType === input.subjectType &&
+          String(rec.subjectId) === String(input.subjectId),
+        )
+        .toArray()
+
+      for (const pending of existingPending) {
+        await recommendationsTable.update(pending.id, {
+          status: 'superseded',
+          updatedAt: new Date(),
+        })
+        await recordRecommendationEvent({
+          recommendationId: pending.id,
+          userId: input.userId,
+          eventType: 'recommendation_superseded',
+          metadata: {
+            source: 'recommendation_regeneration',
+            reason: 'Superseded by new generation round',
+            subjectType: input.subjectType,
+            subjectId: input.subjectId,
+          },
+        })
+      }
+
       const batchRecommendations: PersistedRecommendation[] = []
       const batchEvents: PersistedRecommendationEvent[] = []
+      const seenDedupeKeys = new Set<string>()
 
       for (const scoredCandidate of scoredCandidates) {
         const candidate = scoredCandidate.candidate
+        const dedupeKey = makeRecommendationDedupeKey(
+          input.subjectType,
+          input.subjectId,
+          candidate.candidateType,
+          candidate.candidateId,
+        )
+        if (seenDedupeKeys.has(dedupeKey)) continue
+        seenDedupeKeys.add(dedupeKey)
+
+        const existingActive = await recommendationsTable
+          .where('userId')
+          .equals(input.userId)
+          .and((rec) =>
+            isRecommendationPendingStatus(rec.status) &&
+            rec.subjectType === input.subjectType &&
+            String(rec.subjectId) === String(input.subjectId) &&
+            rec.candidateType === candidate.candidateType &&
+            rec.candidateId === candidate.candidateId,
+          )
+          .count()
+
+        if (existingActive > 0) continue
+
         const recommendation = await createRecommendation({
           userId: input.userId,
           subjectType: input.subjectType,
@@ -2972,6 +3074,49 @@ export async function recordRecommendationFeedback(
   }
   if (input.feedbackPayload) {
     metadata.feedbackPayload = input.feedbackPayload
+  }
+
+  const preCheck = await recommendationsTable.get(input.recommendationId)
+  if (!preCheck) {
+    throw new Error(`Recommendation not found: ${input.recommendationId}`)
+  }
+  if (preCheck.userId !== input.userId) {
+    throw new Error(`User ${input.userId} does not own recommendation ${input.recommendationId}`)
+  }
+  if (preCheck.status === 'accepted' && input.feedbackType !== 'accepted') {
+    throw new Error(`Cannot ${input.feedbackType} an already accepted recommendation`)
+  }
+  if (preCheck.status === 'accepted' && input.feedbackType === 'accepted') {
+    return {
+      recommendation: {
+        id: preCheck.id,
+        status: preCheck.status as RecommendationStatus,
+        updatedAt: preCheck.updatedAt,
+      },
+      feedbackEvent: {
+        id: '',
+        eventType: 'recommendation_accepted' as RecommendationEventType,
+        recommendationId: preCheck.id,
+      },
+    }
+  }
+  if ((preCheck.status === 'rejected' || preCheck.status === 'superseded') && input.feedbackType === 'accepted') {
+    throw new Error(
+      `Cannot accept a ${preCheck.status} recommendation. ` +
+      `Rejected or superseded recommendations cannot be re-accepted in the same generation round.`,
+    )
+  }
+  if (preCheck.status === 'ignored' && input.feedbackType === 'accepted') {
+    throw new Error(
+      `Cannot accept an ignored recommendation. ` +
+      `Ignored means this round was skipped; generate new recommendations instead.`,
+    )
+  }
+  if (input.feedbackType === 'accepted' && !isSupportedCandidateTypeForApply(preCheck.candidateType)) {
+    throw new Error(
+      `Cannot accept recommendation: candidateType "${preCheck.candidateType}" is not supported for automatic apply. ` +
+      `Only tag, project, and mindNode recommendations can be accepted.`,
+    )
   }
 
   const { persisted, recEvent } = await db.transaction(

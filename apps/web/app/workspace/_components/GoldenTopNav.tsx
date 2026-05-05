@@ -423,13 +423,13 @@ const GoldenTopNav: FC<GoldenTopNavProps> = ({
             accent: 'text-[var(--accent)]',
             muted: 'text-[var(--text-muted)]',
           }
-          const showSectionDivider = idx > 0 && suggestion.section && SEARCH_SUGGESTIONS[idx - 1].section !== suggestion.section
+          const showSectionDivider = idx > 0 && suggestion.section && effectiveSearchSuggestions[idx - 1]?.section !== suggestion.section
           return (
             <div key={suggestion.id}>
               {showSectionDivider && (
                 <div className="my-1 border-t border-[var(--border-line)]" />
               )}
-              {suggestion.section && (!SEARCH_SUGGESTIONS[idx - 1]?.section || SEARCH_SUGGESTIONS[idx - 1].section !== suggestion.section) && (
+              {suggestion.section && (!effectiveSearchSuggestions[idx - 1]?.section || effectiveSearchSuggestions[idx - 1].section !== suggestion.section) && (
                 <div className="px-3 py-2 text-[10px] font-bold tracking-wider text-[var(--text-muted)] uppercase">{suggestion.section}</div>
               )}
               <button onClick={() => { setIsSearchMode(false); if (onSearchAction) { onSearchAction(suggestion.label) } else { onToast?.(`Search: ${suggestion.label}`) } }} className="flex w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-white transition-colors hover:bg-white/10">

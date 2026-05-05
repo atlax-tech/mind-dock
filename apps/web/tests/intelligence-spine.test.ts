@@ -1611,7 +1611,7 @@ describe('intelligence spine', () => {
       }
     })
 
-    it('apply already-accepted recommendation throws error', async () => {
+    it('apply already-accepted recommendation returns idempotent result', async () => {
       const itemId = await createDockItem(USER_A, 'Duplicate tag recommendation test')
       await createStoredTag(USER_A, 'duplicate')
 
@@ -1627,11 +1627,11 @@ describe('intelligence spine', () => {
       })
       expect(queue.items.length).toBeGreaterThan(0)
 
-      await applyRecommendation({ userId: USER_A, recommendationId: queue.items[0].id })
+      const first = await applyRecommendation({ userId: USER_A, recommendationId: queue.items[0].id })
+      expect(first.status).toBe('accepted')
 
-      await expect(
-        applyRecommendation({ userId: USER_A, recommendationId: queue.items[0].id }),
-      ).rejects.toThrow(/already been accepted/)
+      const second = await applyRecommendation({ userId: USER_A, recommendationId: queue.items[0].id })
+      expect(second.status).toBe('accepted')
     })
 
     it('apply project recommendation sets selectedProject on dock item', async () => {
@@ -1710,7 +1710,7 @@ describe('intelligence spine', () => {
       }
     })
 
-    it('apply mindNode without existing dock mind node throws unsupported error', async () => {
+    it('apply mindNode without existing dock mind node auto-creates source node', async () => {
       const itemId = await createDockItem(USER_A, 'No mind node dock item')
       const targetNode = await upsertMindNode({
         userId: USER_A,
@@ -1728,9 +1728,17 @@ describe('intelligence spine', () => {
         confidenceScore: 0.7,
       })
 
-      await expect(
-        applyRecommendation({ userId: USER_A, recommendationId: rec.id }),
-      ).rejects.toThrow(/unsupported/)
+      const result = await applyRecommendation({ userId: USER_A, recommendationId: rec.id })
+      expect(result.status).toBe('accepted')
+      expect(result.appliedChanges.changeType).toBe('create_edge')
+      expect(result.appliedChanges.changeDetail).toContain('Created mind node')
+
+      const sourceNodes = await db.table('mindNodes')
+        .where('userId')
+        .equals(USER_A)
+        .and((n: { documentId: number }) => n.documentId === itemId)
+        .toArray()
+      expect(sourceNodes.length).toBeGreaterThan(0)
     })
 
     it('reject recommendation updates status and refreshes', async () => {

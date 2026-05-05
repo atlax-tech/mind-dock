@@ -1,49 +1,35 @@
 'use client'
 
 import React, { useState, useEffect, useCallback, useRef } from 'react'
-import { Lightbulb, Loader2, Check, X, EyeOff, ChevronDown, ChevronUp, Sparkles } from 'lucide-react'
+import { Lightbulb, Loader2, Check, X, EyeOff, ChevronDown, ChevronUp, Sparkles, AlertTriangle } from 'lucide-react'
 import {
   listRecommendationDockQueue,
   markRecommendationDockQueueItemShown,
   recordRecommendationDockQueueItemFeedback,
   type RecommendationDockQueueItem,
 } from '@/lib/repository'
+import {
+  describeRecommendationAction,
+  describeRecommendationReason,
+  describeApplyPreview,
+  describeApplyResult,
+  formatConfidenceLevel,
+  isSupportedCandidateType,
+  isRecommendationResolved,
+  isRecommendationPending,
+  STATUS_LABELS,
+  CANDIDATE_TYPE_LABELS,
+} from '@/lib/recommendation-i18n'
 
 interface RecommendationDockProps {
   userId: string
   refreshKey?: number
-  onApplyRecommendation?: (recommendationId: string) => Promise<void>
+  onApplyRecommendation?: (recommendationId: string) => Promise<string | void>
   onToast?: (msg: string) => void
 }
 
-const STATUS_LABELS: Record<string, { label: string; color: string }> = {
-  generated: { label: '待查看', color: 'text-yellow-400' },
-  shown: { label: '已查看', color: 'text-blue-400' },
-  accepted: { label: '已接受', color: 'text-emerald-400' },
-  rejected: { label: '已拒绝', color: 'text-red-400' },
-  modified: { label: '已调整', color: 'text-purple-400' },
-  ignored: { label: '已忽略', color: 'text-gray-500' },
-}
-
-const FEEDBACK_BUTTONS: { type: 'accepted' | 'rejected' | 'ignored'; label: string; icon: React.ReactNode; activeClass: string }[] = [
-  { type: 'accepted', label: '接受', icon: <Check size={14} />, activeClass: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' },
-  { type: 'rejected', label: '拒绝', icon: <X size={14} />, activeClass: 'text-red-400 bg-red-500/10 border-red-500/20' },
-  { type: 'ignored', label: '忽略', icon: <EyeOff size={14} />, activeClass: 'text-gray-400 bg-gray-500/10 border-gray-500/20' },
-]
-
 function formatConfidence(score: number): string {
   return `${Math.round(score * 100)}%`
-}
-
-function describeAction(item: RecommendationDockQueueItem): string {
-  const candidateId = item.candidateId
-  const shortId = candidateId.length > 30 ? candidateId.slice(0, 30) + '…' : candidateId
-  switch (item.recommendationType) {
-    case 'tag_suggestion': return `建议添加标签: #${shortId}`
-    case 'project_suggestion': return `建议关联项目: ${shortId}`
-    case 'mindNode_suggestion': return `建议关联知识节点: ${shortId}`
-    default: return `${item.recommendationType.replace(/_/g, ' ')}: ${shortId}`
-  }
 }
 
 export default function RecommendationDock({ userId, refreshKey, onApplyRecommendation, onToast }: RecommendationDockProps) {
@@ -52,6 +38,7 @@ export default function RecommendationDock({ userId, refreshKey, onApplyRecommen
   const [error, setError] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [appliedResults, setAppliedResults] = useState<Record<string, string>>({})
   const shownMarkedRef = useRef<Set<string>>(new Set())
 
   const loadQueue = useCallback(async () => {
@@ -93,30 +80,52 @@ export default function RecommendationDock({ userId, refreshKey, onApplyRecommen
     try {
       if (feedbackType === 'accepted' && onApplyRecommendation) {
         try {
-          await onApplyRecommendation(itemId)
-          onToast?.('建议已应用，标签/项目/图谱已更新')
+          const result = await onApplyRecommendation(itemId)
+          if (!result) {
+            onToast?.('建议应用失败: 未返回应用结果')
+            setActionLoading(null)
+            return
+          }
+          const item = items.find((i) => i.id === itemId)
+          const summary = typeof result === 'string' && result
+            ? result
+            : item
+              ? describeApplyResult(item.candidateType, item.candidateId)
+              : '建议已应用'
+          setAppliedResults((prev) => ({ ...prev, [itemId]: summary }))
+          onToast?.(summary)
+          setItems((prev) =>
+            prev.map((i) =>
+              i.id === itemId
+                ? { ...i, status: 'accepted', hasFeedback: true, isShown: true }
+                : i,
+            ),
+          )
         } catch (e) {
           onToast?.(`建议应用失败: ${e instanceof Error ? e.message : '未知错误'}`)
+          setActionLoading(null)
+          return
         }
+      } else {
+        await recordRecommendationDockQueueItemFeedback({
+          userId,
+          recommendationId: itemId,
+          feedbackType,
+        })
+        setItems((prev) =>
+          prev.map((i) =>
+            i.id === itemId
+              ? { ...i, status: feedbackType, hasFeedback: true, isShown: true }
+              : i,
+          ),
+        )
       }
-      await recordRecommendationDockQueueItemFeedback({
-        userId,
-        recommendationId: itemId,
-        feedbackType,
-      })
-      setItems((prev) =>
-        prev.map((i) =>
-          i.id === itemId
-            ? { ...i, status: feedbackType, hasFeedback: true, isShown: true }
-            : i,
-        ),
-      )
     } catch (e) {
       setError(e instanceof Error ? e.message : '反馈操作失败')
     } finally {
       setActionLoading(null)
     }
-  }, [userId, actionLoading, onApplyRecommendation, onToast])
+  }, [userId, actionLoading, onApplyRecommendation, onToast, items])
 
   const toggleExpand = useCallback((id: string) => {
     setExpandedId((prev) => (prev === id ? null : id))
@@ -169,7 +178,7 @@ export default function RecommendationDock({ userId, refreshKey, onApplyRecommen
     )
   }
 
-  const pendingItems = items.filter((i) => i.status === 'generated' || i.status === 'shown')
+  const pendingItems = items.filter((i) => isRecommendationPending(i.status))
 
   return (
     <div className="mt-24 w-full max-w-4xl">
@@ -191,8 +200,19 @@ export default function RecommendationDock({ userId, refreshKey, onApplyRecommen
         {items.map((item) => {
           const isExpanded = expandedId === item.id
           const isBusy = actionLoading === item.id
-          const statusConfig = STATUS_LABELS[item.status] ?? STATUS_LABELS.generated
-          const isResolved = item.status === 'accepted' || item.status === 'rejected' || item.status === 'ignored'
+          const statusConfig = STATUS_LABELS[item.status as keyof typeof STATUS_LABELS] ?? STATUS_LABELS.generated
+          const isResolved = isRecommendationResolved(item.status)
+          const isUnsupported = !isSupportedCandidateType(item.candidateType)
+          const appliedSummary = appliedResults[item.id]
+          const actionText = describeRecommendationAction(item.candidateType, item.candidateId)
+          const reasonText = describeRecommendationReason(
+            item.candidateType,
+            item.reasonSummary,
+            item.evidenceSummary,
+          )
+          const previewText = describeApplyPreview(item.candidateType, item.candidateId)
+          const confidenceLevel = formatConfidenceLevel(item.confidenceScore)
+          const typeLabel = CANDIDATE_TYPE_LABELS[item.candidateType] ?? item.candidateType
 
           return (
             <div
@@ -210,10 +230,14 @@ export default function RecommendationDock({ userId, refreshKey, onApplyRecommen
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center border ${
                   isResolved
                     ? 'bg-white/[0.02] border-white/[0.04]'
+                    : isUnsupported
+                    ? 'bg-yellow-500/10 border-yellow-500/20'
                     : 'bg-[var(--accent)]/10 border-[var(--accent)]/20'
                 }`}>
                   {isResolved ? (
                     <Lightbulb size={14} className="text-slate-500" />
+                  ) : isUnsupported ? (
+                    <AlertTriangle size={14} className="text-yellow-400" />
                   ) : (
                     <Sparkles size={14} className="text-[var(--accent)]" />
                   )}
@@ -222,19 +246,24 @@ export default function RecommendationDock({ userId, refreshKey, onApplyRecommen
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-0.5">
                     <span className="text-[13px] text-white/80 font-light truncate">
-                      {item.recommendationType.replace(/_/g, ' ')}
+                      {actionText}
                     </span>
                     <span className={`text-[9px] font-medium ${statusConfig.color}`}>
                       {statusConfig.label}
                     </span>
+                    {isUnsupported && !isResolved && (
+                      <span className="text-[9px] font-medium text-yellow-400/80">
+                        暂不支持自动应用
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="text-[10px] text-[var(--accent)]/80 font-light">
-                      {describeAction(item)}
+                      {typeLabel}建议
                     </span>
                     <div className="h-2 w-px bg-white/5" />
                     <span className="text-[10px] text-slate-500">
-                      {item.reasonSummary.reason}
+                      {reasonText}
                     </span>
                   </div>
                 </div>
@@ -244,9 +273,7 @@ export default function RecommendationDock({ userId, refreshKey, onApplyRecommen
                     <div className={`text-sm font-medium ${isResolved ? 'text-slate-600' : 'text-[var(--accent)]'}`}>
                       {formatConfidence(item.confidenceScore)}
                     </div>
-                    {item.scoreSummary.rank != null && (
-                      <div className="text-[9px] text-slate-600">Rank #{item.scoreSummary.rank}</div>
-                    )}
+                    <div className="text-[9px] text-slate-600">可信度: {confidenceLevel}</div>
                   </div>
                   {isExpanded ? (
                     <ChevronUp size={14} className="text-slate-500" />
@@ -260,81 +287,164 @@ export default function RecommendationDock({ userId, refreshKey, onApplyRecommen
                 <div className="px-5 pb-5 border-t border-white/[0.04]">
                   <div className="pt-4 space-y-3">
                     <div className="flex flex-col gap-1">
-                      <span className="text-[9px] text-slate-500 font-semibold tracking-wider uppercase">Score Summary</span>
-                      <div className="text-[11px] text-slate-400 bg-white/[0.02] border border-white/[0.04] rounded-lg px-3 py-2">
-                        Score: {item.scoreSummary.score} · Confidence: {item.confidenceScore}
-                        {item.scoreSummary.scoreReason && (
-                          <span className="block mt-1 text-slate-500">{item.scoreSummary.scoreReason}</span>
-                        )}
+                      <span className="text-[9px] text-slate-400 font-semibold tracking-wider uppercase">建议详情</span>
+                      <div className="text-[11px] text-slate-300 bg-white/[0.02] border border-white/[0.04] rounded-lg px-3 py-2 space-y-1">
+                        <div><span className="text-slate-500">建议操作：</span>{actionText}</div>
+                        <div><span className="text-slate-500">推荐原因：</span>{reasonText}</div>
+                        <div><span className="text-slate-500">接受后：</span>{previewText}</div>
+                        <div><span className="text-slate-500">可信度：</span>{confidenceLevel}（{formatConfidence(item.confidenceScore)}）</div>
                       </div>
                     </div>
 
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[9px] text-slate-500 font-semibold tracking-wider uppercase">Evidence</span>
-                      <div className="text-[11px] text-slate-400 bg-white/[0.02] border border-white/[0.04] rounded-lg px-3 py-2">
-                        <span>{item.evidenceSummary.evidenceCount} 条证据</span>
-                        {item.evidenceSummary.evidenceTypes.length > 0 && (
-                          <span className="ml-2 text-slate-500">
-                            ({item.evidenceSummary.evidenceTypes.join(', ')})
+                    {appliedSummary && (
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[9px] text-emerald-400 font-semibold tracking-wider uppercase">应用结果</span>
+                        <div className="text-[11px] text-emerald-300 bg-emerald-500/[0.05] border border-emerald-500/10 rounded-lg px-3 py-2">
+                          {appliedSummary}
+                        </div>
+                      </div>
+                    )}
+
+                    <details className="group">
+                      <summary className="text-[9px] text-slate-600 font-semibold tracking-wider uppercase cursor-pointer hover:text-slate-400 transition-colors">
+                        算法详情（调试用）
+                      </summary>
+                      <div className="mt-2 space-y-2">
+                        <div className="text-[11px] text-slate-500 bg-white/[0.01] border border-white/[0.03] rounded-lg px-3 py-2">
+                          Score: {item.scoreSummary.score} · Confidence: {item.confidenceScore}
+                          {item.scoreSummary.scoreReason && (
+                            <span className="block mt-1 text-slate-600">{item.scoreSummary.scoreReason}</span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-500 bg-white/[0.01] border border-white/[0.03] rounded-lg px-3 py-2">
+                          <span>{item.evidenceSummary.evidenceCount} 条证据</span>
+                          {item.evidenceSummary.evidenceTypes.length > 0 && (
+                            <span className="ml-2 text-slate-600">
+                              ({item.evidenceSummary.evidenceTypes.join(', ')})
+                            </span>
+                          )}
+                          {item.evidenceSummary.matchedValues.length > 0 && (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {item.evidenceSummary.matchedValues.map((v, idx) => (
+                                <span key={idx} className="px-1.5 py-0.5 bg-white/[0.02] border border-white/[0.03] rounded text-[10px] text-slate-600">
+                                  {v}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border ${
+                            item.status === 'generated'
+                              ? 'bg-yellow-500/5 text-yellow-400 border-yellow-500/10'
+                              : item.status === 'shown'
+                              ? 'bg-blue-500/5 text-blue-400 border-blue-500/10'
+                              : item.status === 'accepted'
+                              ? 'bg-emerald-500/5 text-emerald-400 border-emerald-500/10'
+                              : item.status === 'rejected'
+                              ? 'bg-red-500/5 text-red-400 border-red-500/10'
+                              : 'bg-gray-500/5 text-gray-400 border-gray-500/10'
+                          }`}>
+                            {statusConfig.label}
                           </span>
-                        )}
-                        {item.evidenceSummary.matchedValues.length > 0 && (
-                          <div className="mt-1 flex flex-wrap gap-1">
-                            {item.evidenceSummary.matchedValues.map((v, idx) => (
-                              <span key={idx} className="px-1.5 py-0.5 bg-white/[0.03] border border-white/[0.04] rounded text-[10px] text-slate-500">
-                                {v}
-                              </span>
-                            ))}
-                          </div>
-                        )}
+                          {item.isShown && (
+                            <span className="text-[9px] text-slate-600">已曝光</span>
+                          )}
+                          {item.hasFeedback && (
+                            <span className="text-[9px] text-slate-600">已反馈</span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[9px] text-slate-500 font-semibold tracking-wider uppercase">Status</span>
-                      <div className="flex items-center gap-2">
-                        <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border ${
-                          item.status === 'generated'
-                            ? 'bg-yellow-500/5 text-yellow-400 border-yellow-500/10'
-                            : item.status === 'shown'
-                            ? 'bg-blue-500/5 text-blue-400 border-blue-500/10'
-                            : item.status === 'accepted'
-                            ? 'bg-emerald-500/5 text-emerald-400 border-emerald-500/10'
-                            : item.status === 'rejected'
-                            ? 'bg-red-500/5 text-red-400 border-red-500/10'
-                            : 'bg-gray-500/5 text-gray-400 border-gray-500/10'
-                        }`}>
-                          {statusConfig.label}
-                        </span>
-                        {item.isShown && (
-                          <span className="text-[9px] text-slate-600">已曝光</span>
-                        )}
-                        {item.hasFeedback && (
-                          <span className="text-[9px] text-slate-600">已反馈</span>
-                        )}
-                      </div>
-                    </div>
+                    </details>
 
                     {!isResolved && (
                       <div className="flex gap-2 pt-3 border-t border-white/[0.04]">
-                        {FEEDBACK_BUTTONS.map((btn) => (
-                          <button
-                            key={btn.type}
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              handleFeedback(item.id, btn.type)
-                            }}
-                            disabled={isBusy}
-                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium border transition-all ${
-                              isBusy
-                                ? 'opacity-30 cursor-not-allowed'
-                                : 'bg-white/[0.02] border-white/[0.06] text-slate-400 hover:text-white hover:border-white/[0.15] hover:bg-white/[0.05]'
-                            }`}
-                          >
-                            {isBusy ? <Loader2 size={12} className="animate-spin" /> : btn.icon}
-                            {isBusy ? '处理中' : btn.label}
-                          </button>
-                        ))}
+                        {isUnsupported ? (
+                          <>
+                            <span className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-yellow-400/80">
+                              <AlertTriangle size={12} />
+                              暂不支持自动应用
+                            </span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleFeedback(item.id, 'ignored')
+                              }}
+                              disabled={isBusy}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium border transition-all ${
+                                isBusy
+                                  ? 'opacity-30 cursor-not-allowed'
+                                  : 'bg-white/[0.02] border-white/[0.06] text-slate-400 hover:text-white hover:border-white/[0.15] hover:bg-white/[0.05]'
+                              }`}
+                            >
+                              {isBusy ? <Loader2 size={12} className="animate-spin" /> : <EyeOff size={14} />}
+                              {isBusy ? '处理中' : '忽略'}
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleFeedback(item.id, 'rejected')
+                              }}
+                              disabled={isBusy}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium border transition-all ${
+                                isBusy
+                                  ? 'opacity-30 cursor-not-allowed'
+                                  : 'bg-white/[0.02] border-white/[0.06] text-slate-400 hover:text-white hover:border-white/[0.15] hover:bg-white/[0.05]'
+                              }`}
+                            >
+                              {isBusy ? <Loader2 size={12} className="animate-spin" /> : <X size={14} />}
+                              {isBusy ? '处理中' : '不再推荐'}
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleFeedback(item.id, 'accepted')
+                              }}
+                              disabled={isBusy}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium border transition-all ${
+                                isBusy
+                                  ? 'opacity-30 cursor-not-allowed'
+                                  : 'bg-emerald-500/[0.05] border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/10'
+                              }`}
+                            >
+                              {isBusy ? <Loader2 size={12} className="animate-spin" /> : <Check size={14} />}
+                              {isBusy ? '处理中' : '接受'}
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleFeedback(item.id, 'rejected')
+                              }}
+                              disabled={isBusy}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium border transition-all ${
+                                isBusy
+                                  ? 'opacity-30 cursor-not-allowed'
+                                  : 'bg-white/[0.02] border-white/[0.06] text-slate-400 hover:text-white hover:border-white/[0.15] hover:bg-white/[0.05]'
+                              }`}
+                            >
+                              {isBusy ? <Loader2 size={12} className="animate-spin" /> : <X size={14} />}
+                              {isBusy ? '处理中' : '拒绝'}
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleFeedback(item.id, 'ignored')
+                              }}
+                              disabled={isBusy}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium border transition-all ${
+                                isBusy
+                                  ? 'opacity-30 cursor-not-allowed'
+                                  : 'bg-white/[0.02] border-white/[0.06] text-slate-400 hover:text-white hover:border-white/[0.15] hover:bg-white/[0.05]'
+                              }`}
+                            >
+                              {isBusy ? <Loader2 size={12} className="animate-spin" /> : <EyeOff size={14} />}
+                              {isBusy ? '处理中' : '跳过'}
+                            </button>
+                          </>
+                        )}
                       </div>
                     )}
                   </div>
