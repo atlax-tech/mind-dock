@@ -10,6 +10,7 @@ import {
   archiveItem,
   createDockItem,
   deleteEditorDraft,
+  generateRecommendationsForContext,
   getOrCreateTag,
   listDockItems,
   listMindNodes,
@@ -411,6 +412,13 @@ export default function WorkspacePage() {
     try {
       await suggestItem(userId, itemId)
       refreshAll()
+      generateRecommendationsForContext({
+        userId,
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      }).catch((err) => {
+        console.error('[Recommendation] generateRecommendationsForContext failed:', err)
+      })
     } catch (e) {
       setError(e instanceof Error ? e.message : '建议生成失败')
     }
