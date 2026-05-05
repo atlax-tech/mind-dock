@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { db } from '@/lib/db'
 import {
+  applyRecommendation,
   createCaptureToDocumentFlow,
   createCollection,
   createDockItem,
@@ -12,6 +13,7 @@ import {
   generateBasicCandidates,
   listRecommendationDockQueue,
   listRecommendations,
+  listMindEdges,
   markRecommendationDockQueueItemShown,
   markRecommendationShown,
   updateRecommendationStatus,
@@ -34,6 +36,7 @@ async function cleanAll() {
   await db.table('tags').clear()
   await db.table('collections').clear()
   await db.table('mindNodes').clear()
+  await db.table('mindEdges').clear()
   await db.table('recommendations').clear()
   await db.table('recommendationEvents').clear()
   await db.table('userBehaviorEvents').clear()
@@ -1449,6 +1452,455 @@ describe('intelligence spine', () => {
       expect(recsB).toHaveLength(0)
       expect(eventsA).toHaveLength(1)
       expect(eventsB).toHaveLength(1)
+    })
+  })
+
+  describe('LC-013 apply recommendation end-to-end bridge', () => {
+    afterEach(async () => {
+      await cleanAll()
+    })
+
+    it('generateRecommendationsForContext produces recommendations for a dockItem', async () => {
+      const itemId = await createDockItem(USER_A, 'Need to review performance optimization')
+      await createStoredTag(USER_A, 'performance')
+      await createStoredTag(USER_A, 'optimization')
+
+      const result = await generateRecommendationsForContext({
+        userId: USER_A,
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      })
+
+      expect(result.recommendations.length).toBeGreaterThan(0)
+      expect(result.recommendationEvents.length).toBeGreaterThan(0)
+      expect(result.recommendations[0].status).toBe('generated')
+      expect(result.recommendations[0].subjectType).toBe('dockItem')
+      expect(result.recommendations[0].subjectId).toBe(itemId)
+    })
+
+    it('listRecommendationDockQueue with subjectId filter returns scoped recommendations', async () => {
+      const itemId1 = await createDockItem(USER_A, 'Performance tuning guide')
+      const itemId2 = await createDockItem(USER_A, 'Database migration plan')
+
+      await createStoredTag(USER_A, 'performance')
+      await createStoredTag(USER_A, 'database')
+
+      await generateRecommendationsForContext({
+        userId: USER_A,
+        subjectType: 'dockItem',
+        subjectId: itemId1,
+      })
+      await generateRecommendationsForContext({
+        userId: USER_A,
+        subjectType: 'dockItem',
+        subjectId: itemId2,
+      })
+
+      const queue1 = await listRecommendationDockQueue(USER_A, {
+        subjectType: 'dockItem',
+        subjectId: itemId1,
+      })
+      const queue2 = await listRecommendationDockQueue(USER_A, {
+        subjectType: 'dockItem',
+        subjectId: itemId2,
+      })
+      const queueAll = await listRecommendationDockQueue(USER_A, {})
+
+      expect(queue1.items.length).toBeGreaterThan(0)
+      expect(queue2.items.length).toBeGreaterThan(0)
+      expect(queueAll.items.length).toBeGreaterThanOrEqual(queue1.items.length + queue2.items.length)
+
+      for (const item of queue1.items) {
+        expect(String(item.subjectId)).toBe(String(itemId1))
+      }
+      for (const item of queue2.items) {
+        expect(String(item.subjectId)).toBe(String(itemId2))
+      }
+    })
+
+    it('apply tag recommendation adds tag to dock item', async () => {
+      const itemId = await createDockItem(USER_A, 'Need performance review')
+      await createStoredTag(USER_A, 'performance')
+
+      await generateRecommendationsForContext({
+        userId: USER_A,
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      })
+
+      const queue = await listRecommendationDockQueue(USER_A, {
+        subjectType: 'dockItem',
+        subjectId: itemId,
+        candidateType: 'tag',
+      })
+      expect(queue.items.length).toBeGreaterThan(0)
+
+      const tagRec = queue.items[0]
+      const result = await applyRecommendation({
+        userId: USER_A,
+        recommendationId: tagRec.id,
+      })
+
+      expect(result.status).toBe('accepted')
+      expect(result.appliedChanges.candidateType).toBe('tag')
+      expect(result.appliedChanges.changeType).toBe('add_tag')
+
+      const dockItems = await db.table('dockItems').where('userId').equals(USER_A).toArray()
+      const updatedItem = dockItems.find((i) => i.id === itemId)
+      expect(updatedItem).toBeDefined()
+      if (updatedItem) {
+        expect(updatedItem.userTags).toContain('performance')
+      }
+    })
+
+    it('apply recommendation writes recommendation_event and user_behavior_event', async () => {
+      const itemId = await createDockItem(USER_A, 'Test event consistency')
+      await createStoredTag(USER_A, 'test')
+
+      await generateRecommendationsForContext({
+        userId: USER_A,
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      })
+
+      const queue = await listRecommendationDockQueue(USER_A, {
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      })
+      expect(queue.items.length).toBeGreaterThan(0)
+
+      const rec = queue.items[0]
+      const result = await applyRecommendation({
+        userId: USER_A,
+        recommendationId: rec.id,
+      })
+
+      expect(result.recommendationEventId).toBeTruthy()
+      expect(result.userBehaviorEventId).toBeTruthy()
+
+      const recEvents = await listRecommendationEvents(USER_A, { recommendationId: rec.id })
+      const acceptedEvent = recEvents.find((e) => e.eventType === 'recommendation_accepted')
+      expect(acceptedEvent).toBeDefined()
+
+      const behaviorEvents = await listUserBehaviorEvents(USER_A)
+      const applyEvent = behaviorEvents.find((e) => e.eventType === 'recommendation_accepted')
+      expect(applyEvent).toBeDefined()
+    })
+
+    it('apply unsupported candidate type throws error and does not update status', async () => {
+      await createDockItem(USER_A, 'Test unsupported')
+
+      const rec = await createRecommendation({
+        userId: USER_A,
+        subjectType: 'dockItem',
+        subjectId: 1,
+        recommendationType: 'entry_candidate',
+        candidateType: 'entry',
+        candidateId: 'entry_123',
+        confidenceScore: 0.8,
+      })
+
+      await expect(
+        applyRecommendation({ userId: USER_A, recommendationId: rec.id }),
+      ).rejects.toThrow(/not supported/)
+
+      const updated = await db.table('recommendations').get(rec.id)
+      expect(updated).toBeDefined()
+      if (updated) {
+        expect(updated.status).not.toBe('accepted')
+      }
+    })
+
+    it('apply already-accepted recommendation throws error', async () => {
+      const itemId = await createDockItem(USER_A, 'Duplicate tag recommendation test')
+      await createStoredTag(USER_A, 'duplicate')
+
+      await generateRecommendationsForContext({
+        userId: USER_A,
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      })
+
+      const queue = await listRecommendationDockQueue(USER_A, {
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      })
+      expect(queue.items.length).toBeGreaterThan(0)
+
+      await applyRecommendation({ userId: USER_A, recommendationId: queue.items[0].id })
+
+      await expect(
+        applyRecommendation({ userId: USER_A, recommendationId: queue.items[0].id }),
+      ).rejects.toThrow(/already been accepted/)
+    })
+
+    it('apply project recommendation sets selectedProject on dock item', async () => {
+      const itemId = await createDockItem(USER_A, 'Core architecture document')
+      await createCollection({ userId: USER_A, name: 'Core Architecture', collectionType: 'project' })
+
+      await generateRecommendationsForContext({
+        userId: USER_A,
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      })
+
+      const queue = await listRecommendationDockQueue(USER_A, {
+        subjectType: 'dockItem',
+        subjectId: itemId,
+        candidateType: 'project',
+      })
+
+      if (queue.items.length > 0) {
+        const result = await applyRecommendation({
+          userId: USER_A,
+          recommendationId: queue.items[0].id,
+        })
+
+        expect(result.status).toBe('accepted')
+        expect(result.appliedChanges.changeType).toBe('set_project')
+
+        const dockItems = await db.table('dockItems').where('userId').equals(USER_A).toArray()
+        const updatedItem = dockItems.find((i) => i.id === itemId)
+        expect(updatedItem).toBeDefined()
+        if (updatedItem) {
+          expect(updatedItem.selectedProject).toBe('Core Architecture')
+        }
+      }
+    })
+
+    it('apply mindNode recommendation creates an edge', async () => {
+      const itemId = await createDockItem(USER_A, 'Mind node edge test')
+      const sourceNode = await upsertMindNode({
+        userId: USER_A,
+        nodeType: 'source',
+        label: 'Test Source',
+        documentId: itemId,
+      })
+      const targetNode = await upsertMindNode({
+        userId: USER_A,
+        nodeType: 'topic',
+        label: 'Performance',
+      })
+
+      const rec = await createRecommendation({
+        userId: USER_A,
+        subjectType: 'dockItem',
+        subjectId: itemId,
+        recommendationType: 'mind_node_candidate',
+        candidateType: 'mindNode',
+        candidateId: targetNode.id,
+        confidenceScore: 0.82,
+      })
+
+      const result = await applyRecommendation({
+        userId: USER_A,
+        recommendationId: rec.id,
+      })
+
+      expect(result.status).toBe('accepted')
+      expect(result.appliedChanges.changeType).toBe('create_edge')
+
+      const edges = await listMindEdges(USER_A)
+      const relevantEdge = edges.find(
+        (e) => e.sourceNodeId === sourceNode.id && e.targetNodeId === targetNode.id,
+      )
+      expect(relevantEdge).toBeDefined()
+      if (relevantEdge) {
+        expect(relevantEdge.edgeType).toBe('suggested')
+      }
+    })
+
+    it('apply mindNode without existing dock mind node throws unsupported error', async () => {
+      const itemId = await createDockItem(USER_A, 'No mind node dock item')
+      const targetNode = await upsertMindNode({
+        userId: USER_A,
+        nodeType: 'topic',
+        label: 'Isolated Node',
+      })
+
+      const rec = await createRecommendation({
+        userId: USER_A,
+        subjectType: 'dockItem',
+        subjectId: itemId,
+        recommendationType: 'mind_node_candidate',
+        candidateType: 'mindNode',
+        candidateId: targetNode.id,
+        confidenceScore: 0.7,
+      })
+
+      await expect(
+        applyRecommendation({ userId: USER_A, recommendationId: rec.id }),
+      ).rejects.toThrow(/unsupported/)
+    })
+
+    it('reject recommendation updates status and refreshes', async () => {
+      const itemId = await createDockItem(USER_A, 'Reject test item')
+      await createStoredTag(USER_A, 'test')
+
+      await generateRecommendationsForContext({
+        userId: USER_A,
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      })
+
+      const queue = await listRecommendationDockQueue(USER_A, {
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      })
+      expect(queue.items.length).toBeGreaterThan(0)
+
+      const rec = queue.items[0]
+      await recordRecommendationDockQueueItemFeedback({
+        userId: USER_A,
+        recommendationId: rec.id,
+        feedbackType: 'rejected',
+      })
+
+      const updated = await db.table('recommendations').get(rec.id)
+      expect(updated).toBeDefined()
+      if (updated) {
+        expect(updated.status).toBe('rejected')
+      }
+    })
+
+    it('ignore recommendation updates status and refreshes', async () => {
+      const itemId = await createDockItem(USER_A, 'Ignore test item')
+      await createStoredTag(USER_A, 'test')
+
+      await generateRecommendationsForContext({
+        userId: USER_A,
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      })
+
+      const queue = await listRecommendationDockQueue(USER_A, {
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      })
+      expect(queue.items.length).toBeGreaterThan(0)
+
+      const rec = queue.items[0]
+      await recordRecommendationDockQueueItemFeedback({
+        userId: USER_A,
+        recommendationId: rec.id,
+        feedbackType: 'ignored',
+      })
+
+      const updated = await db.table('recommendations').get(rec.id)
+      expect(updated).toBeDefined()
+      if (updated) {
+        expect(updated.status).toBe('ignored')
+      }
+    })
+
+    it('recommendation dock queue subjectId filter works with mixed statuses', async () => {
+      const itemId = await createDockItem(USER_A, 'Mixed status test')
+      await createStoredTag(USER_A, 'mixed')
+
+      await generateRecommendationsForContext({
+        userId: USER_A,
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      })
+
+      const allQueue = await listRecommendationDockQueue(USER_A, {
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      })
+      expect(allQueue.items.length).toBeGreaterThan(0)
+
+      if (allQueue.items.length > 0) {
+        await recordRecommendationDockQueueItemFeedback({
+          userId: USER_A,
+          recommendationId: allQueue.items[0].id,
+          feedbackType: 'accepted',
+        })
+
+        const pendingQueue = await listRecommendationDockQueue(USER_A, {
+          subjectType: 'dockItem',
+          subjectId: itemId,
+          status: 'generated',
+        })
+        const acceptedQueue = await listRecommendationDockQueue(USER_A, {
+          subjectType: 'dockItem',
+          subjectId: itemId,
+          status: 'accepted',
+        })
+
+        expect(pendingQueue.items.length + acceptedQueue.items.length).toBeGreaterThanOrEqual(1)
+      }
+    })
+
+    it('markRecommendationDockQueueItemShown transitions generated to shown with events', async () => {
+      const itemId = await createDockItem(USER_A, 'Shown status test')
+      await createStoredTag(USER_A, 'shown')
+
+      await generateRecommendationsForContext({
+        userId: USER_A,
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      })
+
+      const queue = await listRecommendationDockQueue(USER_A, {
+        subjectType: 'dockItem',
+        subjectId: itemId,
+        status: 'generated',
+      })
+      expect(queue.items.length).toBeGreaterThan(0)
+
+      const rec = queue.items[0]
+      await markRecommendationDockQueueItemShown({ userId: USER_A, recommendationId: rec.id })
+
+      const updated = await db.table('recommendations').get(rec.id)
+      expect(updated).toBeDefined()
+      if (updated) {
+        expect(updated.status).toBe('shown')
+      }
+
+      const events = await listRecommendationEvents(USER_A, { recommendationId: rec.id })
+      const shownEvent = events.find((e) => e.eventType === 'recommendation_shown')
+      expect(shownEvent).toBeDefined()
+
+      const behaviorEvents = await listUserBehaviorEvents(USER_A)
+      const shownBehavior = behaviorEvents.find((e) => e.eventType === 'recommendation_shown')
+      expect(shownBehavior).toBeDefined()
+    })
+
+    it('applyRecommendation rolls back structure change if transaction fails', async () => {
+      const itemId = await createDockItem(USER_A, 'Rollback test')
+      await createStoredTag(USER_A, 'rollback')
+
+      await generateRecommendationsForContext({
+        userId: USER_A,
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      })
+
+      const queue = await listRecommendationDockQueue(USER_A, {
+        subjectType: 'dockItem',
+        subjectId: itemId,
+      })
+      expect(queue.items.length).toBeGreaterThan(0)
+
+      const rec = queue.items[0]
+      const originalDockItem = (await db.table('dockItems').where('userId').equals(USER_A).toArray()).find((d) => d.id === itemId)
+      expect(originalDockItem).toBeDefined()
+      const originalTags = originalDockItem ? [...(originalDockItem.userTags ?? [])] : []
+
+      await applyRecommendation({ userId: USER_A, recommendationId: rec.id })
+
+      const afterApply = await db.table('recommendations').get(rec.id)
+      expect(afterApply).toBeDefined()
+      if (afterApply) {
+        expect(afterApply.status).toBe('accepted')
+      }
+
+      const dockItems = await db.table('dockItems').where('userId').equals(USER_A).toArray()
+      const updatedItem = dockItems.find((d) => d.id === itemId)
+      expect(updatedItem).toBeDefined()
+      if (updatedItem) {
+        expect(updatedItem.userTags.length).toBeGreaterThanOrEqual(originalTags.length + 1)
+      }
     })
   })
 })

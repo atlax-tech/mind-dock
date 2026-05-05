@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { Sparkles, Loader2, MoreHorizontal, LayoutList, FileCode2, Pencil, FolderOutput, Download, Trash2, Check, Package, Archive, FileText, LayoutGrid, List, Columns, Search, Folder, Plus, PenTool, Circle, RotateCcw, Lightbulb, ChevronRight } from 'lucide-react'
+import { Sparkles, Loader2, MoreHorizontal, LayoutList, FileCode2, Pencil, FolderOutput, Download, Trash2, Check, Package, Archive, FileText, LayoutGrid, List, Columns, Search, Folder, Plus, PenTool, Circle, RotateCcw, Lightbulb, ChevronRight, X, EyeOff } from 'lucide-react'
 
 import { getCurrentUser, registerUser, logoutUser, type LocalUser } from '@/lib/auth'
 import GoldenTopNav from './_components/GoldenTopNav'
@@ -15,22 +15,27 @@ import {
   listDockItems,
   listMindNodes,
   listMindEdges,
+  listRecommendationDockQueue,
   loadAllEditorDrafts,
+  markRecommendationDockQueueItemShown,
   openWorkspaceTab,
   closeWorkspaceTab,
   activateWorkspaceTab,
   pinWorkspaceTab,
   restoreWorkspaceTabs,
   recordRecentDocumentOpen,
+  recordRecommendationDockQueueItemFeedback,
   reopenItem,
   suggestItem,
   updateDockItemText,
   upsertMindNode,
   upsertMindEdge,
+  applyRecommendation,
   type DockItem,
   type StoredMindNode,
   type StoredMindEdge,
   type StoredWorkspaceOpenTab,
+  type RecommendationDockQueueItem,
 } from '@/lib/repository'
 import { db } from '@/lib/db'
 import type { EntryStatus } from '@/lib/types'
@@ -119,6 +124,12 @@ export default function WorkspacePage() {
   const [mockFolderNodes, setMockFolderNodes] = useState<DockTreeNode[]>([])
   const mockFolderIdCounter = useRef(-1000)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [suggestingId, setSuggestingId] = useState<number | null>(null)
+  const [itemRecommendations, setItemRecommendations] = useState<RecommendationDockQueueItem[]>([])
+  const [recommendationsLoading, setRecommendationsLoading] = useState(false)
+  const [recommendationsError, setRecommendationsError] = useState<string | null>(null)
+  const [applyLoading, setApplyLoading] = useState<string | null>(null)
+  const shownMarkedRef = useRef<Set<string>>(new Set())
 
   const workspaceMapping = useMemo(() => {
     const labelToDockItem = new Map<string, DockItem>()
@@ -407,22 +418,95 @@ export default function WorkspacePage() {
     }
   }, [userId, refreshAll, createSourceNodeWithRoot])
 
+  const loadItemRecommendations = useCallback(async (itemId: number) => {
+    if (!userId) return
+    setRecommendationsLoading(true)
+    setRecommendationsError(null)
+    try {
+      const result = await listRecommendationDockQueue(userId, {
+        subjectType: 'dockItem',
+        subjectId: itemId,
+        sortBy: 'createdAt',
+        sortDirection: 'desc',
+      })
+      setItemRecommendations(result.items)
+      const unmarked = result.items.filter(
+        (item) => item.status === 'generated' && !item.isShown && !shownMarkedRef.current.has(item.id),
+      )
+      for (const item of unmarked) {
+        try {
+          await markRecommendationDockQueueItemShown({ userId, recommendationId: item.id })
+          shownMarkedRef.current.add(item.id)
+        } catch { /* non-critical */ }
+      }
+    } catch (e) {
+      setRecommendationsError(e instanceof Error ? e.message : '加载推荐失败')
+    } finally {
+      setRecommendationsLoading(false)
+    }
+  }, [userId])
+
+  useEffect(() => {
+    if (selectedItemId !== null) {
+      shownMarkedRef.current.clear()
+      loadItemRecommendations(selectedItemId)
+    } else {
+      setItemRecommendations([])
+      setRecommendationsError(null)
+    }
+  }, [selectedItemId, loadItemRecommendations])
+
+  const handleApplyRecommendation = useCallback(async (recommendationId: string) => {
+    if (!userId) return
+    setApplyLoading(recommendationId)
+    try {
+      await applyRecommendation({ userId, recommendationId })
+      refreshAll()
+      if (selectedItemId !== null) {
+        await loadItemRecommendations(selectedItemId)
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '应用推荐失败')
+    } finally {
+      setApplyLoading(null)
+    }
+  }, [userId, refreshAll, selectedItemId, loadItemRecommendations])
+
+  const handleFeedbackRecommendation = useCallback(async (recommendationId: string, feedbackType: 'accepted' | 'rejected' | 'ignored') => {
+    if (!userId) return
+    try {
+      await recordRecommendationDockQueueItemFeedback({
+        userId,
+        recommendationId,
+        feedbackType,
+      })
+      if (selectedItemId !== null) {
+        await loadItemRecommendations(selectedItemId)
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '反馈操作失败')
+    }
+  }, [userId, selectedItemId, loadItemRecommendations])
+
   const handleSuggest = useCallback(async (itemId: number) => {
     if (!userId) return
+    setSuggestingId(itemId)
     try {
       await suggestItem(userId, itemId)
       refreshAll()
-      generateRecommendationsForContext({
+      await generateRecommendationsForContext({
         userId,
         subjectType: 'dockItem',
         subjectId: itemId,
-      }).catch((err) => {
-        console.error('[Recommendation] generateRecommendationsForContext failed:', err)
       })
+      await loadItemRecommendations(itemId)
     } catch (e) {
-      setError(e instanceof Error ? e.message : '建议生成失败')
+      setRecommendationsError(e instanceof Error ? e.message : '建议生成失败')
+      setItemRecommendations([])
+    } finally {
+      setSuggestingId(null)
     }
-  }, [userId, refreshAll])
+  }, [userId, refreshAll, loadItemRecommendations])
 
   const handleArchive = useCallback(async (itemId: number) => {
     if (!userId) return
@@ -1147,6 +1231,13 @@ export default function WorkspacePage() {
               onTagFilterChange={setSharedTagFilter}
               onDockSearchChange={setSharedDockSearch}
               externalMockNodes={mockFolderNodes}
+              suggestingId={suggestingId}
+              recommendationsLoading={recommendationsLoading}
+              recommendationsError={recommendationsError}
+              itemRecommendations={itemRecommendations}
+              applyLoading={applyLoading}
+              onApplyRecommendation={handleApplyRecommendation}
+              onFeedbackRecommendation={handleFeedbackRecommendation}
             />
           </div>
         </main>
@@ -1241,7 +1332,7 @@ function EditorOptionsMenu({ mode, onSetMode, onToast, onDelete }: { mode: 'clas
   )
 }
 
-function DockFinderView({ items, selectedItemId, loading, error, onSelectItem, onSuggest, onOpenEditor, onOpenRecorder, selectedItem, onToast, onSwitchToMind, onAddTag, graphChainForItem, findMindNodeForItem, initialProjectFilter, initialTagFilter, initialDockSearch, onProjectFilterChange, onTagFilterChange, onDockSearchChange, externalMockNodes }: {
+function DockFinderView({ items, selectedItemId, loading, error, onSelectItem, onSuggest, onOpenEditor, onOpenRecorder, selectedItem, onToast, onSwitchToMind, onAddTag, graphChainForItem, findMindNodeForItem, initialProjectFilter, initialTagFilter, initialDockSearch, onProjectFilterChange, onTagFilterChange, onDockSearchChange, externalMockNodes, suggestingId, recommendationsLoading, recommendationsError, itemRecommendations, applyLoading, onApplyRecommendation, onFeedbackRecommendation }: {
   items: DockItem[]
   selectedItemId: number | null
   loading: boolean
@@ -1265,6 +1356,13 @@ function DockFinderView({ items, selectedItemId, loading, error, onSelectItem, o
   onTagFilterChange: (tag: string | null) => void
   onDockSearchChange: (query: string) => void
   externalMockNodes: DockTreeNode[]
+  suggestingId: number | null
+  recommendationsLoading: boolean
+  recommendationsError: string | null
+  itemRecommendations: RecommendationDockQueueItem[]
+  applyLoading: string | null
+  onApplyRecommendation: (recommendationId: string) => Promise<void>
+  onFeedbackRecommendation: (recommendationId: string, feedbackType: 'accepted' | 'rejected' | 'ignored') => Promise<void>
 }) {
   const [filterStatus, setFilterStatus] = useState<EntryStatus | null>(null)
   const [dockSearch, setDockSearch] = useState('')
@@ -1758,6 +1856,75 @@ function DockFinderView({ items, selectedItemId, loading, error, onSelectItem, o
                     {graphChainForItem(effectiveSelectedItem.id).join(' > ')}
                   </div>
                 </div>
+
+                <div className="flex flex-col gap-1.5 border-t border-[var(--border-line)] pt-4">
+                  <span className="text-[var(--text-muted)] font-semibold tracking-wider text-[10px]">
+                    RECOMMENDATIONS
+                    {itemRecommendations.length > 0 && (
+                      <span className="ml-2 text-[var(--accent)]">{itemRecommendations.length}</span>
+                    )}
+                  </span>
+                  {recommendationsLoading ? (
+                    <div className="flex items-center justify-center py-4">
+                      <Loader2 size={14} className="animate-spin text-slate-500" />
+                    </div>
+                  ) : recommendationsError ? (
+                    <div className="text-[10px] text-red-400 py-2">{recommendationsError}</div>
+                  ) : itemRecommendations.length === 0 ? (
+                    <div className="text-[10px] text-[var(--text-muted)]/50 italic py-2">
+                      暂无推荐。点击下方&ldquo;生成建议&rdquo;后系统将为此条目生成智能推荐。
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-64 overflow-y-auto no-scrollbar">
+                      {itemRecommendations.map((rec) => {
+                        const isResolved = rec.status === 'accepted' || rec.status === 'rejected' || rec.status === 'ignored'
+                        const isApplying = applyLoading === rec.id
+                        return (
+                          <div key={rec.id} className={`p-2 rounded-lg border text-[10px] ${isResolved ? 'bg-white/[0.01] border-white/[0.03] opacity-60' : 'bg-white/[0.02] border-white/[0.06]'}`}>
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-white/70 font-medium truncate max-w-[120px]">
+                                {rec.candidateType === 'tag' ? `Tag: ${rec.candidateId}` : rec.candidateType === 'project' ? `Project: ${rec.candidateId}` : `${rec.candidateType}`}
+                              </span>
+                              <span className={`shrink-0 ${rec.status === 'accepted' ? 'text-emerald-400' : rec.status === 'rejected' ? 'text-red-400' : rec.status === 'ignored' ? 'text-gray-500' : 'text-yellow-400'}`}>
+                                {rec.status === 'generated' ? '待处理' : rec.status === 'shown' ? '已查看' : rec.status === 'accepted' ? '已接受' : rec.status === 'rejected' ? '已拒绝' : rec.status === 'ignored' ? '已忽略' : rec.status}
+                              </span>
+                            </div>
+                            <div className="text-[var(--text-muted)] mb-1.5 truncate">{rec.reasonSummary.reason}</div>
+                            <div className="flex items-center justify-between">
+                              <span className="text-[var(--accent)]">{Math.round(rec.confidenceScore * 100)}%</span>
+                              {!isResolved && (
+                                <div className="flex gap-1">
+                                  <button
+                                    onClick={() => onApplyRecommendation(rec.id)}
+                                    disabled={isApplying}
+                                    className="px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-50 transition-colors flex items-center gap-1"
+                                  >
+                                    {isApplying ? <Loader2 size={10} className="animate-spin" /> : <Check size={10} />}
+                                    {isApplying ? '应用' : '接受'}
+                                  </button>
+                                  <button
+                                    onClick={() => onFeedbackRecommendation(rec.id, 'rejected')}
+                                    disabled={isApplying}
+                                    className="px-2 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500/20 disabled:opacity-50 transition-colors"
+                                  >
+                                    <X size={10} />
+                                  </button>
+                                  <button
+                                    onClick={() => onFeedbackRecommendation(rec.id, 'ignored')}
+                                    disabled={isApplying}
+                                    className="px-2 py-0.5 rounded bg-gray-500/10 border border-gray-500/20 text-gray-400 hover:bg-gray-500/20 disabled:opacity-50 transition-colors"
+                                  >
+                                    <EyeOff size={10} />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
             <div className="p-4 border-t border-[var(--border-line)] bg-black/20 flex flex-col gap-2 shrink-0">
@@ -1779,8 +1946,17 @@ function DockFinderView({ items, selectedItemId, loading, error, onSelectItem, o
                 >
                   <Lightbulb size={16} className="text-amber-400" /> View in Graph
                 </button>
-                <button onClick={() => onSuggest(effectiveSelectedItem.id)} className="flex-1 py-2 bg-white/5 hover:bg-white/10 text-white font-medium text-sm rounded-lg transition-colors flex items-center justify-center gap-2 border border-[var(--border-line)]">
-                  <Sparkles size={16} className="text-[var(--accent)]" /> 生成建议
+                <button
+                  onClick={() => onSuggest(effectiveSelectedItem.id)}
+                  disabled={suggestingId === effectiveSelectedItem.id}
+                  className="flex-1 py-2 bg-white/5 hover:bg-white/10 text-white font-medium text-sm rounded-lg transition-colors flex items-center justify-center gap-2 border border-[var(--border-line)] disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {suggestingId === effectiveSelectedItem.id ? (
+                    <Loader2 size={16} className="animate-spin text-[var(--accent)]" />
+                  ) : (
+                    <Sparkles size={16} className="text-[var(--accent)]" />
+                  )}
+                  {suggestingId === effectiveSelectedItem.id ? '生成中...' : '生成建议'}
                 </button>
               </div>
             </div>

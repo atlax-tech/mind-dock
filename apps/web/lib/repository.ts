@@ -179,6 +179,7 @@ export interface RecommendationDockQueueFilters {
   status?: RecommendationStatus
   candidateType?: RecommendationCandidateType
   subjectType?: RecommendationSubjectType
+  subjectId?: number | string
   recommendationType?: string
 }
 
@@ -2085,6 +2086,190 @@ export async function recordRecommendationDockQueueItemFeedback(
   return recordRecommendationFeedback(input)
 }
 
+export interface ApplyRecommendationInput {
+  userId: string
+  recommendationId: string
+}
+
+export interface ApplyRecommendationResult {
+  recommendationId: string
+  status: RecommendationStatus
+  appliedChanges: {
+    candidateType: RecommendationCandidateType
+    candidateId: string
+    changeType: string
+    changeDetail: string
+  }
+  recommendationEventId: string
+  userBehaviorEventId: string
+}
+
+export async function applyRecommendation(
+  input: ApplyRecommendationInput,
+): Promise<ApplyRecommendationResult> {
+  const recommendation = await recommendationsTable.get(input.recommendationId)
+  if (!recommendation) {
+    throw new Error(`Recommendation not found: ${input.recommendationId}`)
+  }
+  if (recommendation.userId !== input.userId) {
+    throw new Error(`User ${input.userId} does not own recommendation ${input.recommendationId}`)
+  }
+  if (recommendation.status === 'accepted') {
+    throw new Error(`Recommendation ${input.recommendationId} has already been accepted`)
+  }
+
+  const subjectId = typeof recommendation.subjectId === 'string'
+    ? Number.parseInt(recommendation.subjectId, 10)
+    : recommendation.subjectId
+  if (Number.isNaN(subjectId)) {
+    throw new Error(`Invalid subjectId for recommendation: ${recommendation.subjectId}`)
+  }
+  
+  return db.transaction(
+    'rw',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    [recommendationsTable, recommendationEventsTable, userBehaviorEventsTable, dockItemsTable, tagsTable, collectionsTable, mindNodesTable, mindEdgesTable] as any,
+    async () => {
+      const changeResult = await executeApplyChangeInTxn(recommendation, subjectId)
+
+      await recommendationsTable.update(input.recommendationId, {
+        status: 'accepted',
+        updatedAt: new Date(),
+      })
+
+      const metadata = {
+        source: 'recommendation_apply',
+        feedbackType: 'accepted',
+        appliedChanges: changeResult,
+      }
+
+      const recEvent = await recordRecommendationEvent({
+        recommendationId: input.recommendationId,
+        userId: input.userId,
+        eventType: 'recommendation_accepted',
+        metadata,
+      })
+
+      const behaviorMetadata = buildRecommendationBehaviorMetadata(recommendation, metadata)
+      const behaviorEvent = await recordUserBehaviorEvent({
+        userId: input.userId,
+        eventType: 'recommendation_accepted',
+        subjectType: recommendation.subjectType,
+        subjectId: String(recommendation.subjectId),
+        metadata: behaviorMetadata,
+      })
+
+      return {
+        recommendationId: input.recommendationId,
+        status: 'accepted' as RecommendationStatus,
+        appliedChanges: changeResult,
+        recommendationEventId: recEvent.id,
+        userBehaviorEventId: behaviorEvent.id,
+      }
+    },
+  )
+}
+
+async function executeApplyChangeInTxn(
+  recommendation: RecommendationRecord,
+  subjectId: number,
+): Promise<{
+  candidateType: RecommendationCandidateType
+  candidateId: string
+  changeType: string
+  changeDetail: string
+}> {
+  const { candidateType, candidateId, userId } = recommendation
+
+  if (candidateType === 'tag') {
+    const tag = await tagsTable.get(candidateId)
+    if (!tag || tag.userId !== userId) {
+      throw new Error(`Tag not found for candidate: ${candidateId}`)
+    }
+    const dockItem = await getDockItemForUser(userId, subjectId)
+    if (!dockItem) {
+      throw new Error(`Dock item not found: ${subjectId}`)
+    }
+    const normalized = normalizeTagName(tag.name)
+    if (!normalized) {
+      throw new Error(`Invalid tag name: ${tag.name}`)
+    }
+    const newTags = dedupeTagNames([...dockItem.userTags, normalized])
+    await dockItemsTable.update(dockItem.id, { userTags: newTags })
+    return {
+      candidateType: 'tag',
+      candidateId,
+      changeType: 'add_tag',
+      changeDetail: `Added tag "${tag.name}" to dock item #${subjectId}`,
+    }
+  }
+
+  if (candidateType === 'project') {
+    const collection = await collectionsTable.get(candidateId)
+    if (!collection || collection.userId !== userId) {
+      throw new Error(`Collection not found for candidate: ${candidateId}`)
+    }
+    const dockItem = await getDockItemForUser(userId, subjectId)
+    if (!dockItem) {
+      throw new Error(`Dock item not found: ${subjectId}`)
+    }
+    await dockItemsTable.update(dockItem.id, { selectedProject: collection.name })
+    return {
+      candidateType: 'project',
+      candidateId,
+      changeType: 'set_project',
+      changeDetail: `Set project "${collection.name}" on dock item #${subjectId}`,
+    }
+  }
+
+  if (candidateType === 'mindNode') {
+    const targetNode = await mindNodesTable.get(candidateId)
+    if (!targetNode || targetNode.userId !== userId) {
+      throw new Error(`Mind node not found for candidate: ${candidateId}`)
+    }
+    const dockItem = await getDockItemForUser(userId, subjectId)
+    if (!dockItem) {
+      throw new Error(`Dock item not found: ${subjectId}`)
+    }
+    const dockMindNodes = await mindNodesTable
+      .where('userId')
+      .equals(userId)
+      .and((n) => n.documentId === subjectId)
+      .toArray()
+    const sourceNode = dockMindNodes[0]
+    if (!sourceNode) {
+      throw new Error(`No mind node linked to dock item #${subjectId}. Apply mindNode recommendation is unsupported without an existing mind node.`)
+    }
+    const edgeId = makeMindEdgeId(userId, sourceNode.id, targetNode.id, 'suggested')
+    const existingEdge = await mindEdgesTable.get(edgeId)
+    const now = new Date()
+    await mindEdgesTable.put({
+      id: edgeId,
+      userId,
+      sourceNodeId: sourceNode.id,
+      targetNodeId: targetNode.id,
+      edgeType: 'suggested',
+      strength: 0.5,
+      source: 'system',
+      confidence: null,
+      reason: null,
+      createdAt: existingEdge?.createdAt ?? now,
+      updatedAt: now,
+    })
+    return {
+      candidateType: 'mindNode',
+      candidateId,
+      changeType: 'create_edge',
+      changeDetail: `Created edge from "${sourceNode.label}" to "${targetNode.label}"`,
+    }
+  }
+
+  throw new Error(
+    `Apply for candidateType "${candidateType}" is not supported. ` +
+    `Supported types: tag, project, mindNode.`,
+  )
+}
+
 const RECOMMENDATION_DOCK_QUEUE_STATUSES: RecommendationStatus[] = [
   'generated',
   'shown',
@@ -2164,6 +2349,7 @@ function matchesRecommendationDockQueueFilters(
   return (!filters.status || recommendation.status === filters.status) &&
     (!filters.candidateType || recommendation.candidateType === filters.candidateType) &&
     (!filters.subjectType || recommendation.subjectType === filters.subjectType) &&
+    (!filters.subjectId || String(recommendation.subjectId) === String(filters.subjectId)) &&
     (!filters.recommendationType || recommendation.recommendationType === filters.recommendationType)
 }
 
