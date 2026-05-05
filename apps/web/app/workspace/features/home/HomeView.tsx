@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useCallback, useRef, forwardRef, useImperativeHandle } from 'react'
 import { ArrowRight, FilePlus2, FileText, Import, Network, Plus } from 'lucide-react'
 import { listDockItems, type DockItem } from '@/lib/repository'
+import RecommendationDock from '../../_components/RecommendationDock'
 
 export interface HomeViewHandle {
   focusCaptureInput: () => void
@@ -162,6 +163,8 @@ const HomeView = forwardRef<HomeViewHandle, HomeViewProps>(function HomeView({ u
               </div>
             )}
           </div>
+
+          <RecommendationDock userId={userId} />
         </section>
       </div>
     </div>

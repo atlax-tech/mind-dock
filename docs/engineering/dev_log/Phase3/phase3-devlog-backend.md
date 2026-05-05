@@ -9,6 +9,83 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：Phase 3 Round 26 (LC-012) -->
+<!-- ============================================ -->
+
+## Phase 3 Round 26 devlog -- LC-012 Recommendation Dock Queue UI Consumption Pack 推荐队列前端消费接入能力包
+
+**时间戳**: 2026-05-05
+
+**任务起止时间**: 18:15 - 18:25 CST
+
+**工时**: 10 分钟
+
+**Notion 卡片**: LC-012 Recommendation Dock Queue UI Consumption Pack 推荐队列前端消费接入能力包
+
+**任务目标**: LC-011 已提供 `listRecommendationDockQueue` 作为 recommendation queue / inbox 等价 API。本轮让前端最小消费该 queue，使推荐结果在 HomeView 区域可见、可曝光、可反馈。
+
+**改动文件及行数**:
+- `apps/web/app/workspace/_components/RecommendationDock.tsx` | A | +327 行（新增推荐队列前端消费组件，包含 loading / empty / error states、数据展示、markShown 自动触发、accept / reject / ignore feedback）
+- `apps/web/app/workspace/features/home/HomeView.tsx` | M | +3 行（新增 RecommendationDock import 与渲染，置于 Recent Intelligence section 下方）
+- `apps/web/tests/recommendation-dock-ui.test.ts` | A | +307 行（新增 LC-012 前端消费测试，覆盖 fields 完整性 / empty / sort / shown / feedback / userId isolation / 消费模式）
+- `docs/engineering/dev_log/Phase3/phase3-devlog-backend.md` | M | +40 行（本轮日志）
+
+**变更摘要**:
+- **接入点选择**: 分析 HomeView 为最小接入点——它是工作区登陆页面，已有 section 结构、userId 传递、dark theme styling，无需新建页面或修改 Dock/Capture/Editor/Mind。
+- **RecommendationDock 组件**: 调用 `listRecommendationDockQueue(userId, { sortBy: 'createdAt', sortDirection: 'desc' })`，返回 items 以可折叠卡片展示。
+- **展示字段**: 每条推荐展示 `recommendationType`、`candidateType`、`confidenceScore`（百分比格式）、`reasonSummary.reason`、`evidenceSummary`（证据数 + 类型）、`status`（中文标签），展开后显示 score / evidence 详情。
+- **状态覆盖**: loading 状态显示 spinner；empty 状态显示空状态提示；error 状态显示错误信息 + 重试按钮。
+- **markShown**: 组件首次渲染可见推荐时，对 `isShown === false` 的 item 自动调用 `markRecommendationDockQueueItemShown`，使用 ref 去重避免重复调用。
+- **feedback**: 提供 accept / reject / ignore 三个按钮，调用 `recordRecommendationDockQueueItemFeedback` 后局部更新 state（乐观更新 status / hasFeedback / isShown），不整页刷新。
+- **userId isolation**: 组件仅使用传入的 `userId` 参数，所有 API 调用均限定用户范围，不跨用户读取或操作。
+- **Golden UI 风格**: 复用现有 CSS 变量（`var(--bg-base)`、`var(--text-muted)`、`var(--accent)` 等）、glass 效果、rounded-2xl 卡片、border-white 边框体系，保持与 HomeView 视觉一致。
+- **范围控制**: 不破坏 Dock / Capture / Editor / Mind 既有行为；不做每日推荐 / Weekly Review / Nudge；不做 preference_profiles / rhythm_profiles；不做 LLM / embedding / vector search。
+
+**遇到的问题以及解决方式**:
+| 问题 | 解决方式 | 是否解决 |
+|------|---------|---------|
+| 排序测试受毫秒级时间戳竞争影响，连续创建的 recommendation 可能 createdAt 相同 | 在两次 createRecommendation 之间插入 `setTimeout(10)` 延时，并将断言从 id 比较改为 candidateId 比较 | ✅ |
+| 术语门禁 (`check:terminology`) 禁止 product/business 代码使用 `Inbox` | 组件文件名从 `RecommendationInbox.tsx` 重命名为 `RecommendationDock.tsx`；测试文件从 `recommendation-inbox.test.ts` 重命名为 `recommendation-dock-ui.test.ts`；所有 describe/it 文案中的 "inbox" 替换为 "dock" | ✅ |
+| ESLint `no-unused-vars`：测试文件中未使用的变量 (`first`/`second`/`RecommendationDockQueueItem` type) | 移除未使用变量和 import | ✅ |
+
+**自动验证**:
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm lint` | ✅ PASS（0 errors, 1 pre-existing warning in demo2-prototype） |
+| `pnpm typecheck` | ✅ PASS（domain + web tsc --noEmit） |
+| `pnpm test` | ✅ PASS（domain 20 files / 312 tests；web 18 files / 465 tests, 含新增 recommendation-dock-ui 13 tests + intelligence-spine 58 tests 不回归） |
+| `pnpm check:terminology` | ✅ PASS |
+| `pnpm build:web` | ✅ PASS（workspace route 47.9 kB） |
+
+**手工验证方式**:
+1. 打开工作区 HomeView，确认 "Recommendations" section 出现在 "Recent Intelligence" 下方。
+2. 无推荐数据时，确认显示空状态提示 "暂无推荐"。
+3. 有推荐数据时，确认每条推荐卡片显示 recommendationType、candidateType、confidenceScore（百分比）、reasonSummary、status（中文标签）；展开后显示 Score / Evidence / Status 详情。
+4. 确认首次渲染时自动触发 markShown（可通过 IndexedDB 检查 recommendation.status 变为 "shown"）。
+5. 对 generated/shown 状态的推荐点击"接受"按钮，确认状态变为 "已接受"且卡片变为降低透明度。
+6. 点击"拒绝"或"忽略"，确认状态相应变化。
+7. 反馈操作后确认列表局部刷新，不需要整页刷新。
+
+**验收标准**:
+- 推荐 queue 有数据时可以渲染 ✅
+- 无推荐时展示 empty state ✅
+- loading / error 状态可验证 ✅
+- accept / reject / ignore 操作调用正确 action ✅
+- feedback 后状态刷新 ✅
+- LC-011 repository / queue 相关测试不回归 ✅
+- 现有 web / domain 测试不回归 ✅
+
+**已知风险或未做事项**:
+| 风险 | 等级 | 说明 |
+|------|------|------|
+| markShown 异步非阻塞 | 低 | 组件首次渲染时自动调用 markShown（fire-and-forget），失败仅 console.error 不影响 UI |
+| 局部状态更新采用乐观更新 | 低 | feedback 后直接 patch local state 而非重新 fetch；若 API 失败则显示 error，需手动刷新 |
+| 无分页/无限滚动 | 低 | 当前一次加载全量推荐，若未来数量较多可加 limit/cursor 分页 |
+
+**是否 ready for review**: 是（LC-012 本卡完成；已验证；已 git add 暂存；未 commit，未 push）
+
+---
+<!-- ============================================ -->
 <!-- 分割线：Phase 3 Round 25 (LC-011) -->
 <!-- ============================================ -->
 
