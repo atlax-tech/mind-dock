@@ -6,7 +6,7 @@ import '@react-sigma/core/lib/style.css'
 import type { MindGraphSnapshot } from './types'
 import type { MindNodeType, MindEdgeType } from '@atlax/domain'
 import { snapshotToGraphology, precomputeAdjacency, computeSnapshotSignature, type GraphNodeAttributes, type GraphEdgeAttributes } from './mindGraphAdapter'
-import { applyForceAtlas2Layout, computeVisibleBounds, type LayoutProgress } from './mindGraphLayout'
+import { applyForceAtlas2Layout, type LayoutProgress } from './mindGraphLayout'
 import {
   getNodeColor,
   getEdgeStyle,
@@ -42,6 +42,7 @@ interface MindGraphSigmaProps {
   onTooltipChange: (t: TooltipData | null) => void
   layoutAppliedRef: React.MutableRefObject<boolean>
   onCameraControl: (ctrl: { zoomIn: () => void; zoomOut: () => void; centerView: () => void }) => void
+  activeModule?: string
 }
 
 export default function MindGraphSigma(props: MindGraphSigmaProps) {
@@ -77,6 +78,7 @@ function MindGraphInner({
   snapshotKey, snapshot, ixState, ixActions,
   onOpenEditor, onNodeCountChange, onEdgeCountChange,
   onLayoutRunningChange, onTooltipChange, layoutAppliedRef, onCameraControl,
+  activeModule,
 }: MindGraphSigmaProps) {
   const loadGraph = useLoadGraph()
   const registerEvents = useRegisterEvents()
@@ -86,21 +88,16 @@ function MindGraphInner({
   const prevSnapshotKeyRef = useRef<string>('')
   const hoverStateRef = useRef<{ hoveredNodeId: string | null; focusedNodeId: string | null }>({ hoveredNodeId: null, focusedNodeId: null })
 
-  const centerOnBounds = useCallback((g?: import('graphology').default<GraphNodeAttributes, GraphEdgeAttributes> | null) => {
-    const graph = g || graphRef.current
+  const fitGraph = useCallback((animated: boolean = true) => {
+    const graph = graphRef.current
     if (!graph || graph.order === 0) return
-    const bounds = computeVisibleBounds(graph)
-    const cx = (bounds.xMin + bounds.xMax) / 2
-    const cy = (bounds.yMin + bounds.yMax) / 2
-    const w = Math.max(bounds.xMax - bounds.xMin, 100)
-    const h = Math.max(bounds.yMax - bounds.yMin, 100)
+
     const cam = sigma.getCamera()
-    const container = sigma.getContainer()
-    const cw = container?.clientWidth || 1000
-    const ch = container?.clientHeight || 700
-    const pad = 0.15
-    const ratio = Math.min(cw / (w * (1 + pad)), ch / (h * (1 + pad)), 10)
-    cam.animate({ x: cx, y: cy, ratio: Math.max(0.05, Math.min(ratio, 10)) }, { duration: 500 })
+    if (animated) {
+      cam.animatedReset({ duration: 600 })
+    } else {
+      cam.setState({ x: 0.5, y: 0.5, ratio: 1, angle: 0 })
+    }
   }, [sigma])
 
   const doZoomIn = useCallback(() => {
@@ -114,16 +111,30 @@ function MindGraphInner({
   }, [sigma])
 
   useEffect(() => {
-    onCameraControl({ zoomIn: doZoomIn, zoomOut: doZoomOut, centerView: () => centerOnBounds() })
-  }, [onCameraControl, doZoomIn, doZoomOut, centerOnBounds])
+    onCameraControl({ zoomIn: doZoomIn, zoomOut: doZoomOut, centerView: () => fitGraph(true) })
+  }, [onCameraControl, doZoomIn, doZoomOut, fitGraph])
+
+  const prevActiveRef = useRef<string>('')
+  useEffect(() => {
+    if (activeModule === 'mind' && prevActiveRef.current !== 'mind') {
+      const timer = setTimeout(() => {
+        sigma.resize()
+        sigma.refresh()
+        fitGraph(true)
+      }, 120)
+      prevActiveRef.current = activeModule ?? ''
+      return () => clearTimeout(timer)
+    }
+    prevActiveRef.current = activeModule ?? ''
+  }, [activeModule, sigma, fitGraph])
 
   // Graph load / refresh lifecycle
   useEffect(() => {
     const sig = computeSnapshotSignature(snapshot)
-    const isNewGraph = prevSnapshotKeyRef.current !== sig
+    const isNewSnapshot = prevSnapshotKeyRef.current !== sig
     prevSnapshotKeyRef.current = sig
 
-    if (isNewGraph) {
+    if (isNewSnapshot) {
       layoutAppliedRef.current = false
       ixActions.setHoveredNode(null)
       ixActions.clearFocus()
@@ -131,28 +142,44 @@ function MindGraphInner({
     }
 
     const gs = snapshotToGraphology(snapshot)
-    loadGraph(gs.graph)
+
+    try {
+      loadGraph(gs.graph)
+    } catch (e) {
+      console.warn('MindGraphSigma: loadGraph failed', e)
+    }
+
     graphRef.current = gs.graph
     adjacencyRef.current = precomputeAdjacency(gs.graph)
     onNodeCountChange(gs.nodeCount)
     onEdgeCountChange(gs.edgeCount)
 
+    let timer: NodeJS.Timeout | null = null
+
     if (!layoutAppliedRef.current) {
       onLayoutRunningChange(true)
       const runLayout = () => {
+        if (!graphRef.current) return
+
         applyForceAtlas2Layout(gs.graph, (progress: LayoutProgress) => {
           ixActions.setLayoutProgress(progress.phase, progress.iterations, progress.maxIterations)
         })
+
         layoutAppliedRef.current = true
         onLayoutRunningChange(false)
         ixActions.setLayoutProgress('done', 0, 0)
+
         sigma.refresh()
-        requestAnimationFrame(() => centerOnBounds(gs.graph))
+        requestAnimationFrame(() => fitGraph(true))
       }
-      const timer = setTimeout(runLayout, 100)
-      return () => clearTimeout(timer)
+      timer = setTimeout(runLayout, 150)
     } else {
       sigma.refresh()
+      requestAnimationFrame(() => fitGraph(false))
+    }
+
+    return () => {
+      if (timer) clearTimeout(timer)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snapshotKey])
@@ -176,7 +203,7 @@ function MindGraphInner({
       onLayoutRunningChange(false)
       ixActions.setLayoutProgress('done', 0, 0)
       sigma.refresh()
-      requestAnimationFrame(() => centerOnBounds())
+      requestAnimationFrame(() => fitGraph(true))
     }
     const timer = setTimeout(runLayout, 50)
     return () => clearTimeout(timer)

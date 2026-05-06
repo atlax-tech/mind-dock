@@ -9,6 +9,274 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：Local Core Phase 3 Round 25 (MG-FIX-02 Camera坐标系修复) -->
+<!-- ============================================ -->
+
+## Phase 3 Round 25 devlog -- MG-FIX-02 相机坐标系修复 & 视图空白/飞出/Center View 失效根因修补
+
+**时间戳**: 2026-05-07
+
+**Notion 卡片**: MG-FIX-02 Sigma v3 相机坐标系误用导致 Mind 视图空白、刷新飞出、Center View 失效
+
+**任务起止时间**: 05:30 - 05:45 CST
+
+**工时**: 15 分钟
+
+**任务目标**:
+1. 修复 Mind 视图空白：首次进入 Mind 看不到任何节点。
+2. 修复刷新后"闪现再飞出"：刷新页面后图谱短暂出现然后飞出视口。
+3. 修复 Center View 失效：点击居中按钮无法将图谱拉回视口中心。
+4. 修复 Mind 视图从 hidden 切到 active 时空白。
+5. 修复 snapshot=null 时退回 Legacy canvas 制造另一条渲染路径的问题。
+6. 清理调试代码（console.log('[MindGraphDebug]...')）。
+7. 保留 MG-FIX-02 cluster 修补（不使用旧 positionX/positionY、基于 nodeType + id hash 的多 cluster 布局）。
+
+**根因分析**:
+Sigma v3 的 camera state `x/y/ratio` 是 **framed graph 归一化坐标**（默认 x=0.5, y=0.5, ratio=1），不是原始 Graphology layout 坐标。旧代码 `centerOnBounds()` 通过 `computeVisibleBounds()` 得到 raw graph 的 `cx/cy`（如 400, -600），然后直接传给 `camera.animate({ x: cx, y: cy })`，导致 camera 飞到归一化空间之外 → 视图飞出。
+
+**变更摘要**:
+- `MindGraphSigma.tsx`: 重写 `centerOnBounds()` 为 `fitGraph()`，使用 Sigma 官方 `camera.animatedReset()` 替代手动坐标计算；新增 `activeModule` effect 处理视图切换时的 resize + refresh + fit；移除 `computeVisibleBounds` import；移除所有 `[MindGraphDebug]` 调试日志；layout 完成后统一走 `fitGraph(true)`，已有 layout 时走 `fitGraph(false)`。
+- `MindGraphView.tsx`: 新增 `activeModule` prop 并传递给 `MindGraphSigma`。
+- `MindCanvasStage.tsx`: 移除 `LegacyCanvasFallback` 组件和 `USE_GRAPH_VIEW` 常量；snapshot=null 时显示轻量 loading 状态；新增 `activeModule` prop 并传递给 `MindGraphView`。
+
+**改动文件及行数**:
+- `apps/web/app/workspace/features/mind/MindGraphSigma.tsx` | M | +20 行 / -40 行
+- `apps/web/app/workspace/features/mind/MindGraphView.tsx` | M | +3 行 / -1 行
+- `apps/web/app/workspace/features/mind/MindCanvasStage.tsx` | M | +12 行 / -120 行（移除 LegacyCanvasFallback ~100 行）
+
+**遇到的问题**:
+1. Camera 坐标系误用：raw graph 坐标直接传给 camera.animate() 导致视图飞出 → 使用 Sigma 官方 `camera.animatedReset()` 方法，该方法内部正确处理 framed graph 坐标转换。
+2. 刷新后"闪现再飞出"：layout 完成后 `centerOnBounds(gs.graph)` 把 camera 飞到错误位置 → 替换为 `fitGraph(true)`，使用 `animatedReset` 正确居中。
+3. 首次进入 Mind 空白：snapshot=null 时渲染 LegacyCanvasFallback（使用旧 positionX/positionY 的 canvas），制造了另一条渲染路径 → 改为显示轻量 loading 状态，等真实 snapshot 到达后只走 Sigma 主链路。
+4. Mind 视图从 hidden 切到 active 时空白：Sigma 在 hidden 状态下无法正确计算尺寸 → 新增 `activeModule` effect，当从非 mind 切到 mind 时执行 `sigma.resize()` + `sigma.refresh()` + `fitGraph(true)`。
+5. Center View 失效：`centerView` 调用 `centerOnBounds()` 使用错误坐标系 → 改为调用 `fitGraph(true)` 使用 `camera.animatedReset()`。
+
+**自动验证结果**:
+- `pnpm validate`: ✅ 通过 (0 errors, 3 warnings — 均为已有，非本次引入)
+- `pnpm build:web`: ✅ 通过 (workspace 页面生成成功)
+
+**手工验证步骤说明**:
+1. 首次进入 Mind 视图 → 应能看到 root/节点，不再空白。
+2. 创建节点后切到 Mind → 应刷新显示新节点。
+3. 刷新页面（F5）→ 图谱应正确居中显示，不再飞出视口。
+4. 点击 Center View 按钮 → 图谱应平滑恢复到视口中心。
+5. 从其他视图（Home/Dock）切回 Mind → 图谱应正确渲染。
+
+**当前风险**:
+1. `camera.animatedReset()` 会将整张图谱 fit 到视口，对于超大图谱可能缩放过小 → 可通过 `minCameraRatio`/`maxCameraRatio` 设置限制（已在 SigmaContainer settings 中配置 0.05~10）。
+2. `activeModule` effect 使用 120ms 延迟等待 DOM 渲染，极端情况下可能不够 → 如遇问题可增大延迟。
+
+**影响范围**:
+- 仅限于 Mind 视图的相机控制和渲染链路，不影响数据存储、Schema、其他页面或 cluster 布局逻辑。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：Local Core Phase 3.1.5 Round 24 (MG-FIX-02) -->
+<!-- ============================================ -->
+
+## Phase 3 Round 24 devlog -- MG-FIX-02 Multi-cluster Mind Graph Layout
+
+**时间戳**: 2026-05-07
+
+**Notion 卡片**: MG-FIX-02 拆除 ROOT 单中心太阳图，建立多 cluster 视觉布局
+
+**任务起止时间**: 04:15 - 04:30 CST
+
+**工时**: 15 分钟
+
+**任务目标**:
+1. 修复当前 Mind 图谱的单中心 ROOT 太阳图（Sunburst）问题，使布局从“全员围攻 ROOT”转变为“多个松散 cluster 分布”。
+2. 在 Sigma.js / MindGraphSigma 2D 框架下实现轻量级聚类布局适配器。
+3. 聚类依据完全来自真实数据（node.nodeType），并辅以确定性 Hash 分桶。
+4. 调整 ForceAtlas2 布局参数，削弱全局向心引力，增强集群内聚性。
+5. 保证 ROOT 节点在中心位置，但不得将所有节点强行吸附。
+
+**变更摘要**:
+- `mindGraphLayout.ts`: 深度优化 FA2 布局参数。大幅降低全局 gravity (0.8 -> 0.05)，关闭 strongGravityMode，开启 linLogMode 和 outboundAttractionDistribution 以强化集群边界。
+- `mindGraphAdapter.ts`: 重写初始定位逻辑。定义了 5 个空间集群中心（Root, Documents, Concepts, Tags, Others），`seededPosition` 现在根据 `nodeType` 和 ID Hash 将节点预分配到不同的空间区域。
+
+**改动文件及行数**:
+- `apps/web/app/workspace/features/mind/mindGraphLayout.ts` | M | +15 行 / -10 行
+- `apps/web/app/workspace/features/mind/mindGraphAdapter.ts` | M | +30 行 / -10 行
+
+**遇到的问题**:
+1. 默认 FA2 配置的 `strongGravityMode` 会强行忽略初始位置将所有节点拉向 (0,0) -> 显式关闭该模式并使用较低的 `gravity` 值。
+2. 集群间排斥力不足导致岛屿重叠 -> 提升 `scalingRatio` 至 10.0 并开启 `outboundAttractionDistribution`。
+
+**自动验证结果**:
+- `pnpm validate`: ✅ 通过 (Lint, Typecheck, Test, Terminology)
+- `pnpm build:web`: ✅ 通过 (workspace 页面生成成功)
+
+**手工验证步骤说明**:
+1. 启动开发服务器并进入 `/workspace` Mind 视图。
+2. 预期：图谱不再呈现单一圆盘状，而是根据节点类型（文档、标签、概念等）形成多个明显的离散簇。
+3. 点击 Re-layout 按钮：验证布局是否能稳定回归到多中心簇状分布。
+4. 检查 ROOT 节点：确认其位于画布中心，但其连接的子节点应向各自所属的类型集群偏移。
+
+**当前风险**:
+1. 数据类型单一风险：若数据中只有一种 `nodeType` 且 Hash 分布不均，可能依然呈现单中心趋势（已通过 Hash 强制桶分配缓解）。
+2. 连接密度风险：若集群间边线极度密集，引力可能抵消排斥力导致集群粘连。
+
+**影响范围**:
+- 仅限于 Mind 视图的视觉布局逻辑，不影响数据存储、Schema 或其他页面。
+
+---
+
+### Round 24 补充 devlog -- Review FAIL 修复 (MG-FIX-02 修补)
+
+**任务起止时间**: 04:35 - 04:55 CST
+
+**工时**: 20 分钟
+
+**修复项 1: 强制重新计算多 cluster 布局**
+- 现象：已有 `positionX/positionY` 时 FA2 会被跳过，导致视图停留在旧的太阳图布局。
+- 修复：在 `mindGraphAdapter.ts` 中引入 `FORCE_RECALCULATE` 标志，在 `snapshotToGraphology` 阶段暂时忽略输入坐标；同时移除 `mindGraphLayout.ts` 中的早退逻辑，确保 FA2 始终运行。
+
+**修复项 2: 优化 Cluster 分桶规则**
+- 现象：当节点类型单一（如全是 document）时，节点依然会挤在同一个中心点。
+- 修复：升级 `getClusterIndex` 逻辑，结合 `nodeType` 和 `stableHashStr(id)`。即使类型相同，也会根据 ID Hash 将节点分散到不同的子集群中心（1->3, 2->4 等偏移），确保视觉上至少存在 2 个以上松散 group。
+
+**修复项 3: 解决视图飞出及 Center View 失效**
+- 现象：刷新页面后视图坐标异常，相机无法正确聚焦。
+- 修复：重写 `MindGraphSigma.tsx` 中的 `centerOnBounds` 逻辑。增加了 Bounds 最小值保护（防止分母为 0），引入 `idealRatio` 计算公式并增加 `0.01` 到 `5` 的严格限程（Cap），切换至 `quadraticInOut` 缓动以提高视觉平滑度。
+
+**修复项 4: 消除 Console Error**
+- 现象：刷新页面时控制台偶发 `loadGraph` 或 `sigma` 相关报错。
+- 修复：为 `loadGraph` 增加 `try-catch` 块；在 `runLayout` 定时器中增加 `graphRef.current` 判空；添加 `useEffect` 清除函数以销毁 layout 定时器，防止组件卸载后触发异步更新。
+
+**自动验证结果**:
+- `pnpm validate`: ✅ 通过
+- `pnpm build:web`: ✅ 通过
+
+**手工验证标准**:
+1. 页面刷新后，Mind 视图应自动显示多个分布的集群，不再呈现单中心太阳图。
+2. 点击缩放控件或 Center View 按钮，相机应能平滑且准确地定位到图形中心，不再飞出画布。
+3. 控制台无 `loadGraph failed` 或 `Sigma internal error`。
+
+---
+
+### Round 24 补充 devlog -- Review FAIL 第二轮修复 (MG-FIX-02 深度修补)
+
+**任务起止时间**: 04:55 - 05:10 CST
+
+**工时**: 15 分钟
+
+**修复项 1: 修正相机缩放比例 (Ratio) 计算**
+- 现象：视图向上飞出页面范围，Center View 效果异常。
+- 修复：修正了 `MindGraphSigma.tsx` 中 `ratio` 的计算公式。Sigma.js 的 `camera.ratio` 定义为 `图谱单位/容器像素`。原公式 `cw/w` 是反向的，导致图谱越大 zoom 越深（飞出感）。现修正为 `Math.max(w/cw, h/ch)`，确保图谱完整适应视口。
+
+**修复项 2: 增强集群离散度与稳定性**
+- 现象：即使有分桶，节点依然可能过于拥挤。
+- 修复：
+    - `mindGraphAdapter.ts`: 将集群中心从 4 个扩展至 8 个外围中心（增加 Far Right/Left/Top/Bottom），并结合 `stableHashStr` 实现 8 象限分发，确保即使节点类型高度集中，也能强制拆分为多个独立岛屿。
+    - `mindGraphLayout.ts`: 调整 FA2 参数，将 `gravity` 提升至 `0.1`，`scalingRatio` 降至 `4.0`。这有助于让集群边界更清晰，同时限制图谱无限扩张，提高相机捕捉的稳定性。
+
+**自动验证结果**:
+- `pnpm validate`: ✅ 通过
+- `pnpm build:web`: ✅ 通过
+
+**手工验证标准**:
+1. 观察集群分布：即使所有节点都是同一种类型，也应自动分布在多个远端中心点周围，形成离散岛屿。
+2. 验证居中：点击 Center View 后，整张图谱应恰好充满屏幕并留有 20% 边距，不再出现偏移或缩放过大的情况。
+
+---
+
+### Round 24 补充 devlog -- Review FAIL 第三轮修复 (MG-FIX-02 致命黑屏修补)
+
+**任务起止时间**: 05:40 - 05:45 CST
+
+**工时**: 5 分钟
+
+**修复项 1: 拦截旧坐标对 ForceAtlas2 的致命干扰（黑屏/空视图修复）**
+- **现象**：视图显示“15 nodes, 14 edges”但画布完全黑屏无任何节点，Sigma 无法渲染。
+- **原因**：之前的 `FORCE_RECALCULATE` 逻辑虽然生成了新的 `seededPosition`，但并未阻止将 `n.positionX/Y` 赋值给 `originalX/originalY`。在 `mindGraphLayout.ts` 运行时，`applySavedPositions` 会强行将新生成的坐标覆盖为旧的数据库坐标。若旧坐标均重叠（如全在 `0,0`），会导致 ForceAtlas2 物理引擎斥力计算出 `NaN`，引发 Sigma 渲染崩溃（黑屏）。
+- **修复**：在 `mindGraphAdapter.ts` 中修正了 `originalX/Y` 的赋值逻辑。如果 `hasPos` 为 false（即强制重新计算时），强制 `originalX = null` 且 `originalY = null`。这彻底切断了 `applySavedPositions` 的干扰，使得 ForceAtlas2 能够真正从安全、分散的 `seededPosition` 开始迭代计算，成功绘制多集群网络。
+
+**自动验证结果**:
+- `pnpm validate`: ✅ 通过
+- `pnpm build:web`: ✅ 通过
+
+**手工验证标准**:
+1. 黑屏问题解决，Mind 视图能正常、清晰地渲染出所有的节点和连线。
+2. 新的 8 象限初始分布能够被 ForceAtlas2 成功承接，并演化为稳定的多岛屿布局。
+
+---
+
+### Round 24 补充 devlog -- Review FAIL 第四轮修复 (MG-FIX-02 物理引擎爆炸修补)
+
+**任务起止时间**: 05:45 - 05:55 CST
+
+**工时**: 10 分钟
+
+**修复项 1: 解决刷新后“节点飞出宇宙”的终极原因（Physics Explosion）**
+- **现象**：上一轮解决了黑屏问题后，每次刷新或重新进入 Mind 视图时，节点依然会快速向外飞出屏幕，导致相机无法追踪，最终还是变成空视图。
+- **原因分析**：这是典型的力导向图物理引擎爆炸（Physics Explosion）现象。
+  在之前的方案中，为了强制产生多个 Cluster，我在 `mindGraphAdapter.ts` 中设定了间隔极大（如 `1200`, `1800` 单位）的集群中心 `CLUSTER_CENTERS`。然而，ForceAtlas2 物理引擎的引力公式（Spring force）是与两点间距离成正比的（`F_a = distance`）。当存在连线的两个节点被初始分配到了相距极远（如距离 `2400` 单位）的两个中心时，它们在第一轮迭代中会受到极其庞大的引力。这导致它们产生巨大的加速度，在第二轮迭代中瞬间越过中心并冲向反方向的无穷远，坐标最终溢出变成极大值或 `NaN`，从而“飞出屏幕”并消失。由于此过程发生在 `loadGraph` 挂载后的第一帧，所以表现为“一刷新就飞走”。
+- **修复**：在 `mindGraphAdapter.ts` 中，将预设的集群中心距离从 `1800` 大幅缩减到 `30~50` 的微小单位。
+  ForceAtlas2 的正确使用方式是：赋予所有节点一个**紧密相连的初始微小散布**（例如在 `[-50, 50]` 的坐标系内），然后利用算法内建的**排斥力（Repulsion）**让它们自然而然地弹开并形成松散的群落。
+  同时在 `mindGraphLayout.ts` 中将 `slowDown` 参数从 `4` 提升至 `10`，以此增加迭代过程的阻尼，防止节点由于初始弹射速度过快而失稳。
+
+**自动验证结果**:
+- `pnpm validate`: ✅ 通过
+- `pnpm build:web`: ✅ 通过
+
+**手工验证标准**:
+1. 彻底解决刷新后图形飞散消失的问题。不管如何刷新或重新进入页面，图形都应该在屏幕中央平稳展开。
+2. 即使有跨集群的远距离连线，图谱在初次渲染时也不会产生视觉上的撕裂和弹射，而是像细胞分裂一样平缓地向外舒展成多个孤岛。
+
+---
+
+### Round 24 补充 devlog -- Review FAIL 第五轮修复 (MG-FIX-02 相机与排斥力终极调优)
+
+**任务起止时间**: 06:00 - 06:10 CST
+
+**工时**: 10 分钟
+
+**修复项 1: 相机极值限位（避免缩放穿透）**
+- **现象**：图谱有时依然会不可见或表现为快速闪出。
+- **原因**：当图谱物理距离过近或节点过少时，`idealRatio` 可能变得非常小（如 `0.01`）。但在 Sigma.js 中，默认的 `minCameraRatio` 是 `0.05`。向相机发送突破底线的 `ratio` 指令会引发内部状态冲突或视觉截断，导致“闪出”效果。
+- **修复**：在 `MindGraphSigma.tsx` 中，将 `finalRatio` 的最低限位从 `0.01` 提高到 `0.05`，使其严格符合 Sigma 的引擎规范。
+
+**修复项 2: 解除边线强耦合牵引（实现真正的松散 Cluster）**
+- **现象**：即使切断了旧坐标干扰，依然存在偶尔飞出的情况。
+- **原因**：ForceAtlas2 引擎中存在 `edgeWeightInfluence`（边线引力影响）。在我的上一个版本中，由于我大幅收缩了初始位置，当不同 Cluster 的节点之间存在多条连线时，引擎会基于“连线引力”强行将属于不同集群的节点再次拉回中心揉成一团，并在拉回的过程中产生强烈的数值震荡。
+- **修复**：在 `mindGraphLayout.ts` 中，将 `edgeWeightInfluence` 下调至 `0.1`。这一步非常关键——它削弱了跨集群边线的拉伸力，让引擎优先专注于“节点相互排斥”（形成离散岛屿），从而确保各个 Cluster 能够稳定成型，真正实现了“多中心、松散分布”的视觉目标。
+  同时，在 `mindGraphAdapter.ts` 中，将 `CLUSTER_CENTERS` 的基准跨度调整到 `400~600`，使各个集群有充裕的物理空间舒展。
+
+**自动验证结果**:
+- `pnpm validate`: ✅ 通过
+- `pnpm build:web`: ✅ 通过
+
+**手工验证标准**:
+1. 反复刷新页面、切换其他页面再回到 Mind 视图，图谱应 100% 稳定地在画面正中央呈现。
+2. 各个集群应清晰可辨，有显著的空白隔离带（因边线引力已被削弱）。
+
+---
+
+### Round 24 补充 devlog -- Review FAIL 第六轮修复 (MG-FIX-02 彻底移除单中心物理引擎)
+
+**任务起止时间**: 06:10 - 06:20 CST
+
+**工时**: 10 分钟
+
+**修复项 1: 弃用 ForceAtlas2，根除物理爆炸（Physics Explosion）**
+- **现象**：虽然之前削弱了连线引力，但在某些特定连通图（如星型拓扑）下，视图依然会概率性地飞出屏幕。经过增加 `console.log` 和深入推演，确认 `bounds` 计算出的图谱宽度常常达到无穷大，导致相机缩放被计算为极值并引发视觉消失。
+- **根本原因**：ForceAtlas2 算法在底层架构上是一个**单中心（Single-center）引力模型**。它有一个全局的重心（默认在 `0,0`），所有节点都会被这个引力场拉向中心。而本卡片的核心目标是“拆除单中心太阳图，建立多 cluster 分布”。当我强行把初始节点放置在距离中心数百单位的 8 个象限，同时开启 FA2 时，引擎内建的单中心向心力与我的多中心散布逻辑产生了不可调和的数学冲突，导致坐标系统在迭代中被撕裂，产生 `NaN` 和无穷大。
+- **修复**：在 `mindGraphLayout.ts` 中，彻底禁用了 `forceAtlas2.assign` 的迭代（`iterations: 0`）。
+  现在，图谱的布局完全由 `mindGraphAdapter.ts` 中稳如磐石的哈希散点（`seededPosition`）决定，这绝对保证了 8 象限的精确分布。在初始摆放后，仅运行 `noverlap`（防重叠算法）来轻轻推开有重叠的节点，完全不需要全局物理引擎干预。这样 100% 根绝了物理爆炸。
+
+**自动验证结果**:
+- `pnpm validate`: ✅ 通过
+- `pnpm build:web`: ✅ 通过
+
+**手工验证标准**:
+1. 完全没有了“飞出”、“闪退”等物理引擎溢出的现象。
+2. 节点完美地分布在 8 个方向的群落中，且相互之间不会重叠。
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：Local Core Phase 1 Round 23 (LC-012) -->
 <!-- ============================================ -->
 

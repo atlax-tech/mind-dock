@@ -1,20 +1,22 @@
 import Graph from 'graphology'
-import forceAtlas2 from 'graphology-layout-forceatlas2'
+// import forceAtlas2 from 'graphology-layout-forceatlas2'
 import noverlap from 'graphology-layout-noverlap'
 import type { GraphNodeAttributes } from './mindGraphAdapter'
 
 const FA2_SETTINGS = {
   iterations: 80,
   settings: {
-    gravity: 0.8,
+    // Light gravity
+    gravity: 0.05,
     scalingRatio: 2.0,
-    strongGravityMode: true,
-    slowDown: 4,
+    strongGravityMode: false,
+    slowDown: 5,
     barnesHutOptimize: true,
     barnesHutTheta: 0.8,
-    edgeWeightInfluence: 1.0,
-    outboundAttractionDistribution: false,
-    linLogMode: false,
+    // CRITICAL: Reduce edge pull so nodes stay in their assigned clusters rather than being yanked to the center
+    edgeWeightInfluence: 0.1,
+    outboundAttractionDistribution: true, 
+    linLogMode: true, 
     adjustSizes: true,
   },
 }
@@ -59,21 +61,15 @@ export function applyForceAtlas2Layout(
     return
   }
 
-  const countWithPos = graph.reduceNodes((acc, _nid, attrs) => {
-    return acc + (attrs.originalX != null && attrs.originalY != null ? 1 : 0)
-  }, 0)
-
-  if (countWithPos >= graph.order * 0.8) {
-    applySavedPositions(graph)
-    onProgress?.({ phase: 'done', iterations: 0, maxIterations: 0 })
-    return
-  }
-
+  // Always apply saved positions as starting point if available, but DO NOT skip FA2
   applySavedPositions(graph)
 
-  onProgress?.({ phase: 'forceatlas2', iterations: 0, maxIterations: FA2_SETTINGS.iterations })
-  forceAtlas2.assign(graph, { iterations: FA2_SETTINGS.iterations, settings: { ...FA2_SETTINGS.settings } })
-  onProgress?.({ phase: 'forceatlas2', iterations: FA2_SETTINGS.iterations, maxIterations: FA2_SETTINGS.iterations })
+  onProgress?.({ phase: 'forceatlas2', iterations: 0, maxIterations: 0 })
+  // MG-FIX-02: Disable ForceAtlas2 completely to prevent physics explosions.
+  // FA2's global gravity and spring forces conflict with the rigid multi-cluster initial placement,
+  // causing nodes to shoot to infinity. We now rely purely on the seeded multi-cluster positions + noverlap.
+  // forceAtlas2.assign(graph, { iterations: FA2_SETTINGS.iterations, settings: { ...FA2_SETTINGS.settings } })
+  onProgress?.({ phase: 'forceatlas2', iterations: 0, maxIterations: 0 })
 
   if (graph.order > 1) {
     onProgress?.({ phase: 'noverlap', iterations: 0, maxIterations: NOVERLAP_SETTINGS.maxIterations })

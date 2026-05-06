@@ -54,14 +54,54 @@ function stableHashStr(s: string): number {
   return (h >>> 0) / 0x100000000
 }
 
-function seededPosition(id: string, idx: number, totalCount: number): { x: number; y: number } {
-  if (totalCount <= 0) return { x: 0, y: 0 }
+// Scale down centers massively. ForceAtlas2 expects initial positions to be tight.
+// Large initial distances cause massive spring forces leading to physics explosions (nodes flying to infinity).
+const CLUSTER_CENTERS = [
+  { x: 0, y: 0 },         // 0: Root
+  { x: 400, y: 400 },   // 1: Top-Right
+  { x: -400, y: 400 },  // 2: Top-Left
+  { x: 400, y: -400 },  // 3: Bottom-Right
+  { x: -400, y: -400 }, // 4: Bottom-Left
+  { x: 600, y: 0 },      // 5: Far Right
+  { x: -600, y: 0 },     // 6: Far Left
+  { x: 0, y: 600 },      // 7: Far Top
+  { x: 0, y: -600 },     // 8: Far Bottom
+]
+
+function getClusterIndex(nodeType: string, id: string): number {
+  if (nodeType === 'root') return 0
+  
+  // Base index from type
+  let baseIdx = 1
+  if (['document', 'source', 'fragment'].includes(nodeType)) baseIdx = 1
+  else if (['concept', 'entity', 'person', 'organization', 'location'].includes(nodeType)) baseIdx = 2
+  else if (['tag', 'category'].includes(nodeType)) baseIdx = 3
+  else baseIdx = 4
+
   const hash = stableHashStr(id)
-  const angle = ((idx / totalCount) * Math.PI * 2 + hash * Math.PI) % (Math.PI * 2)
-  const radius = 150 + hash * 350
+  // Combine type and hash to ensure at least 2 clusters even for same type
+  // We use 8 outer centers. Shift baseIdx based on hash bits
+  const offset = Math.floor(hash * 4) // 0-3
+  let finalIdx = baseIdx + offset
+  if (finalIdx > 8) finalIdx = 1 + (finalIdx % 8)
+  
+  return finalIdx
+}
+
+function seededPosition(id: string, nodeType: string, idx: number, totalCount: number): { x: number; y: number } {
+  if (totalCount <= 0) return { x: 0, y: 0 }
+  
+  const clusterIdx = getClusterIndex(nodeType, id)
+  const center = CLUSTER_CENTERS[clusterIdx] || CLUSTER_CENTERS[0]
+  
+  const hash = stableHashStr(id)
+  // Random angle and moderate radius within cluster
+  const angle = (hash * Math.PI * 2)
+  const radius = 50 + (idx % 10) * 10 + hash * 100
+  
   return {
-    x: Math.cos(angle) * radius,
-    y: Math.sin(angle) * radius,
+    x: center.x + Math.cos(angle) * radius,
+    y: center.y + Math.sin(angle) * radius,
   }
 }
 
@@ -69,13 +109,17 @@ export function snapshotToGraphology(snapshot: MindGraphSnapshot): MindGraphStat
   const graph = new Graph<GraphNodeAttributes, GraphEdgeAttributes>({ multi: false })
   const totalNodes = snapshot.nodes.length
 
+  // MG-FIX-02: Force re-calculate by ignoring saved positions for now
+  // to break free from the old ROOT sunburst layout
+  const FORCE_RECALCULATE = true
+
   snapshot.nodes.forEach((n, idx) => {
     const color = getNodeColor(n.nodeType)
     const baseSize = getNodeBaseSize(n.nodeType)
     const labelSize = getNodeLabelSize(n.nodeType)
 
-    const hasPos = n.positionX != null && n.positionY != null
-    const seeded = !hasPos ? seededPosition(n.id, idx, Math.max(totalNodes, 1)) : null
+    const hasPos = !FORCE_RECALCULATE && n.positionX != null && n.positionY != null
+    const seeded = !hasPos ? seededPosition(n.id, n.nodeType, idx, Math.max(totalNodes, 1)) : null
 
     graph.addNode(n.id, {
       nodeType: n.nodeType as MindNodeType,
@@ -92,10 +136,10 @@ export function snapshotToGraphology(snapshot: MindGraphSnapshot): MindGraphStat
       documentWeightScore: n.documentWeightScore,
       userPinScore: n.userPinScore,
       clusterCenterScore: n.clusterCenterScore,
-      originalX: n.positionX ?? null,
-      originalY: n.positionY ?? null,
-      x: n.positionX ?? seeded?.x ?? 0,
-      y: n.positionY ?? seeded?.y ?? 0,
+      originalX: hasPos ? n.positionX : null,
+      originalY: hasPos ? n.positionY : null,
+      x: (hasPos ? n.positionX : seeded?.x) ?? 0,
+      y: (hasPos ? n.positionY : seeded?.y) ?? 0,
     })
   })
 

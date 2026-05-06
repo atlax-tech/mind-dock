@@ -15,12 +15,14 @@ interface MindGraphViewProps {
   snapshot: MindGraphSnapshot
   onOpenEditor: (documentId: number) => void
   onToast: (msg: string) => void
+  activeModule?: string
 }
 
 export default function MindGraphView({
   snapshot,
   onOpenEditor,
   onToast: _onToast,
+  activeModule,
 }: MindGraphViewProps) {
   const interaction = useMindGraphInteraction()
   const { state: ixState, actions: ixActions } = interaction
@@ -81,6 +83,7 @@ export default function MindGraphView({
         onTooltipChange={handleTooltipChange}
         layoutAppliedRef={layoutAppliedRef}
         onCameraControl={handleCameraControl}
+        activeModule={activeModule}
       />
 
       <MindFilterPanel
