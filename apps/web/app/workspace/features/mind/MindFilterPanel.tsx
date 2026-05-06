@@ -149,51 +149,6 @@ export default function MindFilterPanel({
             <label className="flex items-center gap-2 text-xs text-white cursor-pointer hover:bg-white/5 p-1 rounded -ml-1">
               <input
                 type="checkbox"
-                checked={filterState.showDocuments}
-                onChange={e => onUpdateFilter({ showDocuments: e.target.checked })}
-                className="accent-[var(--accent)] rounded w-3.5 h-3.5"
-              />
-              Show Documents
-            </label>
-            <label className="flex items-center gap-2 text-xs text-white cursor-pointer hover:bg-white/5 p-1 rounded -ml-1">
-              <input
-                type="checkbox"
-                checked={filterState.showTags}
-                onChange={e => onUpdateFilter({ showTags: e.target.checked })}
-                className="accent-[var(--accent)] rounded w-3.5 h-3.5"
-              />
-              Show Tags
-            </label>
-            <label className="flex items-center gap-2 text-xs text-white cursor-pointer hover:bg-white/5 p-1 rounded -ml-1">
-              <input
-                type="checkbox"
-                checked={filterState.showSources}
-                onChange={e => onUpdateFilter({ showSources: e.target.checked })}
-                className="accent-[var(--accent)] rounded w-3.5 h-3.5"
-              />
-              Show Sources/Fragments
-            </label>
-            <label className="flex items-center gap-2 text-xs text-white cursor-pointer hover:bg-white/5 p-1 rounded -ml-1">
-              <input
-                type="checkbox"
-                checked={filterState.showSuggested}
-                onChange={e => onUpdateFilter({ showSuggested: e.target.checked })}
-                className="accent-[var(--accent)] rounded w-3.5 h-3.5"
-              />
-              Show Suggested Edges
-            </label>
-            <label className="flex items-center gap-2 text-xs text-white cursor-pointer hover:bg-white/5 p-1 rounded -ml-1">
-              <input
-                type="checkbox"
-                checked={filterState.showConfirmed}
-                onChange={e => onUpdateFilter({ showConfirmed: e.target.checked })}
-                className="accent-[var(--accent)] rounded w-3.5 h-3.5"
-              />
-              Show Confirmed Edges
-            </label>
-            <label className="flex items-center gap-2 text-xs text-white cursor-pointer hover:bg-white/5 p-1 rounded -ml-1">
-              <input
-                type="checkbox"
                 checked={filterState.showOrphans}
                 onChange={e => onUpdateFilter({ showOrphans: e.target.checked })}
                 className="accent-[var(--accent)] rounded w-3.5 h-3.5"
@@ -202,31 +157,6 @@ export default function MindFilterPanel({
             </label>
           </div>
 
-          <div className="text-[10px] font-bold text-[var(--text-muted)] mb-2 tracking-wider border-t border-[var(--border-line)] pt-3">MIN CONFIDENCE</div>
-          <input
-            type="range" min="0" max="100"
-            value={Math.round(filterState.minConfidence * 100)}
-            onChange={e => onUpdateFilter({ minConfidence: Number(e.target.value) / 100 })}
-            className="w-full accent-[var(--accent)]"
-          />
-          <div className="flex justify-between text-[10px] text-[var(--text-muted)] mb-3">
-            <span>0%</span>
-            <span>{Math.round(filterState.minConfidence * 100)}%</span>
-            <span>100%</span>
-          </div>
-
-          <div className="text-[10px] font-bold text-[var(--text-muted)] mb-2 tracking-wider border-t border-[var(--border-line)] pt-3">MIN STRENGTH</div>
-          <input
-            type="range" min="0" max="100"
-            value={Math.round(filterState.minStrength * 100)}
-            onChange={e => onUpdateFilter({ minStrength: Number(e.target.value) / 100 })}
-            className="w-full accent-[var(--accent)]"
-          />
-          <div className="flex justify-between text-[10px] text-[var(--text-muted)] mb-3">
-            <span>0%</span>
-            <span>{Math.round(filterState.minStrength * 100)}%</span>
-            <span>100%</span>
-          </div>
 
           <div className="text-[10px] font-bold text-[var(--text-muted)] mb-2 tracking-wider border-t border-[var(--border-line)] pt-3">ACTIONS</div>
           <button

@@ -8,7 +8,6 @@ import GoldenTopNav from './_components/GoldenTopNav'
 import {
   addTagToItem,
   archiveItem,
-  buildMindGraphSnapshot,
   createDockItem,
   deleteEditorDraft,
   generateRecommendationsForContext,
@@ -29,7 +28,6 @@ import {
   reopenItem,
   suggestItem,
   updateDockItemText,
-  updateMindNodePositions,
   upsertMindNode,
   upsertMindEdge,
   applyRecommendation,
@@ -37,9 +35,10 @@ import {
   type StoredMindNode,
   type StoredMindEdge,
   type StoredWorkspaceOpenTab,
-  type MindGraphSnapshot,
   type RecommendationDockQueueItem,
 } from '@/lib/repository'
+import { buildSimpleMindGraphSnapshot } from './features/mind/mindSnapshotBuilder'
+import type { MindGraphSnapshot } from './features/mind/types'
 import {
   describeRecommendationAction,
   describeRecommendationReason,
@@ -51,7 +50,6 @@ import {
   CANDIDATE_TYPE_LABELS,
   STATUS_LABELS as REC_STATUS_LABELS,
 } from '@/lib/recommendation-i18n'
-import { db } from '@/lib/db'
 import type { EntryStatus } from '@/lib/types'
 import { recordEvent } from '@/lib/events'
 import type { HomeViewHandle } from './features/home/HomeView'
@@ -61,7 +59,7 @@ import HomeView from './features/home/HomeView'
 import EditorTabView from './features/editor/EditorTabView'
 import { useAutosave } from './features/editor/useAutosave'
 import MindCanvasStage from './features/mind/MindCanvasStage'
-import { makeWorkspaceTabId, type MindEdgeType } from '@atlax/domain'
+import { makeWorkspaceTabId } from '@atlax/domain'
 import { toDockTreeViewModel, type DockTreeNode } from './features/dock/dockTreeAdapter'
 import GlobalSidebar from './_components/GlobalSidebar'
 import FloatingChatPanel from './_components/FloatingChatPanel'
@@ -270,7 +268,7 @@ export default function WorkspacePage() {
       ])
       setMindNodes(nodes)
       setMindEdges(edges)
-      const snapshot = await buildMindGraphSnapshot(userId)
+      const snapshot = buildSimpleMindGraphSnapshot(nodes, edges)
       setMindSnapshot(snapshot)
     } catch (err) {
       console.error('[MindData] Failed to load mind data:', err)
@@ -1270,39 +1268,6 @@ export default function WorkspacePage() {
               }}
               onToast={showToast}
               activeModule={activeModule}
-              onCreateEdge={async (sourceId, targetId, edgeType: MindEdgeType) => {
-                if (!userId) return
-                try {
-                  await upsertMindEdge({ userId, sourceNodeId: sourceId, targetNodeId: targetId, edgeType, strength: 0.5, source: 'user' })
-                  refreshAll()
-                  showToast('Edge synced to knowledge graph')
-                } catch (err) {
-                  console.error('[MindCanvas] Failed to sync edge:', err)
-                  showToast('Edge created locally (sync failed)')
-                }
-              }}
-              onDeleteEdge={async (sourceId: string, targetId: string) => {
-                if (!userId) return
-                try {
-                  const edge = mindEdges.find(e => (e.sourceNodeId === sourceId && e.targetNodeId === targetId) || (e.sourceNodeId === targetId && e.targetNodeId === sourceId))
-                  if (edge) {
-                    await db.table('mindEdges').delete(edge.id)
-                    refreshAll()
-                    showToast('Edge removed from knowledge graph')
-                  }
-                } catch (err) {
-                  console.error('[MindCanvas] Failed to delete edge:', err)
-                  showToast('Edge removed locally (sync failed)')
-                }
-              }}
-              onPositionsChange={async (updates) => {
-                if (!userId) return
-                try {
-                  await updateMindNodePositions(userId, updates)
-                } catch (err) {
-                  console.error('[MindCanvas] Failed to save positions:', err)
-                }
-              }}
               onOpenInDock={(dockItemId: number) => {
                 setSelectedItemId(dockItemId)
                 handleModuleChange('dock')

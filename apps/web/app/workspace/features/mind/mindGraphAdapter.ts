@@ -1,5 +1,5 @@
 import Graph from 'graphology'
-import type { MindGraphSnapshot } from '@/lib/repository'
+import type { MindGraphSnapshot } from './types'
 import type { MindNodeType, MindEdgeType } from '@atlax/domain'
 import { getNodeColor, getNodeBaseSize, getNodeLabelSize, getEdgeStyle } from './mindGraphStyle'
 

@@ -1,12 +1,12 @@
 'use client'
 
-import React, { useEffect, useRef, useCallback, useState } from 'react'
+import React, { useEffect, useRef, useCallback } from 'react'
 import { SigmaContainer, useLoadGraph, useRegisterEvents, useSigma } from '@react-sigma/core'
 import '@react-sigma/core/lib/style.css'
-import type { MindGraphSnapshot } from '@/lib/repository'
+import type { MindGraphSnapshot } from './types'
 import type { MindNodeType, MindEdgeType } from '@atlax/domain'
 import { snapshotToGraphology, precomputeAdjacency, computeSnapshotSignature, type GraphNodeAttributes, type GraphEdgeAttributes } from './mindGraphAdapter'
-import { applyForceAtlas2Layout, computeVisibleBounds, extractNodePositions, type LayoutProgress } from './mindGraphLayout'
+import { applyForceAtlas2Layout, computeVisibleBounds, type LayoutProgress } from './mindGraphLayout'
 import {
   getNodeColor,
   getEdgeStyle,
@@ -36,15 +36,12 @@ interface MindGraphSigmaProps {
   ixState: MindInteractionState
   ixActions: MindInteractionActions
   onOpenEditor: (documentId: number) => void
-  onPositionsChange?: (updates: Array<{ nodeId: string; positionX: number; positionY: number }>) => void
   onNodeCountChange: (n: number) => void
   onEdgeCountChange: (n: number) => void
   onLayoutRunningChange: (r: boolean) => void
   onTooltipChange: (t: TooltipData | null) => void
   layoutAppliedRef: React.MutableRefObject<boolean>
   onCameraControl: (ctrl: { zoomIn: () => void; zoomOut: () => void; centerView: () => void }) => void
-  onCreateEdge?: (sourceId: string, targetId: string, edgeType: MindEdgeType) => void
-  onDeleteEdge?: (sourceId: string, targetId: string) => void
 }
 
 export default function MindGraphSigma(props: MindGraphSigmaProps) {
@@ -78,9 +75,8 @@ export default function MindGraphSigma(props: MindGraphSigmaProps) {
 
 function MindGraphInner({
   snapshotKey, snapshot, ixState, ixActions,
-  onOpenEditor, onPositionsChange, onNodeCountChange, onEdgeCountChange,
+  onOpenEditor, onNodeCountChange, onEdgeCountChange,
   onLayoutRunningChange, onTooltipChange, layoutAppliedRef, onCameraControl,
-  onCreateEdge, onDeleteEdge: _onDeleteEdge,
 }: MindGraphSigmaProps) {
   const loadGraph = useLoadGraph()
   const registerEvents = useRegisterEvents()
@@ -89,7 +85,6 @@ function MindGraphInner({
   const adjacencyRef = useRef<{ neighborMap: Map<string, Set<string>>; incidentEdgesMap: Map<string, Set<string>> } | null>(null)
   const prevSnapshotKeyRef = useRef<string>('')
   const hoverStateRef = useRef<{ hoveredNodeId: string | null; focusedNodeId: string | null }>({ hoveredNodeId: null, focusedNodeId: null })
-  const [edgeCreation, setEdgeCreation] = useState<{ sourceId: string | null; step: 'idle' | 'selecting_target' }>({ sourceId: null, step: 'idle' })
 
   const centerOnBounds = useCallback((g?: import('graphology').default<GraphNodeAttributes, GraphEdgeAttributes> | null) => {
     const graph = g || graphRef.current
@@ -151,10 +146,6 @@ function MindGraphInner({
         layoutAppliedRef.current = true
         onLayoutRunningChange(false)
         ixActions.setLayoutProgress('done', 0, 0)
-        if (onPositionsChange) {
-          const updates = extractNodePositions(gs.graph)
-          onPositionsChange(updates)
-        }
         sigma.refresh()
         requestAnimationFrame(() => centerOnBounds(gs.graph))
       }
@@ -184,10 +175,6 @@ function MindGraphInner({
       layoutAppliedRef.current = true
       onLayoutRunningChange(false)
       ixActions.setLayoutProgress('done', 0, 0)
-      if (onPositionsChange) {
-        const updates = extractNodePositions(graph)
-        onPositionsChange(updates)
-      }
       sigma.refresh()
       requestAnimationFrame(() => centerOnBounds())
     }
@@ -318,16 +305,6 @@ function MindGraphInner({
 
     const handleClickNode = (event: { node: string }) => {
       const nodeId = event.node
-
-      // Edge creation flow
-      if (edgeCreation.step === 'selecting_target' && edgeCreation.sourceId) {
-        if (edgeCreation.sourceId !== nodeId && onCreateEdge) {
-          onCreateEdge(edgeCreation.sourceId, nodeId, 'semantic')
-        }
-        setEdgeCreation({ sourceId: null, step: 'idle' })
-        return
-      }
-
       if (ixState.focusedNodeId === nodeId) {
         ixActions.clearFocus()
         return
@@ -342,17 +319,6 @@ function MindGraphInner({
 
     const handleClickStage = () => {
       ixActions.clearFocus()
-      if (edgeCreation.step === 'selecting_target') {
-        setEdgeCreation({ sourceId: null, step: 'idle' })
-      }
-    }
-
-    const handleRightClickNode = (event: { node: string; event: { original: MouseEvent } }) => {
-      event.event.original.preventDefault()
-      const nodeId = event.node
-      if (edgeCreation.step === 'idle') {
-        setEdgeCreation({ sourceId: nodeId, step: 'selecting_target' })
-      }
     }
 
     registerEvents({
@@ -364,22 +330,10 @@ function MindGraphInner({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       doubleClickNode: handleDoubleClickNode as any,
       clickStage: handleClickStage as any,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      rightClickNode: handleRightClickNode as any,
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sigma, ixActions, ixState.focusedNodeId, onOpenEditor, onTooltipChange, edgeCreation.step, edgeCreation.sourceId, onCreateEdge])
+  }, [sigma, ixActions, ixState.focusedNodeId, onOpenEditor, onTooltipChange])
 
-  // Edge creation visual indicator
-  useEffect(() => {
-    const graph = graphRef.current
-    if (!graph) return
-    if (edgeCreation.step === 'selecting_target' && edgeCreation.sourceId) {
-      graph.setNodeAttribute(edgeCreation.sourceId, 'color', HOVER_HIGHLIGHT_COLOR)
-      graph.setNodeAttribute(edgeCreation.sourceId, 'size', graph.getNodeAttribute(edgeCreation.sourceId, 'baseSize') * 1.8)
-      sigma.refresh()
-    }
-  }, [edgeCreation, sigma])
 
   return null
 }

@@ -2,8 +2,8 @@
 
 import React, { useRef, useEffect } from 'react'
 import { Network } from 'lucide-react'
-import type { StoredMindNode, StoredMindEdge, MindGraphSnapshot } from '@/lib/repository'
-import type { MindEdgeType } from '@atlax/domain'
+import type { StoredMindNode, StoredMindEdge } from '@/lib/repository'
+import type { MindGraphSnapshot } from './types'
 import MindGraphView from './MindGraphView'
 
 interface MindCanvasStageProps {
@@ -14,9 +14,6 @@ interface MindCanvasStageProps {
   onOpenInDock?: (dockItemId: number) => void
   onToast: (msg: string) => void
   activeModule?: string
-  onCreateEdge?: (sourceId: string, targetId: string, edgeType: MindEdgeType) => void
-  onDeleteEdge?: (sourceId: string, targetId: string) => void
-  onPositionsChange?: (updates: Array<{ nodeId: string; positionX: number; positionY: number }>) => void
 }
 
 const NODE_COLORS: Record<string, string> = {
@@ -33,9 +30,6 @@ export default function MindCanvasStage({
   snapshot,
   onOpenEditor,
   onToast,
-  onCreateEdge,
-  onDeleteEdge,
-  onPositionsChange,
 }: MindCanvasStageProps) {
   if (USE_GRAPH_VIEW && snapshot) {
     return (
@@ -43,9 +37,6 @@ export default function MindCanvasStage({
         snapshot={snapshot}
         onOpenEditor={onOpenEditor}
         onToast={onToast}
-        onCreateEdge={onCreateEdge}
-        onDeleteEdge={onDeleteEdge}
-        onPositionsChange={onPositionsChange}
       />
     )
   }

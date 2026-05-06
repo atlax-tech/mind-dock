@@ -2,13 +2,12 @@
 
 import React, { useRef, useState, useCallback, useMemo } from 'react'
 import dynamic from 'next/dynamic'
-import { Plus, Minus, Crosshair, Network, Loader2, X, Unlink } from 'lucide-react'
-import type { MindGraphSnapshot } from '@/lib/repository'
+import { Plus, Minus, Crosshair, Network, Loader2, X } from 'lucide-react'
+import type { MindGraphSnapshot } from './types'
 import { BG_COLOR } from './mindGraphStyle'
 import { useMindGraphInteraction } from './useMindGraphInteraction'
 import { computeSnapshotSignature } from './mindGraphAdapter'
 import MindFilterPanel from './MindFilterPanel'
-import type { MindEdgeType } from '@atlax/domain'
 
 const MindGraphSigma = dynamic(() => import('./MindGraphSigma'), { ssr: false })
 
@@ -16,18 +15,12 @@ interface MindGraphViewProps {
   snapshot: MindGraphSnapshot
   onOpenEditor: (documentId: number) => void
   onToast: (msg: string) => void
-  onPositionsChange?: (updates: Array<{ nodeId: string; positionX: number; positionY: number }>) => void
-  onCreateEdge?: (sourceId: string, targetId: string, edgeType: MindEdgeType) => void
-  onDeleteEdge?: (sourceId: string, targetId: string) => void
 }
 
 export default function MindGraphView({
   snapshot,
   onOpenEditor,
   onToast: _onToast,
-  onPositionsChange,
-  onCreateEdge,
-  onDeleteEdge,
 }: MindGraphViewProps) {
   const interaction = useMindGraphInteraction()
   const { state: ixState, actions: ixActions } = interaction
@@ -71,9 +64,6 @@ export default function MindGraphView({
     return snapshot.nodes.filter(n => neighborIds.has(n.id))
   }, [selectedNodeId, selectedNodeEdges, snapshot.nodes])
 
-  const handleUnlink = useCallback((sourceId: string, targetId: string) => {
-    onDeleteEdge?.(sourceId, targetId)
-  }, [onDeleteEdge])
 
   const { layoutPhase } = ixState
 
@@ -85,15 +75,12 @@ export default function MindGraphView({
         ixState={ixState}
         ixActions={ixActions}
         onOpenEditor={onOpenEditor}
-        onPositionsChange={onPositionsChange}
         onNodeCountChange={setNodeCount}
         onEdgeCountChange={setEdgeCount}
         onLayoutRunningChange={setLayoutRunning}
         onTooltipChange={handleTooltipChange}
         layoutAppliedRef={layoutAppliedRef}
         onCameraControl={handleCameraControl}
-        onCreateEdge={(sourceId, targetId, edgeType) => onCreateEdge?.(sourceId, targetId, edgeType as MindEdgeType)}
-        onDeleteEdge={onDeleteEdge}
       />
 
       <MindFilterPanel
@@ -184,13 +171,6 @@ export default function MindGraphView({
                       <span className="text-slate-300 truncate max-w-[140px]">
                         {otherNode?.label ?? otherId}
                       </span>
-                      <button
-                        onClick={() => handleUnlink(edge.sourceNodeId, edge.targetNodeId)}
-                        className="p-0.5 hover:bg-white/10 rounded text-slate-400 hover:text-red-400 transition-colors ml-1"
-                        title="Unlink"
-                      >
-                        <Unlink size={10} />
-                      </button>
                     </div>
                   )
                 })}
