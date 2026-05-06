@@ -9,6 +9,147 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：Local Core Phase 1 Round 23 (LC-012) -->
+<!-- ============================================ -->
+
+## Phase 3 Round 23 devlog -- LC-012 Mind Brain Graph Experience Upgrade
+
+**时间戳**: 2026-05-06
+
+**Notion 卡片**: LC-012 Mind Brain Graph Experience Upgrade
+
+**任务起止时间**: 11:30 - 12:10 CST（初版） / 12:14 - 12:36 CST（bugfix round 1 & 2） / 13:00 - 13:30 CST（Review FAIL 修复全面重做）
+
+**工时**: 40 分钟（初版） + 36 分钟（bugfix） + 30 分钟（全面重做） = 106 分钟
+
+**任务目标**:
+1. 将 Mind 视图升级为大规模知识图谱体验，使用 Graphology + Sigma.js/WebGL 渲染
+2. 使用 ForceAtlas2 做语义关系布局，Noverlap 做节点防重叠
+3. 实现 hover 节点高亮一度相邻节点和直连边，其他节点/边降透明
+4. click 节点 camera 平滑聚焦，double-click document 节点打开 Editor
+5. background click 退出 focus 恢复全图
+6. 边按语义区分 parent_child/semantic/reference/source/temporal/confirmed/suggested/conflict
+7. 节点按类型区分 root/domain/project/topic/document/fragment/source/tag/insight/question/time
+8. 深色底色 + Violet/Green/Pink 节点配色 + 紫色 hover 高亮
+9. 移除 radial/force/orbit 三视图产品入口，统一为 Mind 图谱主视图
+10. 保留旧 Canvas 实现为 fallback
+11. 从 entries/tags/entryRelations/entryTagRelations/recommendations 构建丰富语义关系图谱
+12. 布局完成后写回 positionX/positionY，确保刷新后布局稳定
+
+**变更摘要**:
+- `lib/repository.ts`: 新增 buildMindGraphSnapshot() 从多数据源构建快照、updateMindNodePositions() 写回布局位置
+- `features/mind/mindGraphStyle.ts` (A): 节点/边样式常量和工具函数
+- `features/mind/mindGraphAdapter.ts` (A): Graphology 数据适配器，含 snapshotToGraphology() + precomputeAdjacency()
+- `features/mind/mindGraphLayout.ts` (A): ForceAtlas2 + Noverlap 布局引擎，含 extractNodePositions()
+- `features/mind/useMindGraphInteraction.ts` (A): hover/click/filter 交互状态管理
+- `features/mind/MindFilterPanel.tsx` (A): 过滤器面板（search/node types/edge types/visibility/confidence slider）
+- `features/mind/MindGraphView.tsx` (A): 统一图谱主视图 + tooltip + 缩放控件 + 统计 HUD
+- `features/mind/MindGraphSigma.tsx` (A): Sigma.js WebGL 渲染容器，含内层 MindGraphInner（graph load/layout/events/appearance）
+- `features/mind/MindCanvasStage.tsx`: 重写为入口 wrapper，默认渲染 MindGraphView
+- `page.tsx`: 导入 buildMindGraphSnapshot/updateMindNodePositions，新增 mindSnapshot state + onPositionsChange 回调
+
+**改动文件及行数**:
+- `apps/web/lib/repository.ts` | M | +237 行（新增 MindGraphSnapshot types + buildMindGraphSnapshot + updateMindNodePositions）
+- `apps/web/app/workspace/features/mind/mindGraphStyle.ts` | A | +122 行
+- `apps/web/app/workspace/features/mind/mindGraphAdapter.ts` | A | +118 行
+- `apps/web/app/workspace/features/mind/mindGraphLayout.ts` | A | +108 行
+- `apps/web/app/workspace/features/mind/useMindGraphInteraction.ts` | A | +113 行
+- `apps/web/app/workspace/features/mind/MindFilterPanel.tsx` | A | +179 行
+- `apps/web/app/workspace/features/mind/MindGraphView.tsx` | A | +180 行
+- `apps/web/app/workspace/features/mind/MindGraphSigma.tsx` | A | +283 行
+- `apps/web/app/workspace/features/mind/MindCanvasStage.tsx` | M | -1067 行 / +58 行（从 1107 行精简到 58 行，移除 legacy 1100行代码）
+- `apps/web/app/workspace/page.tsx` | M | +11 行
+- `apps/web/package.json` | M | +5 依赖（graphology, sigma, @react-sigma/core, graphology-layout-forceatlas2, graphology-layout-noverlap）
+
+**遇到的问题**:
+1. Graphology 类型系统不包含渲染属性（x/y/hidden/size 等），导致 TS 编译错误 → 在 GraphNodeAttributes/GraphEdgeAttributes 中增加可选渲染属性字段
+2. @react-sigma/core CSS 导入路径错误 `react-sigma.min.css` → 修正为 `@react-sigma/core/lib/style.css`
+3. Sigma.js 依赖 WebGL2RenderingContext，Next.js SSR 时不存在 → 使用 `dynamic(() => import('./MindGraphSigma'), { ssr: false })` 分离 WebGL 组件
+4. Sigma 事件类型 `SigmaNodeEventPayload.original` 为 `MouseEvent | TouchEvent` → 使用 `'clientX' in orig` 类型守卫
+5. ESLint react-hooks/exhaustive-deps 警告 → 使用 eslint-disable 注释抑制（snapshotKey 等依赖是有意不包含的）
+6. `labelRenderedSizeThresholdMode` 在 @react-sigma/core v5 中不存在 → 移除该设置项
+7. 运行时错误 `Sigma: could not find a valid position (x, y)` — snapshotToGraphology 创建 node 时未设置 `x`/`y` 属性，Sigma.js 要求每个 node 立即具有坐标 → 在 addNode 时同步写入 `x: n.positionX ?? 0, y: n.positionY ?? 0`（快照已通过 seededPosition 保证所有节点都有位置）
+8. 页面渲染不正常（运行时崩溃）— 两个 bug：(a) `graph.mergeNodeAttributes(edgeId, ...)` 对 edge ID 调用了 node API，导致 `applyNodeAppearance` 在首次执行时抛出异常；(b) 边初始缺少 Sigma 渲染必需的 `size` 属性（只设了 `width`）→ 修复为 `graph.setEdgeAttribute(edgeId, 'size', ...)` 并在 `snapshotToGraphology` 中初始化 `size: style.width`；同时将所有 `mergeNodeAttributes` 替换为更明确的 `setNodeAttribute`
+9. 手工验证发现 3 个问题：(a) 页面渲染为白色 — `@react-sigma/core/lib/style.css` 默认白底覆盖了 `BG_COLOR` → 在 `SigmaContainer.style` 中显式设置 `background: BG_COLOR`；(b) 按钮 hover 变白 — `.glass:hover { background: rgba(255,255,255,0.05) }` 叠加白底后感官上很白 → 修复白色底后自然解决，同时将浮层改用 inline `rgba(20,20,25,0.9)` 背景替代 `.glass` 类；(c) Center View / background click 后节点不在中心 — 两个根因：① `camera.animatedZoom()` 在 sigma v3 中不存在 → 改用 `camera.getState()` + `camera.animate()` 实现 zoom；② 布局完成后未重新居中 → 添加 `requestAnimationFrame(() => centerView())` 在布局结束后居中 camera；③ camera 通过 `onCameraControl` 回调暴露 zoomIn/zoomOut/centerView 方法替代 raw ref 模式
+
+**自动验证结果**:
+- `pnpm tsc --noEmit` (apps/web): ✅ 通过，0 errors
+- `npx eslint app/workspace/ --ext .ts,.tsx`: ✅ 通过，0 errors/warnings
+- `pnpm build:web` (Next.js production build): ✅ 通过，9/9 静态页面生成成功，workspace 页面 47.3 kB (First Load 183 kB)
+
+**手工验证步骤**:
+1. 启动开发服务器 `pnpm --dir apps/web dev`
+2. 打开浏览器访问 `/workspace`，点击 Mind tab
+3. 预期：显示暗色背景 + WebGL 图谱，节点按 ForceAtlas2 布局分散，无重叠
+4. Hover 任意节点：高亮该节点和直接相邻节点 + 边，其他节点变暗，显示 tooltip
+5. Click 节点：camera 平滑聚焦，背景 click 恢复全图
+6. Double-click document 节点：打开 Editor
+7. 右上角 Filters 按钮：打开筛选面板，可搜索和按 node/edge type 筛选
+8. 右下角 +/- 按钮：缩放
+9. 刷新页面：布局稳定不变
+
+**当前风险**:
+1. Sigma.js WebGL 在某些老旧设备/虚拟机可能不兼容 → 已保留真实 Canvas fallback
+2. 首次布局耗时可接受（已做位置持久化，二次加载跳过）
+3. Re-layout 已实现 → Filters 面板底部 Re-layout 按钮
+4. 大图性能待实测验证 → 邻接关系已预计算 O(1) 查找，reducer 固定从 baseSize/baseWidth 计算不累积
+
+**影响范围**:
+- Mind 视图核心体验（最重度改动）
+- Repository 层新增完整图谱投影函数（对其他模块零影响）
+- 旧 Canvas 实现保留为 LegacyCanvasFallback（实际渲染节点/边，非空文案）
+
+---
+
+### Round 23 补充 devlog -- Review FAIL 修复（6 项阻塞）
+
+**修复项 1: 重做 buildMindGraphSnapshot 数据投影**
+- 从真实 entries 表创建 document 节点（documentId 可打开 Editor）
+- 从 dockItems 的 selectedProject/topic/tags/sourceId 构建 project/topic/tag/reference 节点和边
+- 从 entries 的 project/tags 构建 prject/tag 连接
+- entryTagRelation 通过 tagIdToRealName Map 查真实 tag name 再连到同一 tag node
+- recommendations 处理所有候选类型（tag → suggested edge; project → accepted 后 confirmed edge; mindNode → suggested/confirmed edge）
+- 孤儿节点自动通过弱 semantic 边锚定到 root
+- 所有无位置节点使用 deterministic seededPosition
+
+**修复项 2: 布局修复**
+- 所有节点通过 seededPosition 生成确定性初始位置（无 x=y=0）
+- centerView 改用 `computeVisibleBounds()` 动态计算可见节点边界 + 容器自适应 ratio
+- ForceAtlas2 + Noverlap 只在 snapshot 变化或 Re-layout 时运行
+- 布局完成后通过 onPositionsChange 回调写回 positionX/positionY 持久化
+
+**修复项 3: hover/focus 纯 reducer 模式**
+- 节点属性增加 `baseSize`（不可变原始大小），`size` 为渲染用
+- 边属性增加 `baseWidth`（不可变），`size` 为渲染用
+- hover 时从 `baseSize` * 1.5/1.2 计算，不会累积乘法
+- 无关节点降为 `rgba(255,255,255,0.06)`，无关边降为 0.3
+- tooltip 显示 nodeType + label + documentId + degreeScore
+- background click → `centerOnBounds()` 恢复全图
+- double-click document 节点 → `onOpenEditor(documentId)`
+
+**修复项 4: Filters 完整实现**
+- 新增 minStrength slider
+- 所有 filter（search/node type/edge type/documents/tags/sources/suggested/confirmed/orphans/min confidence/min strength）真实生效
+- filter 默认 dim/hide 不触发重排
+- Filters 面板底部新增 Re-layout 按钮（`actions.triggerRelayout()`）
+- orphan 检测改为基于邻接表 degree===0
+
+**修复项 5: 真实 Legacy Canvas fallback**
+- `LegacyCanvasFallback` 组件使用 Canvas 2D 渲染实际节点（带径向渐变辉光）和边
+- 暗色背景 + 统计 HUD
+
+**修复项 6: 视觉修复**
+- 所有浮层改用 inline `rgba(20,20,25,0.9)` + `backdropFilter: blur(16px)` 替代 `.glass` 类
+- `centerOnBounds()` 替代固定 `(0,0)` 居中
+- 节点 size 不再累积乘法，reducer 始终从 baseSize 计算
+
+**自动验证结果（Round 23 修复后）**:
+- `pnpm tsc --noEmit`: ✅ 0 errors
+- `npx eslint`: ✅ 0 errors
+- `pnpm build:web`: ✅ 9/9 pages, workspace 48.2 kB (First Load 185 kB)
+
+---
+<!-- ============================================ -->
 <!-- 分割线：Local Core Phase 1 Round 22 (LC-014) -->
 <!-- ============================================ -->
 

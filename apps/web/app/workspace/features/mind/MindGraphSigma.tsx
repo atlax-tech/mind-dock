@@ -1,0 +1,385 @@
+'use client'
+
+import React, { useEffect, useRef, useCallback, useState } from 'react'
+import { SigmaContainer, useLoadGraph, useRegisterEvents, useSigma } from '@react-sigma/core'
+import '@react-sigma/core/lib/style.css'
+import type { MindGraphSnapshot } from '@/lib/repository'
+import type { MindNodeType, MindEdgeType } from '@atlax/domain'
+import { snapshotToGraphology, precomputeAdjacency, computeSnapshotSignature, type GraphNodeAttributes, type GraphEdgeAttributes } from './mindGraphAdapter'
+import { applyForceAtlas2Layout, computeVisibleBounds, extractNodePositions, type LayoutProgress } from './mindGraphLayout'
+import {
+  getNodeColor,
+  getEdgeStyle,
+  HOVER_HIGHLIGHT_COLOR,
+  HOVER_NEIGHBOR_COLOR,
+  DIM_OPACITY,
+  DIM_EDGE_OPACITY,
+  BG_COLOR,
+} from './mindGraphStyle'
+import type { MindInteractionState, MindInteractionActions } from './useMindGraphInteraction'
+
+interface TooltipData {
+  nodeId: string
+  nodeType: string
+  label: string
+  documentId: number | null
+  degreeScore: number
+  x: number
+  y: number
+}
+
+const DOCUMENT_LIKE_TYPES = new Set(['document', 'source', 'fragment'])
+
+interface MindGraphSigmaProps {
+  snapshotKey: string
+  snapshot: MindGraphSnapshot
+  ixState: MindInteractionState
+  ixActions: MindInteractionActions
+  onOpenEditor: (documentId: number) => void
+  onPositionsChange?: (updates: Array<{ nodeId: string; positionX: number; positionY: number }>) => void
+  onNodeCountChange: (n: number) => void
+  onEdgeCountChange: (n: number) => void
+  onLayoutRunningChange: (r: boolean) => void
+  onTooltipChange: (t: TooltipData | null) => void
+  layoutAppliedRef: React.MutableRefObject<boolean>
+  onCameraControl: (ctrl: { zoomIn: () => void; zoomOut: () => void; centerView: () => void }) => void
+  onCreateEdge?: (sourceId: string, targetId: string, edgeType: MindEdgeType) => void
+  onDeleteEdge?: (sourceId: string, targetId: string) => void
+}
+
+export default function MindGraphSigma(props: MindGraphSigmaProps) {
+  return (
+    <SigmaContainer
+      style={{ width: '100%', height: '100%', background: BG_COLOR }}
+      settings={{
+        defaultNodeColor: '#a78bfa',
+        defaultEdgeColor: 'rgba(255,255,255,0.1)',
+        labelColor: { color: '#E2E8F0' },
+        labelFont: 'Inter, sans-serif',
+        labelSize: 10,
+        labelRenderedSizeThreshold: 5,
+        edgeLabelSize: 7,
+        edgeLabelFont: 'Inter, sans-serif',
+        edgeLabelColor: { color: '#8B8B8B' },
+        defaultEdgeType: 'line',
+        labelDensity: 0.07,
+        labelGridCellSize: 60,
+        renderEdgeLabels: false,
+        enableEdgeEvents: true,
+        zIndex: true,
+        minCameraRatio: 0.05,
+        maxCameraRatio: 10,
+      }}
+    >
+      <MindGraphInner {...props} />
+    </SigmaContainer>
+  )
+}
+
+function MindGraphInner({
+  snapshotKey, snapshot, ixState, ixActions,
+  onOpenEditor, onPositionsChange, onNodeCountChange, onEdgeCountChange,
+  onLayoutRunningChange, onTooltipChange, layoutAppliedRef, onCameraControl,
+  onCreateEdge, onDeleteEdge: _onDeleteEdge,
+}: MindGraphSigmaProps) {
+  const loadGraph = useLoadGraph()
+  const registerEvents = useRegisterEvents()
+  const sigma = useSigma()
+  const graphRef = useRef<import('graphology').default<GraphNodeAttributes, GraphEdgeAttributes> | null>(null)
+  const adjacencyRef = useRef<{ neighborMap: Map<string, Set<string>>; incidentEdgesMap: Map<string, Set<string>> } | null>(null)
+  const prevSnapshotKeyRef = useRef<string>('')
+  const hoverStateRef = useRef<{ hoveredNodeId: string | null; focusedNodeId: string | null }>({ hoveredNodeId: null, focusedNodeId: null })
+  const [edgeCreation, setEdgeCreation] = useState<{ sourceId: string | null; step: 'idle' | 'selecting_target' }>({ sourceId: null, step: 'idle' })
+
+  const centerOnBounds = useCallback((g?: import('graphology').default<GraphNodeAttributes, GraphEdgeAttributes> | null) => {
+    const graph = g || graphRef.current
+    if (!graph || graph.order === 0) return
+    const bounds = computeVisibleBounds(graph)
+    const cx = (bounds.xMin + bounds.xMax) / 2
+    const cy = (bounds.yMin + bounds.yMax) / 2
+    const w = Math.max(bounds.xMax - bounds.xMin, 100)
+    const h = Math.max(bounds.yMax - bounds.yMin, 100)
+    const cam = sigma.getCamera()
+    const container = sigma.getContainer()
+    const cw = container?.clientWidth || 1000
+    const ch = container?.clientHeight || 700
+    const pad = 0.15
+    const ratio = Math.min(cw / (w * (1 + pad)), ch / (h * (1 + pad)), 10)
+    cam.animate({ x: cx, y: cy, ratio: Math.max(0.05, Math.min(ratio, 10)) }, { duration: 500 })
+  }, [sigma])
+
+  const doZoomIn = useCallback(() => {
+    const state = sigma.getCamera().getState()
+    sigma.getCamera().animate({ ...state, ratio: state.ratio / 1.4 }, { duration: 250 })
+  }, [sigma])
+
+  const doZoomOut = useCallback(() => {
+    const state = sigma.getCamera().getState()
+    sigma.getCamera().animate({ ...state, ratio: state.ratio * 1.4 }, { duration: 250 })
+  }, [sigma])
+
+  useEffect(() => {
+    onCameraControl({ zoomIn: doZoomIn, zoomOut: doZoomOut, centerView: () => centerOnBounds() })
+  }, [onCameraControl, doZoomIn, doZoomOut, centerOnBounds])
+
+  // Graph load / refresh lifecycle
+  useEffect(() => {
+    const sig = computeSnapshotSignature(snapshot)
+    const isNewGraph = prevSnapshotKeyRef.current !== sig
+    prevSnapshotKeyRef.current = sig
+
+    if (isNewGraph) {
+      layoutAppliedRef.current = false
+      ixActions.setHoveredNode(null)
+      ixActions.clearFocus()
+      onTooltipChange(null)
+    }
+
+    const gs = snapshotToGraphology(snapshot)
+    loadGraph(gs.graph)
+    graphRef.current = gs.graph
+    adjacencyRef.current = precomputeAdjacency(gs.graph)
+    onNodeCountChange(gs.nodeCount)
+    onEdgeCountChange(gs.edgeCount)
+
+    if (!layoutAppliedRef.current) {
+      onLayoutRunningChange(true)
+      const runLayout = () => {
+        applyForceAtlas2Layout(gs.graph, (progress: LayoutProgress) => {
+          ixActions.setLayoutProgress(progress.phase, progress.iterations, progress.maxIterations)
+        })
+        layoutAppliedRef.current = true
+        onLayoutRunningChange(false)
+        ixActions.setLayoutProgress('done', 0, 0)
+        if (onPositionsChange) {
+          const updates = extractNodePositions(gs.graph)
+          onPositionsChange(updates)
+        }
+        sigma.refresh()
+        requestAnimationFrame(() => centerOnBounds(gs.graph))
+      }
+      const timer = setTimeout(runLayout, 100)
+      return () => clearTimeout(timer)
+    } else {
+      sigma.refresh()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshotKey])
+
+  // Relayout effect
+  useEffect(() => {
+    if (ixState.relayoutCounter <= 0) return
+    const graph = graphRef.current
+    if (!graph) return
+    onLayoutRunningChange(true)
+    graph.forEachNode((nodeId) => {
+      graph.setNodeAttribute(nodeId, 'originalX', null)
+      graph.setNodeAttribute(nodeId, 'originalY', null)
+    })
+    layoutAppliedRef.current = false
+    const runLayout = () => {
+      applyForceAtlas2Layout(graph, (progress: LayoutProgress) => {
+        ixActions.setLayoutProgress(progress.phase, progress.iterations, progress.maxIterations)
+      })
+      layoutAppliedRef.current = true
+      onLayoutRunningChange(false)
+      ixActions.setLayoutProgress('done', 0, 0)
+      if (onPositionsChange) {
+        const updates = extractNodePositions(graph)
+        onPositionsChange(updates)
+      }
+      sigma.refresh()
+      requestAnimationFrame(() => centerOnBounds())
+    }
+    const timer = setTimeout(runLayout, 50)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ixState.relayoutCounter])
+
+  // Reducer-based appearance application
+  const applyAppearance = useCallback(() => {
+    const graph = graphRef.current
+    if (!graph) return
+    const adj = adjacencyRef.current
+    if (!adj) return
+
+    const { hoveredNodeId, focusedNodeId, filterState } = ixState
+    hoverStateRef.current = { hoveredNodeId, focusedNodeId }
+    const searchLower = filterState.search.trim().toLowerCase()
+
+    const highlighted = new Set<string>()
+    const highlightedEdges = new Set<string>()
+
+    if (hoveredNodeId && graph.hasNode(hoveredNodeId)) {
+      highlighted.add(hoveredNodeId)
+      adj.neighborMap.get(hoveredNodeId)?.forEach(n => highlighted.add(n))
+      adj.incidentEdgesMap.get(hoveredNodeId)?.forEach(e => highlightedEdges.add(e))
+    }
+    if (focusedNodeId && graph.hasNode(focusedNodeId)) {
+      highlighted.add(focusedNodeId)
+      adj.neighborMap.get(focusedNodeId)?.forEach(n => highlighted.add(n))
+      adj.incidentEdgesMap.get(focusedNodeId)?.forEach(e => highlightedEdges.add(e))
+    }
+
+    const hasHighlight = highlighted.size > 0
+
+    const orphanIds = new Set<string>()
+    if (!filterState.showOrphans && adj) {
+      graph.forEachNode((nid) => {
+        const deg = adj.neighborMap.get(nid)
+        if (!deg || deg.size === 0) orphanIds.add(nid)
+      })
+    }
+
+    graph.forEachNode((nodeId, attrs) => {
+      const nt = attrs.nodeType as string
+
+      let visible = filterState.nodeTypes.has(nt as MindNodeType)
+      if (nt === 'tag' && !filterState.showTags) visible = false
+      if (DOCUMENT_LIKE_TYPES.has(nt) && !filterState.showDocuments) visible = false
+      if ((nt === 'source' || nt === 'fragment') && !filterState.showSources) visible = false
+      if (orphanIds.has(nodeId)) visible = false
+      if (searchLower && !attrs.label.toLowerCase().includes(searchLower)) visible = false
+
+      if (!visible) {
+        graph.setNodeAttribute(nodeId, 'hidden', true)
+        return
+      }
+      graph.setNodeAttribute(nodeId, 'hidden', false)
+
+      if (hasHighlight) {
+        if (highlighted.has(nodeId)) {
+          const isCenter = hoveredNodeId === nodeId || focusedNodeId === nodeId
+          graph.setNodeAttribute(nodeId, 'color', isCenter ? HOVER_HIGHLIGHT_COLOR : HOVER_NEIGHBOR_COLOR)
+          graph.setNodeAttribute(nodeId, 'size', attrs.baseSize * (isCenter ? 1.6 : 1.3))
+        } else {
+          graph.setNodeAttribute(nodeId, 'color', `rgba(255,255,255,${DIM_OPACITY})`)
+          graph.setNodeAttribute(nodeId, 'size', attrs.baseSize * 0.7)
+        }
+      } else {
+        graph.setNodeAttribute(nodeId, 'color', getNodeColor(nt))
+        graph.setNodeAttribute(nodeId, 'size', attrs.baseSize)
+      }
+    })
+
+    graph.forEachEdge((edgeId, attrs, source, target) => {
+      const et = attrs.edgeType as string
+      let visible = filterState.edgeTypes.has(et as MindEdgeType)
+
+      if (et === 'suggested' && !filterState.showSuggested) visible = false
+      if (et === 'confirmed' && !filterState.showConfirmed) visible = false
+      if (attrs.confidence != null && attrs.confidence < filterState.minConfidence) visible = false
+      if (attrs.strength < filterState.minStrength) visible = false
+      if (!!graph.getNodeAttribute(source, 'hidden') || !!graph.getNodeAttribute(target, 'hidden')) visible = false
+
+      if (!visible) {
+        graph.setEdgeAttribute(edgeId, 'hidden', true)
+        return
+      }
+      graph.setEdgeAttribute(edgeId, 'hidden', false)
+
+      if (hasHighlight) {
+        if (highlightedEdges.has(edgeId)) {
+          graph.setEdgeAttribute(edgeId, 'color', HOVER_HIGHLIGHT_COLOR)
+          graph.setEdgeAttribute(edgeId, 'size', Math.max(attrs.baseWidth * 2.5, 2))
+        } else {
+          graph.setEdgeAttribute(edgeId, 'color', `rgba(255,255,255,${DIM_EDGE_OPACITY})`)
+          graph.setEdgeAttribute(edgeId, 'size', 0.2)
+        }
+      } else {
+        const style = getEdgeStyle(et)
+        graph.setEdgeAttribute(edgeId, 'color', style.color)
+        graph.setEdgeAttribute(edgeId, 'size', attrs.baseWidth)
+      }
+    })
+
+    sigma.refresh()
+  }, [ixState, sigma])
+
+  useEffect(() => {
+    requestAnimationFrame(() => applyAppearance())
+  }, [applyAppearance])
+
+  // Event handlers
+  useEffect(() => {
+    const graph = graphRef.current
+    if (!graph) return
+
+    const handleEnterNode = (event: { node: string; event: { original: MouseEvent | TouchEvent } }) => {
+      const nodeId = event.node
+      const attrs = graph.getNodeAttributes(nodeId)
+      ixActions.setHoveredNode(nodeId)
+      const orig = event.event.original
+      const screenX = 'clientX' in orig ? orig.clientX : (orig as TouchEvent).touches[0]?.clientX ?? 0
+      const screenY = 'clientY' in orig ? orig.clientY : (orig as TouchEvent).touches[0]?.clientY ?? 0
+      onTooltipChange({ nodeId, nodeType: attrs.nodeType, label: attrs.label, documentId: attrs.documentId, degreeScore: attrs.degreeScore, x: screenX, y: screenY })
+    }
+    const handleLeaveNode = () => { ixActions.setHoveredNode(null); onTooltipChange(null) }
+
+    const handleClickNode = (event: { node: string }) => {
+      const nodeId = event.node
+
+      // Edge creation flow
+      if (edgeCreation.step === 'selecting_target' && edgeCreation.sourceId) {
+        if (edgeCreation.sourceId !== nodeId && onCreateEdge) {
+          onCreateEdge(edgeCreation.sourceId, nodeId, 'semantic')
+        }
+        setEdgeCreation({ sourceId: null, step: 'idle' })
+        return
+      }
+
+      if (ixState.focusedNodeId === nodeId) {
+        ixActions.clearFocus()
+        return
+      }
+      ixActions.setFocusedNode(nodeId)
+    }
+
+    const handleDoubleClickNode = (event: { node: string }) => {
+      const attrs = graph.getNodeAttributes(event.node)
+      if (attrs.documentId != null) onOpenEditor(attrs.documentId)
+    }
+
+    const handleClickStage = () => {
+      ixActions.clearFocus()
+      if (edgeCreation.step === 'selecting_target') {
+        setEdgeCreation({ sourceId: null, step: 'idle' })
+      }
+    }
+
+    const handleRightClickNode = (event: { node: string; event: { original: MouseEvent } }) => {
+      event.event.original.preventDefault()
+      const nodeId = event.node
+      if (edgeCreation.step === 'idle') {
+        setEdgeCreation({ sourceId: nodeId, step: 'selecting_target' })
+      }
+    }
+
+    registerEvents({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      enterNode: handleEnterNode as any,
+      leaveNode: handleLeaveNode as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      clickNode: handleClickNode as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      doubleClickNode: handleDoubleClickNode as any,
+      clickStage: handleClickStage as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rightClickNode: handleRightClickNode as any,
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sigma, ixActions, ixState.focusedNodeId, onOpenEditor, onTooltipChange, edgeCreation.step, edgeCreation.sourceId, onCreateEdge])
+
+  // Edge creation visual indicator
+  useEffect(() => {
+    const graph = graphRef.current
+    if (!graph) return
+    if (edgeCreation.step === 'selecting_target' && edgeCreation.sourceId) {
+      graph.setNodeAttribute(edgeCreation.sourceId, 'color', HOVER_HIGHLIGHT_COLOR)
+      graph.setNodeAttribute(edgeCreation.sourceId, 'size', graph.getNodeAttribute(edgeCreation.sourceId, 'baseSize') * 1.8)
+      sigma.refresh()
+    }
+  }, [edgeCreation, sigma])
+
+  return null
+}

@@ -8,6 +8,7 @@ import GoldenTopNav from './_components/GoldenTopNav'
 import {
   addTagToItem,
   archiveItem,
+  buildMindGraphSnapshot,
   createDockItem,
   deleteEditorDraft,
   generateRecommendationsForContext,
@@ -28,6 +29,7 @@ import {
   reopenItem,
   suggestItem,
   updateDockItemText,
+  updateMindNodePositions,
   upsertMindNode,
   upsertMindEdge,
   applyRecommendation,
@@ -35,6 +37,7 @@ import {
   type StoredMindNode,
   type StoredMindEdge,
   type StoredWorkspaceOpenTab,
+  type MindGraphSnapshot,
   type RecommendationDockQueueItem,
 } from '@/lib/repository'
 import {
@@ -128,6 +131,7 @@ export default function WorkspacePage() {
 
   const [mindNodes, setMindNodes] = useState<StoredMindNode[]>([])
   const [mindEdges, setMindEdges] = useState<StoredMindEdge[]>([])
+  const [mindSnapshot, setMindSnapshot] = useState<MindGraphSnapshot | null>(null)
   const [mindRefreshKey, setMindRefreshKey] = useState(0)
 
   const [sharedProjectFilter, setSharedProjectFilter] = useState<string | null>(null)
@@ -266,6 +270,8 @@ export default function WorkspacePage() {
       ])
       setMindNodes(nodes)
       setMindEdges(edges)
+      const snapshot = await buildMindGraphSnapshot(userId)
+      setMindSnapshot(snapshot)
     } catch (err) {
       console.error('[MindData] Failed to load mind data:', err)
     }
@@ -1248,6 +1254,7 @@ export default function WorkspacePage() {
             <MindCanvasStage
               nodes={mindNodes}
               edges={mindEdges}
+              snapshot={mindSnapshot}
               onOpenEditor={(nodeId: number) => {
                 const item = items.find(i => i.id === nodeId)
                 if (item) {
@@ -1286,6 +1293,14 @@ export default function WorkspacePage() {
                 } catch (err) {
                   console.error('[MindCanvas] Failed to delete edge:', err)
                   showToast('Edge removed locally (sync failed)')
+                }
+              }}
+              onPositionsChange={async (updates) => {
+                if (!userId) return
+                try {
+                  await updateMindNodePositions(userId, updates)
+                } catch (err) {
+                  console.error('[MindCanvas] Failed to save positions:', err)
                 }
               }}
               onOpenInDock={(dockItemId: number) => {
