@@ -10,6 +10,7 @@ import { applyForceAtlas2Layout, type LayoutProgress } from './mindGraphLayout'
 import {
   getNodeColor,
   getEdgeStyle,
+  shouldShowLabel,
   HOVER_HIGHLIGHT_COLOR,
   HOVER_NEIGHBOR_COLOR,
   DIM_OPACITY,
@@ -60,7 +61,7 @@ export default function MindGraphSigma(props: MindGraphSigmaProps) {
         edgeLabelFont: 'Inter, sans-serif',
         edgeLabelColor: { color: '#8B8B8B' },
         defaultEdgeType: 'line',
-        labelDensity: 0.07,
+        labelDensity: 0.04,
         labelGridCellSize: 60,
         renderEdgeLabels: false,
         enableEdgeEvents: true,
@@ -253,7 +254,7 @@ function MindGraphInner({
       if (DOCUMENT_LIKE_TYPES.has(nt) && !filterState.showDocuments) visible = false
       if ((nt === 'source' || nt === 'fragment') && !filterState.showSources) visible = false
       if (orphanIds.has(nodeId)) visible = false
-      if (searchLower && !attrs.label.toLowerCase().includes(searchLower)) visible = false
+      if (searchLower && !attrs.originalLabel.toLowerCase().includes(searchLower)) visible = false
 
       if (!visible) {
         graph.setNodeAttribute(nodeId, 'hidden', true)
@@ -266,13 +267,16 @@ function MindGraphInner({
           const isCenter = hoveredNodeId === nodeId || focusedNodeId === nodeId
           graph.setNodeAttribute(nodeId, 'color', isCenter ? HOVER_HIGHLIGHT_COLOR : HOVER_NEIGHBOR_COLOR)
           graph.setNodeAttribute(nodeId, 'size', attrs.baseSize * (isCenter ? 1.6 : 1.3))
+          graph.setNodeAttribute(nodeId, 'label', attrs.originalLabel)
         } else {
           graph.setNodeAttribute(nodeId, 'color', `rgba(255,255,255,${DIM_OPACITY})`)
           graph.setNodeAttribute(nodeId, 'size', attrs.baseSize * 0.7)
+          graph.setNodeAttribute(nodeId, 'label', '')
         }
       } else {
         graph.setNodeAttribute(nodeId, 'color', getNodeColor(nt))
         graph.setNodeAttribute(nodeId, 'size', attrs.baseSize)
+        graph.setNodeAttribute(nodeId, 'label', shouldShowLabel(attrs.visualWeight) ? attrs.originalLabel : '')
       }
     })
 
@@ -326,7 +330,7 @@ function MindGraphInner({
       const orig = event.event.original
       const screenX = 'clientX' in orig ? orig.clientX : (orig as TouchEvent).touches[0]?.clientX ?? 0
       const screenY = 'clientY' in orig ? orig.clientY : (orig as TouchEvent).touches[0]?.clientY ?? 0
-      onTooltipChange({ nodeId, nodeType: attrs.nodeType, label: attrs.label, documentId: attrs.documentId, degreeScore: attrs.degreeScore, x: screenX, y: screenY })
+      onTooltipChange({ nodeId, nodeType: attrs.nodeType, label: attrs.originalLabel, documentId: attrs.documentId, degreeScore: attrs.degreeScore, x: screenX, y: screenY })
     }
     const handleLeaveNode = () => { ixActions.setHoveredNode(null); onTooltipChange(null) }
 

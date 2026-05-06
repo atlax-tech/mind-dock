@@ -1,16 +1,18 @@
 import Graph from 'graphology'
 import type { MindGraphSnapshot } from './types'
 import type { MindNodeType, MindEdgeType } from '@atlax/domain'
-import { getNodeColor, getNodeBaseSize, getNodeLabelSize, getEdgeStyle } from './mindGraphStyle'
+import { getNodeColor, getNodeBaseSize, getNodeLabelSize, getEdgeStyle, computeVisualWeight, visualWeightToSize, shouldShowLabel, computeEdgeWidth } from './mindGraphStyle'
 
 export interface GraphNodeAttributes {
   nodeType: MindNodeType
   label: string
+  originalLabel: string
   documentId: number | null
   color: string
   baseSize: number
   size: number
   labelSize: number
+  visualWeight: number
   degreeScore: number
   recentActivityScore: number
   confidence: number | null
@@ -115,20 +117,33 @@ export function snapshotToGraphology(snapshot: MindGraphSnapshot): MindGraphStat
 
   snapshot.nodes.forEach((n, idx) => {
     const color = getNodeColor(n.nodeType)
-    const baseSize = getNodeBaseSize(n.nodeType)
+    const typeBaseSize = getNodeBaseSize(n.nodeType)
     const labelSize = getNodeLabelSize(n.nodeType)
+
+    const visualWeight = computeVisualWeight(
+      n.nodeType,
+      n.degreeScore,
+      n.clusterCenterScore,
+      n.documentWeightScore,
+      n.userPinScore,
+      n.recentActivityScore,
+    )
+    const baseSize = visualWeightToSize(visualWeight, typeBaseSize)
+    const showLabel = shouldShowLabel(visualWeight)
 
     const hasPos = !FORCE_RECALCULATE && n.positionX != null && n.positionY != null
     const seeded = !hasPos ? seededPosition(n.id, n.nodeType, idx, Math.max(totalNodes, 1)) : null
 
     graph.addNode(n.id, {
       nodeType: n.nodeType as MindNodeType,
-      label: n.label,
+      label: showLabel ? n.label : '',
+      originalLabel: n.label,
       documentId: n.documentId,
       color,
       baseSize,
       size: baseSize,
       labelSize,
+      visualWeight,
       degreeScore: n.degreeScore,
       recentActivityScore: n.recentActivityScore,
       confidence: null,
@@ -149,6 +164,7 @@ export function snapshotToGraphology(snapshot: MindGraphSnapshot): MindGraphStat
     if (graph.hasEdge(e.sourceNodeId, e.targetNodeId)) return
 
     const style = getEdgeStyle(e.edgeType)
+    const baseWidth = computeEdgeWidth(e.edgeType, e.strength)
 
     graph.addEdge(e.sourceNodeId, e.targetNodeId, {
       edgeType: e.edgeType as MindEdgeType,
@@ -156,8 +172,8 @@ export function snapshotToGraphology(snapshot: MindGraphSnapshot): MindGraphStat
       confidence: e.confidence,
       reason: e.reason,
       color: style.color,
-      baseWidth: style.width,
-      size: style.width,
+      baseWidth,
+      size: baseWidth,
       dashed: style.dashed,
     })
   })

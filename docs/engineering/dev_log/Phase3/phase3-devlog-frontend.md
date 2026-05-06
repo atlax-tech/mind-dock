@@ -9,6 +9,81 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：Local Core Phase 3.1.5 Round 26 (MG-FIX-03) -->
+<!-- ============================================ -->
+
+## Phase 3.1.5 Round 26 devlog -- MG-FIX-03 建立 Mind Graph 基础视觉层级：节点尺寸、弱标签、边线透明度
+
+**时间戳**: 2026-05-07
+
+**Notion 卡片**: MG-FIX-03 建立 Mind Graph 基础视觉层级：节点尺寸、弱标签、边线透明度
+
+**任务起止时间**: 05:48 - 06:08 CST
+
+**工时**: 20 分钟
+
+**任务目标**:
+1. 在不破坏 MG-FIX-02 多 cluster 布局的前提下，建立 Mind Graph 的基础视觉层级。
+2. 节点尺寸出现基础层级（3档），不再所有节点完全同权重同大小。
+3. 节点尺寸只能基于真实数据派生（nodeType、degreeScore、clusterCenterScore、documentWeightScore、userPinScore、recentActivityScore）。
+4. label 显示更克制：重要节点可见，普通节点不过度铺满屏幕。
+5. 边线视觉更轻：默认透明度降低，不喧宾夺主。
+6. 不新增 mock 数据，不修改 repository.ts，不修改数据库 schema。
+
+**变更摘要**:
+
+**视觉权重派生系统** (`mindGraphStyle.ts`):
+- 新增 `TYPE_VISUAL_WEIGHT` 常量：为每种 nodeType 定义基础视觉权重（root=1.0, domain=0.7, project=0.6, topic=0.5, document/insight/question=0.35, source/fragment=0.25, tag/time=0.15）。
+- 新增 `computeVisualWeight()` 函数：基于 nodeType 基础权重 + degreeScore/clusterCenterScore/documentWeightScore/userPinScore/recentActivityScore 五项信号加权，输出 0-1 的视觉权重值。每项信号有独立上限防止过度放大。
+- 新增 `visualWeightToSize()` 函数：3档尺寸映射——Hub(≥0.65) ×1.25、Normal(≥0.35) ×1.0、Leaf(<0.35) ×0.75。乘数温和，避免重新变成"大球"。
+- 新增 `shouldShowLabel()` 函数：视觉权重 ≥0.5 的节点默认显示 label，其余隐藏。
+- 更新 `EDGE_STYLE`：所有边线颜色 alpha 从 0.18 降至 0.05-0.12，视觉更轻。
+- 新增 `computeEdgeWidth()` 函数：基于 edgeType 基础宽度 × strength 系数（0.7 + strength × 0.6），实现轻微粗细差异。
+
+**图数据适配** (`mindGraphAdapter.ts`):
+- `GraphNodeAttributes` 新增 `visualWeight: number` 和 `originalLabel: string` 两个字段。
+- `snapshotToGraphology()` 中每个节点调用 `computeVisualWeight()` 计算视觉权重，通过 `visualWeightToSize()` 映射为 `baseSize`，通过 `shouldShowLabel()` 决定 `label` 是否为空。
+- `label` 为空的节点仍保留 `originalLabel` 供 tooltip 使用。
+- 边线使用 `computeEdgeWidth()` 替代静态 `style.width`，宽度随 strength 轻微变化。
+
+**Sigma 渲染控制** (`MindGraphSigma.tsx`):
+- `labelDensity` 从 0.07 降至 0.04，减少 label 重叠。
+- `applyAppearance()` 中加入 label 动态控制：高亮节点显示 `originalLabel`，暗淡节点隐藏 label，正常状态按 `shouldShowLabel(visualWeight)` 决定。
+- tooltip 使用 `originalLabel` 替代 `label`，确保被隐藏 label 的节点仍能通过 tooltip 显示名称。
+
+**改动文件及行数**:
+- `apps/web/app/workspace/features/mind/mindGraphStyle.ts` | M | +47 行 / -8 行
+- `apps/web/app/workspace/features/mind/mindGraphAdapter.ts` | M | +16 行 / -4 行
+- `apps/web/app/workspace/features/mind/MindGraphSigma.tsx` | M | +6 行 / -3 行
+
+**遇到的问题**:
+1. 无重大问题。视觉权重系统设计为纯加法模型（type基础 + 信号boost），每项信号有 cap，不会因单一信号过强导致权重爆炸。
+2. `originalLabel` 的引入是为了解决 label 设为空字符串后 tooltip 无法获取节点名称的问题，属于最小必要适配。
+3. **Review FAIL 修补**：搜索过滤仍使用 `attrs.label` 匹配，MG-FIX-03 将普通节点的 label 设为空字符串后，这些节点无法被搜索找到。修补：将搜索匹配改为 `attrs.originalLabel.toLowerCase().includes(searchLower)`，确保低权重节点虽不显示 label 但仍可被搜索定位。
+
+**自动验证结果**:
+- `pnpm validate`: ✅ 通过 (0 errors, 3 warnings — 均为已有，非本次引入)
+- `pnpm build:web`: ✅ 通过 (workspace 页面生成成功)
+
+**手工验证步骤说明**:
+1. 启动开发服务器并进入 `/workspace` Mind 视图。
+2. 预期：图谱不再像均匀撒开的芝麻，而是有明显的主次关系——root/domain/project 等高层级节点更大更醒目，tag/fragment 等低层级节点更小更低调。
+3. 预期：边线比之前更轻更透明，不再喧宾夺主。
+4. 预期：只有重要节点（root、domain、project、topic 及高 degree 节点）默认显示 label，普通节点 label 不铺满屏幕。
+5. 鼠标悬停任意节点：tooltip 应正确显示节点名称（即使该节点默认不显示 label）。
+6. 鼠标悬停节点时：该节点及其邻居的 label 应临时显示，其余节点 label 隐藏。
+7. 确认多 cluster 布局未被破坏，仍保持 MG-FIX-02 的多中心簇状分布。
+
+**当前风险**:
+1. 视觉权重阈值（shouldShowLabel ≥0.5）可能需要根据实际数据分布微调——若大部分节点 degreeScore 偏低，可能只有 root/domain 显示 label；若偏高，可能 label 仍然过多。
+2. edge alpha 从 0.18 降至 0.05-0.12 后，在某些低对比度显示器上可能几乎不可见——可通过 `computeEdgeWidth` 的 strength 系数部分补偿。
+
+**影响范围**:
+- 仅限于 Mind 视图的视觉渲染层，不影响数据存储、Schema、repository、cluster 布局逻辑或其他页面。
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：Local Core Phase 3 Round 25 (MG-FIX-02 Camera坐标系修复) -->
 <!-- ============================================ -->
 

@@ -52,15 +52,61 @@ export function getNodeLabelSize(nodeType: string): number {
   return NODE_LABEL_FONT_SIZE[nodeType] || 7
 }
 
+export const TYPE_VISUAL_WEIGHT: Record<string, number> = {
+  root: 1.0,
+  domain: 0.7,
+  project: 0.6,
+  topic: 0.5,
+  document: 0.35,
+  insight: 0.35,
+  question: 0.35,
+  source: 0.25,
+  fragment: 0.25,
+  tag: 0.15,
+  time: 0.15,
+}
+
+export function computeVisualWeight(
+  nodeType: string,
+  degreeScore: number,
+  clusterCenterScore: number,
+  documentWeightScore: number,
+  userPinScore: number,
+  recentActivityScore: number,
+): number {
+  const typeW = TYPE_VISUAL_WEIGHT[nodeType] ?? 0.3
+  const degreeBoost = Math.min(degreeScore, 1) * 0.2
+  const clusterBoost = Math.min(clusterCenterScore, 1) * 0.15
+  const docBoost = Math.min(documentWeightScore, 1) * 0.1
+  const pinBoost = userPinScore > 0 ? 0.2 : 0
+  const activityBoost = Math.min(recentActivityScore, 1) * 0.1
+  return Math.min(typeW + degreeBoost + clusterBoost + docBoost + pinBoost + activityBoost, 1.0)
+}
+
+export function visualWeightToSize(weight: number, baseSize: number): number {
+  if (weight >= 0.65) return baseSize * 1.25
+  if (weight >= 0.35) return baseSize * 1.0
+  return baseSize * 0.75
+}
+
+export function shouldShowLabel(weight: number): boolean {
+  return weight >= 0.5
+}
+
 export const EDGE_STYLE: Record<string, { color: string; opacity: number; width: number; dashed: boolean }> = {
-  parent_child: { color: 'rgba(48,56,74,0.18)', opacity: 0.7, width: 0.8, dashed: false },
-  semantic: { color: 'rgba(48,56,74,0.18)', opacity: 0.5, width: 0.5, dashed: false },
-  reference: { color: 'rgba(48,56,74,0.18)', opacity: 0.5, width: 0.6, dashed: true },
-  source: { color: 'rgba(48,56,74,0.18)', opacity: 0.5, width: 0.6, dashed: true },
-  temporal: { color: 'rgba(48,56,74,0.18)', opacity: 0.5, width: 0.6, dashed: true },
-  confirmed: { color: 'rgba(48,56,74,0.18)', opacity: 0.9, width: 0.8, dashed: false },
-  suggested: { color: 'rgba(48,56,74,0.18)', opacity: 0.35, width: 0.5, dashed: true },
-  conflict: { color: 'rgba(48,56,74,0.18)', opacity: 0.4, width: 0.6, dashed: true },
+  parent_child: { color: 'rgba(48,56,74,0.10)', opacity: 0.7, width: 0.8, dashed: false },
+  semantic: { color: 'rgba(48,56,74,0.07)', opacity: 0.5, width: 0.5, dashed: false },
+  reference: { color: 'rgba(48,56,74,0.07)', opacity: 0.5, width: 0.6, dashed: true },
+  source: { color: 'rgba(48,56,74,0.07)', opacity: 0.5, width: 0.6, dashed: true },
+  temporal: { color: 'rgba(48,56,74,0.07)', opacity: 0.5, width: 0.6, dashed: true },
+  confirmed: { color: 'rgba(48,56,74,0.12)', opacity: 0.9, width: 0.8, dashed: false },
+  suggested: { color: 'rgba(48,56,74,0.05)', opacity: 0.35, width: 0.5, dashed: true },
+  conflict: { color: 'rgba(48,56,74,0.08)', opacity: 0.4, width: 0.6, dashed: true },
+}
+
+export function computeEdgeWidth(edgeType: string, strength: number): number {
+  const base = getEdgeStyle(edgeType).width
+  return base * (0.7 + Math.min(strength, 1) * 0.6)
 }
 
 export function getEdgeStyle(edgeType: string) {
