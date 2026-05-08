@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Home,
   Brain,
@@ -56,6 +56,9 @@ import {
   Inbox,
   Clock,
   Filter,
+  MousePointer2,
+  GitCommit,
+  Wand2,
 } from 'lucide-react';
 
 // ==========================================
@@ -359,81 +362,239 @@ const ToolboxView = () => {
 };
 
 
-// 2. 思维视图 (Mind View)
-// 此处为Mock功能，等待后端接入 — 输入流、聚类拓扑、节点连接均为Mock数据
-// To-do: 后端已支持 MindGraphSigma/mindSnapshotBuilder, 可对接真实图谱渲染
-const MindView = () => (
-  <div className="max-w-[1400px] mx-auto animate-in fade-in duration-500">
-    <div className="mb-6 mt-2 flex justify-between items-end">
-      <div>
-        <h1 className="text-3xl font-semibold mb-2 text-white tracking-tight">神经图谱</h1>
-        <p className="text-[#899298] text-sm">您的非结构化思绪正在自动建立语义连接。</p>
-      </div>
-      <button className="px-4 py-2 rounded-full bg-[#86d7ff] text-[#003547] text-xs font-semibold hover:bg-[#a8c8ff] transition-colors shadow-[0_0_20px_rgba(134,215,255,0.2)]">
-        + 闪念捕获
-      </button>
-    </div>
+// ==========================================
+// 2. 思维视图 (Mind View) - 混沌到有序的整理工作台 (全屏平铺版)
+// 此处为Mock功能，等待后端接入 — 所有思绪/节点/连线/推荐均为Mock数据
+// To-do: 后端已支持 listMindNodes/listMindEdges/mindSnapshotBuilder 可对接真实图谱
+// To-do: 后端已支持 MindGraphSigma (Sigma 2D) 和 react-force-graph-3d (3D) 渲染
+// To-do: 后端已支持 listDockItems() 可填充"散落思绪池"未链接内容
+// To-do: 后端已支持 createCaptureToDocumentFlow() 可实现"注入图谱"的完整流程
+// ==========================================
 
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-[500px]">
-      <GlassPanel className="col-span-1 p-5 flex flex-col h-full">
-        <h3 className="text-xs font-semibold text-[#86d7ff] uppercase tracking-wider mb-3 flex items-center gap-1.5">
-          <Activity className="w-3.5 h-3.5" /> 实时输入流
-        </h3>
-        <div className="flex-1 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
-          {[
-            { t: "关于空间UI计算的新想法...", time: "刚刚", ai: true },
-            { t: "CRDT 冲突解决算法优化思路", time: "10 分钟前", ai: false },
-            { t: "参考资料：图数据库的局部更新", time: "1 小时前", ai: false },
-            { t: "会议纪要：Q3 产品路线图讨论", time: "3 小时前", ai: true },
-            { t: "快速备忘录 - 购买咖啡", time: "5 小时前", ai: false },
-          ].map((item, i) => (
-            <GlassCard key={i} className="p-3 cursor-pointer relative overflow-hidden">
-              {item.ai && <div className="absolute top-0 right-0 w-6 h-6 bg-gradient-to-bl from-[#86d7ff]/20 to-transparent"></div>}
-              <p className="text-xs text-white mb-1.5">{item.t}</p>
-              <span className="text-[9px] text-[#899298]">{item.time}</span>
-            </GlassCard>
+// Mind 类型定义
+interface MindThought { id: string; title: string; type: string; tag: string; color: string; }
+interface MindNode { id: string; label: string; x: number; y: number; type: 'core' | 'sub'; }
+interface MindEdge { source: string; target: string; }
+
+const MindView = () => {
+  const [activeSpace, setActiveSpace] = useState('Atlax 架构设计');
+  const [activeThought, setActiveThought] = useState<MindThought | null>(null);
+
+  // 此处为Mock功能，等待后端接入 — 未链接思绪应从 listDockItems(status=pending) 获取
+  const [unlinkedThoughts, setUnlinkedThoughts] = useState<MindThought[]>([
+    { id: 't1', title: '关于神经深度的灵感', type: 'Audio', tag: '#Design', color: '#c8a0f0' },
+    { id: 't2', title: 'Figma Token API 更新', type: 'Web', tag: '#Tech', color: '#86d7ff' },
+    { id: 't3', title: 'CRDT 算法优化方向', type: 'Note', tag: '#Sync', color: '#9cf4d4' },
+    { id: 't4', title: '周会 Q3 规划备忘', type: 'Meeting', tag: '#Product', color: '#ffb4ab' }
+  ]);
+
+  // 此处为Mock功能，等待后端接入 — 节点应从 listMindNodes() 获取
+  const [nodes, setNodes] = useState<MindNode[]>([
+    { id: 'n1', label: '空间计算 UI 范式', x: 350, y: 150, type: 'core' },
+    { id: 'n2', label: '毛玻璃渲染材质', x: 220, y: 300, type: 'sub' },
+    { id: 'n3', label: '光学深度与 Z 轴', x: 500, y: 280, type: 'sub' },
+    { id: 'n4', label: '本地优先架构', x: 380, y: 450, type: 'core' },
+  ]);
+
+  // 此处为Mock功能，等待后端接入 — 连线应从 listMindEdges() 获取
+  const [edges, setEdges] = useState<MindEdge[]>([
+    { source: 'n1', target: 'n2' },
+    { source: 'n1', target: 'n3' },
+    { source: 'n3', target: 'n4' },
+  ]);
+
+  // --- 拖拽交互状态 ---
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [dragNode, setDragNode] = useState<{ id: string; offsetX: number; offsetY: number } | null>(null);
+  const [drawLink, setDrawLink] = useState<{ sourceId: string; x: number; y: number } | null>(null);
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    setMousePos({ x, y });
+    if (dragNode) {
+      setNodes(prev => prev.map(n => n.id === dragNode.id ? { ...n, x: x - dragNode.offsetX, y: y - dragNode.offsetY } : n));
+    }
+  };
+
+  const handlePointerUp = () => { setDragNode(null); setDrawLink(null); };
+
+  const startNodeDrag = (e: React.PointerEvent, node: MindNode) => {
+    if (!canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    setDragNode({ id: node.id, offsetX: e.clientX - rect.left - node.x, offsetY: e.clientY - rect.top - node.y });
+    if (activeThought) setActiveThought(null);
+  };
+
+  const startDrawingLink = (e: React.PointerEvent, sourceId: string) => {
+    e.stopPropagation();
+    if (!canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    setDrawLink({ sourceId, x: e.clientX - rect.left, y: e.clientY - rect.top });
+  };
+
+  const dropLinkOnNode = (e: React.PointerEvent, targetId: string) => {
+    e.stopPropagation();
+    if (drawLink && drawLink.sourceId !== targetId) {
+      const exists = edges.find(ed => (ed.source === drawLink.sourceId && ed.target === targetId) || (ed.target === drawLink.sourceId && ed.source === targetId));
+      if (!exists) setEdges([...edges, { source: drawLink.sourceId, target: targetId }]);
+    }
+    setDrawLink(null);
+  };
+
+  // 此处为Mock功能，等待后端接入 — 注入操作应调用 createCaptureToDocumentFlow() + upsertMindNode()
+  const injectThought = () => {
+    if (!activeThought) return;
+    const newNodeId = `n_${Date.now()}`;
+    setNodes([...nodes, { id: newNodeId, label: activeThought.title, x: 350, y: 250, type: 'sub' }]);
+    setEdges([...edges, { source: 'n1', target: newNodeId }]);
+    setUnlinkedThoughts(prev => prev.filter(t => t.id !== activeThought.id));
+    setActiveThought(null);
+  };
+
+  return (
+    <div className="w-full h-full flex animate-in fade-in duration-500 bg-[#0b0f11] text-[#e6eaed] overflow-hidden divide-x divide-white/[0.07] border-t border-white/[0.07]">
+
+      {/* Left Pane: 混沌区 (Unlinked / Inbox) */}
+      <div className="w-[240px] bg-[#0d1215] flex flex-col shrink-0 overflow-hidden">
+        <div className="px-4 py-5 border-b border-white/[0.07] shrink-0">
+          <div className="text-[10px] font-semibold text-[#8d989f] uppercase tracking-wider flex items-center gap-1.5 mb-1.5"><Inbox className="w-3.5 h-3.5" /> Inbox / Unlinked</div>
+          <h2 className="text-[18px] font-semibold text-white leading-tight">散落思绪池</h2>
+          <p className="text-[11px] text-[#8d989f] mt-1">{unlinkedThoughts.length} 个对象等待归入图谱</p>
+        </div>
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
+          {unlinkedThoughts.map(thought => {
+            const isSelected = activeThought?.id === thought.id;
+            return (
+              <div key={thought.id} onClick={() => setActiveThought(thought)}
+                className={`p-3 rounded-[8px] border cursor-pointer transition-all ${isSelected ? 'bg-[#86d7ff]/[0.08] border-[#86d7ff]/30 shadow-[inset_0_1px_1px_rgba(134,215,255,0.1)]' : 'bg-transparent border-transparent hover:bg-white/[0.04]'}`}>
+                <div className="flex items-center gap-2 mb-1.5">
+                  <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: thought.color }}></div>
+                  <span className="text-[9px] font-semibold text-[#8d989f] uppercase tracking-wider">{thought.type}</span>
+                </div>
+                <h4 className={`text-[12px] font-medium leading-tight mb-2 truncate ${isSelected ? 'text-[#86d7ff]' : 'text-[#e6eaed]'}`}>{thought.title}</h4>
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 border border-white/[0.07] text-[#8d989f]">{thought.tag}</span>
+                  <span className="text-[9px] text-[#8d989f]">Just now</span>
+                </div>
+              </div>
+            );
+          })}
+          {unlinkedThoughts.length === 0 && (
+            <div className="text-[11px] text-[#8d989f] text-center mt-10">收件箱已清空，所有思绪已归档。</div>
+          )}
+        </div>
+      </div>
+
+      {/* Center Pane: 交互式图谱 (Mind Canvas) */}
+      <div className="flex-1 flex flex-col min-w-0 bg-[#0b0f11] relative">
+        {/* Top View Switcher */}
+        <div className="h-[48px] border-b border-white/[0.07] px-4 flex items-center justify-between bg-[#0d1215] z-10 shrink-0">
+          <div className="flex items-center gap-3">
+            <Network className="w-4 h-4 text-[#86d7ff]" />
+            {/* 此处为Mock功能，等待后端接入 — Space列表应从 listCollections() 获取 */}
+            <div className="flex bg-black/20 p-0.5 rounded-lg border border-white/[0.07]">
+              {(['Atlax 架构设计', 'Q3 用户研究', '全局图谱'] as const).map(space => (
+                <button key={space} onClick={() => setActiveSpace(space)}
+                  className={`px-3 py-1.5 rounded-[6px] text-[11px] font-medium transition-all ${activeSpace === space ? 'bg-white/10 text-white shadow-sm' : 'text-[#8d989f] hover:text-white hover:bg-white/5'}`}>
+                  {space}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <span className="text-[10px] text-[#8d989f] flex items-center gap-1.5"><MousePointer2 className="w-3 h-3" /> 拖动节点可调整</span>
+            <span className="text-[10px] text-[#8d989f] flex items-center gap-1.5"><GitCommit className="w-3 h-3" /> 拖动右侧锚点连线</span>
+          </div>
+        </div>
+
+        {/* Canvas Area */}
+        <div ref={canvasRef} className="flex-1 relative overflow-hidden"
+          onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerLeave={handlePointerUp}
+          style={{ backgroundImage: 'radial-gradient(circle at 50% 50%, rgba(255,255,255,0.03) 1px, transparent 1px)', backgroundSize: '24px 24px' }}>
+          {/* SVG 连线层 */}
+          <svg className="absolute inset-0 w-full h-full pointer-events-none z-0">
+            {edges.map((edge, idx) => {
+              const src = nodes.find(n => n.id === edge.source);
+              const tgt = nodes.find(n => n.id === edge.target);
+              if (!src || !tgt) return null;
+              return <line key={idx} x1={src.x} y1={src.y} x2={tgt.x} y2={tgt.y} stroke="rgba(255,255,255,0.15)" strokeWidth="1.5" />;
+            })}
+            {drawLink && (
+              <line x1={nodes.find(n => n.id === drawLink.sourceId)?.x || drawLink.x} y1={nodes.find(n => n.id === drawLink.sourceId)?.y || drawLink.y}
+                x2={mousePos.x} y2={mousePos.y} stroke="#86d7ff" strokeWidth="2" strokeDasharray="4 4" />
+            )}
+          </svg>
+
+          {/* DOM 节点层 */}
+          {nodes.map(node => (
+            <div key={node.id} onPointerDown={(e) => startNodeDrag(e, node)} onPointerUp={(e) => dropLinkOnNode(e, node.id)}
+              className={`absolute flex items-center gap-2 px-3 py-1.5 rounded-full cursor-grab active:cursor-grabbing backdrop-blur-md border border-white/10 shadow-lg z-10 transition-shadow select-none ${node.type === 'core' ? 'bg-[#86d7ff]/10 border-[#86d7ff]/30 text-white shadow-[0_0_15px_rgba(134,215,255,0.1)]' : 'bg-[#1c2023]/80 text-[#e6eaed] hover:border-white/20'}`}
+              style={{ left: node.x, top: node.y, transform: 'translate(-50%, -50%)' }}>
+              {node.type === 'core' ? <Brain className="w-3.5 h-3.5 text-[#86d7ff]" /> : <FileText className="w-3 h-3 text-[#899298]" />}
+              <span className="text-[12px] font-medium whitespace-nowrap">{node.label}</span>
+              {/* 连线锚点 */}
+              <div onPointerDown={(e) => startDrawingLink(e, node.id)}
+                className="absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-[#1c2023] border border-white/20 flex items-center justify-center cursor-crosshair hover:bg-[#86d7ff] hover:border-[#86d7ff] transition-colors group/handle z-20">
+                <div className="w-1.5 h-1.5 rounded-full bg-[#86d7ff] group-hover/handle:bg-[#0b0f11]"></div>
+              </div>
+            </div>
           ))}
         </div>
-      </GlassPanel>
+      </div>
 
-      <GlassPanel className="col-span-2 p-5 flex flex-col h-full relative overflow-hidden">
-        <div className="absolute inset-0 opacity-20 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 50% 50%, #86d7ff 1px, transparent 1px)', backgroundSize: '40px 40px' }}></div>
-        <div className="absolute top-4 left-5 z-10">
-          <h3 className="text-xs font-semibold text-white uppercase tracking-wider">思维聚类拓扑</h3>
-        </div>
+      {/* Right Pane: 蒸馏与 AI 推荐 (Distillation) */}
+      <div className="w-[300px] bg-[#0d1215] flex flex-col shrink-0 p-5 relative overflow-y-auto custom-scrollbar">
+        <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-[#86d7ff] to-[#c8a0f0]"></div>
+        <div className="text-[10px] font-semibold text-[#8d989f] uppercase tracking-wider flex items-center gap-1.5 mb-5 mt-1"><Wand2 className="w-3.5 h-3.5" /> Neural Distillation</div>
 
-        {/* 伪可视化图谱 */}
-        <div className="flex-1 relative flex items-center justify-center">
-          <div className="absolute w-48 h-48 border border-white/5 rounded-full animate-[spin_60s_linear_infinite]"></div>
-          <div className="absolute w-72 h-72 border border-[#86d7ff]/10 rounded-full animate-[spin_90s_linear_infinite_reverse]"></div>
-
-          {/* 中心节点 */}
-          <div className="relative z-10 w-20 h-20 rounded-full bg-[#86d7ff]/10 border border-[#86d7ff]/30 backdrop-blur-md flex items-center justify-center shadow-[0_0_30px_rgba(134,215,255,0.1)]">
-            <span className="text-[#86d7ff] text-xs font-medium">核心引擎</span>
+        {activeThought ? (
+          <div className="animate-in fade-in slide-in-from-right-4 duration-300">
+            <h3 className="text-[16px] font-semibold text-white leading-tight mb-2.5">{activeThought.title}</h3>
+            <div className="flex gap-2 mb-6">
+              <span className="px-2 py-0.5 rounded bg-white/5 border border-white/[0.07] text-[10px] text-[#8d989f]">{activeThought.type}</span>
+              <span className="px-2 py-0.5 rounded bg-white/5 border border-white/[0.07] text-[10px] text-[#8d989f]">{activeThought.tag}</span>
+            </div>
+            {/* 此处为Mock功能，等待后端接入 — AI推荐应从 generateBasicCandidates()/IntelligenceSpine 获取 */}
+            <div className="bg-[#c8a0f0]/[0.05] border border-[#c8a0f0]/20 rounded-[12px] p-4 mb-4">
+              <h4 className="text-[10px] font-bold text-[#c8a0f0] uppercase tracking-wider mb-2 flex items-center gap-1.5"><Bot className="w-3.5 h-3.5" /> 知识库映射分析</h4>
+              <p className="text-[11px] text-[#e0e3e6] leading-relaxed mb-4">
+                基于内容语义，此对象高度契合当前图谱。AI 推荐将其作为子节点挂载。
+              </p>
+              <div className="bg-black/30 border border-white/5 rounded-[8px] p-3 mb-4">
+                <div className="text-[10px] text-[#8d989f] mb-1.5">推荐连线至 (Target Node):</div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[12px] text-white font-medium flex items-center gap-1.5"><Brain className="w-3 h-3 text-[#86d7ff]" /> 空间计算 UI 范式</span>
+                  <span className="text-[10px] text-[#9cf4d4] font-mono bg-[#9cf4d4]/10 px-1.5 py-0.5 rounded border border-[#9cf4d4]/20">94% Match</span>
+                </div>
+              </div>
+              <button onClick={injectThought}
+                className="w-full h-[32px] rounded-[8px] bg-gradient-to-r from-[#86d7ff]/20 to-[#c8a0f0]/20 border border-[#c8a0f0]/30 text-white text-[12px] font-medium hover:from-[#86d7ff]/30 hover:to-[#c8a0f0]/30 transition-all flex items-center justify-center gap-1.5 shadow-[0_0_15px_rgba(200,160,240,0.15)]">
+                <Plus className="w-3.5 h-3.5" /> 接受并注入图谱 (Inject)
+              </button>
+            </div>
+            <div className="text-[11px] text-[#8d989f] leading-relaxed bg-[#151a1e] p-3 rounded-lg border border-white/5">
+              提示：您也可以点击此面板外的空白处取消选中，或在左侧列表选取其他思绪。注入后将自动生成对应的结构化文档草稿。
+            </div>
           </div>
-
-          {/* 卫星节点 */}
-          <div className="absolute top-[20%] left-[25%] w-14 h-14 rounded-full bg-[#9cf4d4]/10 border border-[#9cf4d4]/30 flex items-center justify-center backdrop-blur-sm">
-            <span className="text-[#9cf4d4] text-[9px]">同步协议</span>
+        ) : (
+          <div className="flex-1 flex flex-col items-center justify-center text-center opacity-50 px-2">
+            <div className="w-12 h-12 rounded-[12px] bg-white/[0.05] border border-white/[0.1] flex items-center justify-center mb-4">
+              <Network className="w-5 h-5 text-[#8d989f]" />
+            </div>
+            <p className="text-[13px] font-medium text-white mb-1.5">等待分析流</p>
+            <p className="text-[11px] text-[#8d989f] leading-relaxed">
+              请在左侧&ldquo;散落思绪池&rdquo;选择一个对象，引擎将自动为您寻找最佳连线位置。
+            </p>
           </div>
-          <div className="absolute bottom-[25%] right-[20%] w-16 h-16 rounded-full bg-[#c8a0f0]/10 border border-[#c8a0f0]/30 flex items-center justify-center backdrop-blur-sm">
-            <span className="text-[#c8a0f0] text-[10px]">设计系统</span>
-          </div>
-          <div className="absolute top-[30%] right-[30%] w-10 h-10 rounded-full bg-white/5 border border-white/20 flex items-center justify-center backdrop-blur-sm">
-            <span className="text-white text-[8px]">API</span>
-          </div>
-
-          {/* 连接线 (纯CSS装饰) */}
-          <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 0 }}>
-            <line x1="50%" y1="50%" x2="25%" y2="20%" stroke="rgba(255,255,255,0.1)" strokeWidth="1" strokeDasharray="4 4" />
-            <line x1="50%" y1="50%" x2="80%" y2="75%" stroke="rgba(134,215,255,0.2)" strokeWidth="1" />
-            <line x1="50%" y1="50%" x2="70%" y2="30%" stroke="rgba(255,255,255,0.1)" strokeWidth="1" />
-          </svg>
-        </div>
-      </GlassPanel>
+        )}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 // ==========================================
 // 停靠区子视图 (Dock Sub-views)
@@ -1712,7 +1873,7 @@ export default function WorkspacePage() {
         </header>
 
         {/* 动态页面内容区 - 如果是 Dock 视图，彻底移除左右边距，实现无缝铺满 */}
-        <main className={`flex-1 ${activeTab === 'editor' || activeTab === 'dock' ? 'overflow-hidden pb-0' : 'overflow-y-auto pb-12 custom-scrollbar'} ${activeTab === 'dock' ? 'px-0' : 'px-8'}`}>
+        <main className={`flex-1 ${activeTab === 'editor' || activeTab === 'dock' || activeTab === 'mind' ? 'overflow-hidden pb-0' : 'overflow-y-auto pb-12 custom-scrollbar'} ${activeTab === 'dock' || activeTab === 'mind' ? 'px-0' : 'px-8'}`}>
           {activeTab === 'home' && <HomeView />}
           {activeTab === 'briefing' && <DailyBriefingView />}
           {activeTab === 'toolbox' && <ToolboxView />}

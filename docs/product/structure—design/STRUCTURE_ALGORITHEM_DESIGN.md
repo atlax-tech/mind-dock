@@ -1,5 +1,249 @@
 # Atlax MindDock 本地结构算法与偏好蒸馏设计文档
 
+版本：v1.2 Intelligent Local Preview
+适用阶段：Phase 3.2：Golden Workspace 全量真实接入
+核心目标：在既有 Local Preference Distillation Engine 基础上，补齐 Quick Capture、Tips、Drafts、Daily Brief、Review、Tools Hub、Import Control、Privacy Firewall 所需的本地智能规则和隐私边界。
+状态标记：[LIVE] 已有真实实现 / [LOCAL-PREVIEW] 本地基础版必须实现 / [PRO-PREVIEW] 订阅功能预览 / [PLANNED] 后续规划 / [RESERVED] 未来预留
+
+---
+
+## 0. 2026-05-09 算法更新总则
+
+### 0.1 本次更新目标
+
+旧算法文档已经定义本地偏好蒸馏、候选召回、排序、推荐事件和反馈学习。本次更新不推翻旧设计，而是明确：第一版产品必须有“智能的样子”，即便暂时不用 LLM，也要通过真实本地数据和可解释规则让用户感知系统正在维护知识库。
+
+### 0.2 智能感的第一版来源
+
+第一版智能不依赖 LLM，来自：
+
+1. Tips 积压检测。
+2. Drafts 停滞检测。
+3. 文档长期未打开检测。
+4. 高频 tag / project / topic 检测。
+5. Mind node / edge 周期变化统计。
+6. RecommendationEngine 的候选召回和 Top-K 排序。
+7. 用户接受 / 拒绝 / 修改 / 忽略反馈事件。
+8. Home Widget / Daily Brief / Review 的行动建议展示。
+
+---
+
+## 0.3 新增算法场景
+
+| 场景 | 状态 | 说明 |
+|---|---|---|
+| Quick Capture Landing | [LOCAL-PREVIEW] | Quick Capture 写入 Tips 后推荐 tag/project/node |
+| Tips Cleanup Recommendation | [LOCAL-PREVIEW] | 检测 Tips 积压与推荐整理动作 |
+| Draft Continuation Recommendation | [LOCAL-PREVIEW] | 检测停滞 Draft 并推荐继续编辑/归档/丢弃 |
+| Daily Brief Recommendation | [LOCAL-PREVIEW] | 每日打开时基于本地状态生成行动建议 |
+| Review Health Scoring | [LOCAL-PREVIEW] | Day/Week/Month/Year 周期健康分 |
+| Mind Snapshot Selection | [LOCAL-PREVIEW] | 选择周期内新增/活跃/高连接节点生成快照 |
+| Tool Recommendation | [PRO-PREVIEW] | 根据用户场景推荐 Tools Hub 中的模块，暂只展示 Preview |
+| Import Source Recommendation | [PRO-PREVIEW] | 根据用户数据来源推荐导入源，暂只展示 Preview |
+| Privacy Firewall Audit | [LOCAL-PREVIEW] | 记录本地算法运行和外部请求 |
+
+---
+
+## 0.4 Daily Brief 本地规则
+
+Daily Brief 生成时机：
+
+- 用户打开 Home。
+- 用户点击 Daily Brief。
+- 每日首次打开产品。
+
+输入：
+
+- captures。
+- documents。
+- mind_nodes。
+- mind_edges。
+- recommendations。
+- recommendation_events。
+- user_behavior_events。
+
+基础规则：
+
+```text
+Tips 未处理数 >= 5
+→ 推荐“整理 Quick Notes”
+
+Draft 未编辑天数 >= 3
+→ 推荐“继续编辑 / 归档 / 丢弃 Draft”
+
+Document 未打开天数 >= 14 且 degree_score 高
+→ 推荐“Review 高价值旧内容”
+
+某 tag 最近 7 天出现次数 >= 3
+→ 推荐“建立主题 / cluster”
+
+某 project 最近 7 天有更新但没有 Review
+→ 推荐“跟进项目”
+
+昨日新增 mind_nodes > 0
+→ 生成 Mind Snapshot
+```
+
+推荐必须写入 `recommendations` 或以 Brief runtime recommendation 形式展示。若展示给用户并可交互，必须写 `recommendation_events(shown)`。
+
+---
+
+## 0.5 Review 本地规则
+
+Review 关注知识系统健康，不是日报。
+
+健康分建议：
+
+```text
+health_score =
+  0.25 * activity_score
++ 0.20 * organization_score
++ 0.20 * draft_pressure_score
++ 0.15 * tips_pressure_score
++ 0.10 * graph_connectivity_score
++ 0.10 * review_freshness_score
+```
+
+其中：
+
+- activity_score：周期内创建/更新/打开行为。
+- organization_score：tag/project/cluster 覆盖率。
+- draft_pressure_score：Draft 积压越少越高。
+- tips_pressure_score：Tips 积压越少越高。
+- graph_connectivity_score：孤立节点越少越高。
+- review_freshness_score：高价值内容长期未 review 越少越高。
+
+周期支持：Day / Week / Month / Year。
+
+---
+
+## 0.6 Tips 算法
+
+Tips 是 Quick Capture 默认落点。
+
+关注指标：
+
+- 未处理数量。
+- 平均停留时间。
+- 高频关键词。
+- 与已有 tag/project/node 的匹配度。
+- 是否适合转 Document。
+- 是否适合合并到已有 Draft。
+
+动作建议：
+
+- `organize_tip`：整理单条 Tip。
+- `batch_organize_tips`：批量整理 Tips。
+- `convert_tip_to_document`：转正式文档。
+- `merge_tip_to_draft`：合并到已有 Draft。
+- `archive_tip`：归档。
+
+---
+
+## 0.7 Drafts 算法
+
+Drafts 是 Editor 未完成工作区。
+
+关注指标：
+
+- 未编辑天数。
+- 字数变化。
+- 是否有标题。
+- 是否已有 tag/project。
+- 是否接近完成。
+- 是否存在高频相关 Tips。
+
+动作建议：
+
+- `continue_draft`。
+- `publish_draft`。
+- `add_tags_to_draft`。
+- `merge_tips_into_draft`。
+- `archive_draft`。
+- `discard_draft`。
+
+---
+
+## 0.8 Mind Snapshot 选择规则
+
+Daily Brief / Review 中的 Mind Snapshot 不是全量图谱，而是周期内最值得展示的结构变化。
+
+候选：
+
+- 周期内新增节点。
+- 周期内新增边。
+- 周期内活跃度最高节点。
+- 新形成 cluster。
+- 从 isolated 变为 connected 的节点。
+
+排序：
+
+```text
+snapshot_score =
+  0.30 * recent_activity
++ 0.25 * new_edge_count
++ 0.20 * importance_score
++ 0.15 * user_interaction_score
++ 0.10 * novelty_score
+```
+
+---
+
+## 0.9 Privacy Firewall 算法边界
+
+Local Algorithm Engine 的硬约束：
+
+1. 不得直接调用 fetch / axios / remote SDK。
+2. 不得将 document markdown / plain_text 发送给外部服务。
+3. 所有外部请求必须经过 ConnectorService。
+4. ConnectorService 必须检查权限。
+5. 每次外部请求必须写 AlgorithmAuditLog。
+6. Local-only mode 开启时，ConnectorService 默认拒绝外部请求。
+
+本地算法允许读取：
+
+- documents。
+- captures。
+- tags。
+- projects。
+- mind_nodes。
+- mind_edges。
+- recommendations。
+- events。
+
+本地算法输出：
+
+- recommendations。
+- reason_json。
+- audit logs。
+- Daily Brief runtime result。
+- Review runtime result。
+
+---
+
+## 0.10 与旧算法设计的关系
+
+以下旧 v1.1 算法设计仍然有效：
+
+- Local Preference Distillation Engine。
+- Event Engine。
+- Feature Engine。
+- Local Index Engine。
+- Candidate Engine。
+- Ranking Engine。
+- Explanation Engine。
+- Delivery Engine。
+- Feedback Learning Engine。
+- Preference / Rhythm / Graph Update。
+
+本 v1.2 更新只是明确 Golden Workspace 真实接入阶段的规则型智能场景与隐私防火墙边界。
+
+---
+
+# 附录：旧 v1.1 本地结构算法设计保留
+
+# Atlax MindDock 本地结构算法与偏好蒸馏设计文档
+
 版本：v1.1
 适用阶段：后端第一阶段 Intelligence Spine 结构基线
 核心目标：基于 `STRUCTURE_DESIGN.md` 四层对象模型，建立本地算法的边界、架构与数据闭环骨架。本文档已包含 MVP 核心推荐闭环，包括统一排序、自动落库、标签/项目/星群/链接推荐、反馈学习、冷启动策略。
@@ -42,6 +286,9 @@
 | Quick Note 落地提醒 | 漂浮星辰提醒锚定 |
 | 每日推荐 | 基于节律和偏好的轻量每日内容推送 |
 | 周 Review 结构健康检查 | 孤立节点、停滞项目、重复主题检测 |
+| 工作台类型推荐 | [NEXT] 基于星云链路、文档类型、Tag、关系和用户选择，推荐合适的 Workspace Pack |
+| 链路结构识别 | [NEXT] 判断当前链路更像项目、知识库、研究专题、内容管线或 Review 对象 |
+| 工作台 Preview Candidate 生成 | [RESERVED] 生成可预览、可修改、可确认的结构草案，不直接替用户创建最终系统 |
 
 ### 1.4 本地算法不能做
 
@@ -53,6 +300,10 @@
 | 替用户做最终决策 | 所有推荐必须可撤销、可修正 |
 | 心理分析或情绪诊断 | 算法只观察行为，不评价人格和心理状态 |
 | 冷启动高精准 | 冷启动只能做到"合理"，数据积累后才能"很准" |
+| 自动生成完美工作台 | 本地算法只能生成结构草案，最终选择必须由用户确认 |
+| 替用户决定最终生产结构 | 用户的显式选择必须优先于算法判断 |
+| 在无预览情况下直接大规模创建 database / board | 会破坏用户信任，必须先 Preview 再 Confirm |
+| 凭空创造无限模板 | 工作台推荐必须基于有限 StructurePack / WorkspacePack 注册表 |
 
 ---
 
@@ -295,7 +546,7 @@ Preference / Rhythm / Graph Update
 | **输出** | 内容特征、结构特征、行为特征、时间特征、来源特征 |
 | **依赖表** | captures、documents、document_tags、mind_nodes、mind_edges、clusters、tags |
 | **服务功能** | 为新内容提取多维特征，支撑候选召回和排序 |
-| **MVP/NEXT/RESERVED** | [MVP] 基础特征提取（关键词、时间、来源）；[NEXT] feature_snapshots 落表 |
+| **MVP/NEXT/RESERVED** | [MVP] 基础特征提取（关键词、时间、来源）；[NEXT] feature_snapshots 落表；[NEXT] Graph Chain Feature Extraction |
 
 ---
 
@@ -319,7 +570,7 @@ Preference / Rhythm / Graph Update
 | **输出** | Candidate[]，每个 Candidate 包含 candidate_type、candidate_id、confidence_score |
 | **依赖表** | captures、documents、mind_nodes、mind_edges、clusters、projects、tags、document_tags |
 | **服务功能** | 根据不同推荐场景召回候选集（landing candidates、tag candidates、link candidates 等） |
-| **MVP/NEXT/RESERVED** | [MVP] 基础 landing/tag 候选；[NEXT] 完整候选类型 |
+| **MVP/NEXT/RESERVED** | [MVP] 基础 landing/tag 候选；[NEXT] 完整候选类型；[NEXT] Workspace Pack Candidate Recall；[RESERVED] Preview Candidate Builder |
 
 ---
 
@@ -331,7 +582,40 @@ Preference / Rhythm / Graph Update
 | **输出** | 排序后的 Candidate[]，附带 confidence_score |
 | **依赖表** | [NEXT] preference_profiles、[NEXT] rhythm_profiles |
 | **服务功能** | 对候选集打分排序，选出 Top-K |
-| **MVP/NEXT/RESERVED** | [MVP] 基础规则排序；[NEXT] 偏好加权排序 |
+| **MVP/NEXT/RESERVED** | [MVP] 基础规则排序；[NEXT] 偏好加权排序；[NEXT] Explicit User Choice Weighting |
+
+Smart Workspace Recommendation 的排序是 [NEXT] 支线，不影响 MVP。它不只依赖算法观测输入，也依赖用户显式选择。
+
+系统观测输入：
+
+- `graph_features`
+- `document_features`
+- `tag_distribution`
+- `relation_features`
+- `behavior_features`
+- `time_features`
+
+用户显式输入：
+
+- `user_goal`
+- `preferred_view`
+- `automation_level`
+- `selected_pack`
+- `rejected_pack`
+- `risk_tolerance`
+
+建议公式 [NEXT]：
+
+```text
+final_score =
+  0.35 * graph_match_score
++ 0.25 * content_match_score
++ 0.15 * behavior_preference_score
++ 0.15 * explicit_user_choice_score
++ 0.10 * confidence_safety_score
+```
+
+用户显式选择可作为 hard constraint 或 soft boost。算法不应覆盖用户明确选择；当选择与观测信号冲突时，应降级为解释和风险提示，而不是直接替用户决定。
 
 ---
 
@@ -344,6 +628,8 @@ Preference / Rhythm / Graph Update
 | **依赖表** | 无独立表，写入 recommendations.reason_json |
 | **服务功能** | 为每个推荐生成可解释的理由 |
 | **MVP/NEXT/RESERVED** | [MVP] 基础 reason_json；[NEXT] LLM 增强解释文本 |
+
+Workspace Recommendation [NEXT] 的解释必须补充：为什么推荐这个工作台类型、哪些链路特征支持该推荐、哪些内容低置信、哪些字段 / 视图会被创建、哪些内容会进入 Inbox 等待用户确认。
 
 ---
 
@@ -368,6 +654,8 @@ Preference / Rhythm / Graph Update
 | **依赖表** | recommendations、recommendation_events、user_behavior_events |
 | **服务功能** | 记录反馈闭环，为偏好蒸馏提供数据 |
 | **MVP/NEXT/RESERVED** | [MVP] 事件记录；[NEXT] 实时权重调整 |
+
+未来工作台推荐的学习事件包括 `workspace_pack_selected`、`workspace_pack_rejected`、`preview_field_modified`、`preview_view_changed`、`generation_confirmed`、`generation_cancelled`、`low_confidence_item_moved_to_inbox`。这些事件用于更新用户对工作台形态、视图偏好、自动化程度、风险容忍度的偏好。MVP 阶段只要求 `recommendation_events` / `user_behavior_events` 能扩展记录，不要求实时学习。
 
 ---
 
@@ -451,6 +739,16 @@ Preference / Rhythm / Graph Update
 | `modified` | 用户修改推荐后接受 | recommendations、recommendation_events | 半正反馈，记录修改方向 |
 | `ignored` | 用户未操作超时 / 同类其他候选被接受 | recommendations、recommendation_events | 弱负反馈 |
 | `cooled_down` | 同类推荐冷却期 | recommendations、recommendation_events | 推荐频率控制 |
+| `previewed` | [NEXT] 用户打开工作台推荐 Preview | recommendation_events | Preview 曝光统计 |
+| `workspace_pack_selected` | [NEXT] 用户选择工作台结构包 | recommendation_events、user_behavior_events | 工作台形态偏好 |
+| `workspace_pack_rejected` | [NEXT] 用户拒绝工作台结构包 | recommendation_events、user_behavior_events | 降低同类 pack 权重 |
+| `preview_field_modified` | [NEXT] 用户修改 Preview 字段 | recommendation_events、user_behavior_events | 字段偏好、自动化程度偏好 |
+| `preview_view_changed` | [NEXT] 用户调整 Preview 视图 | recommendation_events、user_behavior_events | 视图偏好 |
+| `low_confidence_item_moved_to_inbox` | [NEXT] 低置信内容进入 Inbox | recommendation_events、user_behavior_events | 风险容忍度偏好 |
+| `generation_confirmed` | [RESERVED] 用户确认从 Preview 创建结构草案 | recommendation_events、user_behavior_events | 生成确认率 |
+| `generation_cancelled` | [RESERVED] 用户取消从 Preview 创建结构草案 | recommendation_events、user_behavior_events | 取消原因和风险阈值 |
+
+MVP 只要求事件表能扩展记录这些类型，不要求实现工作台推荐事件学习。
 
 ---
 
@@ -595,6 +893,11 @@ subject_id                   candidate_id
 | Cleanup Candidate | `document` | 待清理的草稿 |
 | Quick Note Landing Candidate | `project` / `cluster` / `node` | 漂浮星辰推荐落点 |
 | Nudge Candidate | 推送行动建议 | Chat 推送中推荐的下一步操作 |
+| Workspace Pack Candidate | `workspace_pack` | [NEXT] 未来 Mind root node / graph_chain 场景触发的工作台类型候选 |
+| Workspace Preview Candidate | `workspace_preview` | [RESERVED] 可预览、可修改、可确认的工作台结构草案 |
+| Collection View Candidate | `collection_view` | [RESERVED] 未来 table / board / inbox / review 等视图候选 |
+
+MVP 候选仍然以 landing/tag/project/cluster/link 为主。`workspace_pack_candidate` 只在未来 Mind root node / graph_chain 场景触发，不扩大当前 MVP 召回范围。
 
 ### 7.3 Candidate 到 recommendations 表的映射
 
@@ -609,6 +912,8 @@ subject_id                   candidate_id
 | 候选目标 ID | `candidate_id` |
 | 置信度 | `confidence_score` |
 | 推荐理由 | `reason_json` |
+
+未来通用推荐抽象还可映射到 `STRUCTURE_DESIGN.md` 中预留的 `source_type` / `source_id` / `target_type` / `target_id` / `candidate_payload_json`。其中 `candidate_payload_json` 在 MVP 可为空，未来用于承载 workspace preview，不要求当前实现。
 
 ### 7.4 MVP 召回策略
 
@@ -634,6 +939,7 @@ subject_id                   candidate_id
 | 基础 project 候选 | 推荐 primary_project_id |
 | 基础 cluster 候选 | 推荐目标 cluster_id |
 | 基础 reason_json | 每条推荐附带至少一条 evidence |
+| 通用 recommendation 兼容字段 | 不新增工作台生成能力；仅保留 `target_type` / `candidate_payload_json` 等兼容设计，且 `candidate_payload_json` 在 MVP 可为空 |
 
 ### 8.2 NEXT（第二阶段增强）
 
@@ -647,6 +953,11 @@ subject_id                   candidate_id
 | Quick Note 落地提醒 | 漂浮星辰锚定提醒 |
 | 周 Review 初版 | 结构健康检查、周报生成 |
 | 反馈学习权重调整 | 根据 recommendation_events 自动调整推荐置信度阈值 |
+| graph_chain feature extraction | 针对根节点 / 链路提取图谱结构特征 |
+| workspace_pack_candidate recall | 从有限 WorkspacePack / StructurePack 注册表召回候选 |
+| explicit_user_choice weighting | 将用户目标、视图偏好、自动化程度等显式选择纳入排序 |
+| workspace recommendation explanation | 解释推荐类型、链路证据、低置信内容和 Preview 变化 |
+| workspace recommendation event learning | 从工作台选择、拒绝、预览修改等事件中蒸馏偏好 |
 
 ### 8.3 RESERVED（未来预留）
 
@@ -656,8 +967,25 @@ subject_id                   candidate_id
 | `algorithm_cache` | Embedding 缓存、聚类中间态缓存 |
 | LLM 增强 | 语义排序、解释文本生成、长文总结 |
 | Chat Nudge 深度策略 | 个性化语气、上下文感知推送、多轮对话 |
+| preview candidate builder | 生成可预览、可修改、可确认的工作台结构草案 |
+| collection / view / record generation | 从 Preview 确认后创建集合、视图、记录等结构 |
+| structure pack marketplace | 结构包市场或第三方结构包分发机制 |
+| LLM semantic enhancement for workspace recommendation | 用 LLM 增强工作台推荐的语义理解和解释，不改变本地算法优先的主线 |
 
 ---
+
+### 8.4 Smart Workspace Recommendation 预留设计 [NEXT / RESERVED]
+
+Smart Workspace Recommendation 不是让本地算法直接替用户搭建最终系统，而是让算法基于星云链路和用户显式选择，生成可预览、可修改、可确认的工作台结构草案。
+
+1. **能力定义**：[NEXT] 从 Mind root node / graph_chain 中识别当前知识链路更适合的 Workspace Pack，例如项目管理看板、知识库 Database、研究 / 学习专题、周 Review 工作台、内容生产管线。
+2. **触发场景**：[NEXT] 用户在 Mind / 星云树中点击一个根节点、一条链路，或显式选择“推荐工作台形态”时触发。
+3. **输入信号**：[NEXT] 当前根节点、链路结构、相关文档类型、tag 分布、mind_nodes / mind_edges / clusters、用户历史行为、用户显式选择。
+4. **推荐输出**：[NEXT] 输出 workspace_pack_candidate Top-K，包含 pack_id、pack_name、confidence_score、reason_codes、preview_summary、low_confidence_items。
+5. **用户选择如何影响排序**：[NEXT] `user_goal`、`preferred_view`、`automation_level`、`selected_pack`、`rejected_pack` 可作为 hard constraint 或 soft boost。用户明确选择优先于算法判断。
+6. **Preview Candidate 原则**：[RESERVED] 先 Preview 再 Create。Preview Candidate 只能展示拟创建的字段、视图、记录映射和低置信 Inbox，不直接创建最终 database / board / collection。
+7. **反馈如何进入本地偏好蒸馏**：[NEXT] `workspace_pack_selected`、`workspace_pack_rejected`、`preview_field_modified`、`preview_view_changed`、`low_confidence_item_moved_to_inbox` 等事件进入 `recommendation_events` / `user_behavior_events`，用于更新工作台形态、视图偏好、自动化程度、风险容忍度。
+8. **MVP 不做什么**：[MVP] 不新增工作台生成能力，不创建 collection / view / record，不实现模板市场，不把 workspace_pack 推荐作为必做项；只保留通用 `target_type` / `candidate_payload_json` 与事件类型扩展的兼容空间。
 
 ## 9. 与 STRUCTURE_DESIGN.md 的字段对齐表
 
@@ -680,8 +1008,12 @@ subject_id                   candidate_id
 | Feature Snapshot | `feature_snapshots` | 内容特征快照，训练/回溯 | [NEXT] |
 | Preference Profile | `preference_profiles` | 用户偏好画像，排序加权 | [NEXT] |
 | Rhythm Profile | `rhythm_profiles` | 用户节律画像，推送时机 | [NEXT] |
+| Graph Feature Snapshot | `graph_feature_snapshots` | 链路级图谱特征快照，是 feature_snapshots 的 graph-chain 场景扩展 | [NEXT] |
 | Graph Signal | `graph_signals` | 图谱健康信号，Review 数据基础 | [RESERVED] |
 | Algorithm Cache | `algorithm_cache` | 算法中间结果缓存 | [RESERVED] |
+| Structure Pack | `structure_packs` | 工作台结构包注册表 | [RESERVED] |
+| Workspace Recommendation Candidate | `workspace_recommendation_candidates` | 工作台推荐候选预览 | [RESERVED] |
+| Collection / Collection View / Record Link | `collections` / `collection_views` / `record_node_links` | 未来集合、视图、星云映射抽象 | [RESERVED] |
 
 ### 9.1 字段命名对齐声明
 
@@ -691,8 +1023,11 @@ subject_id                   candidate_id
 | --- | --- | --- |
 | 被推荐处理的对象 | `subject_type` / `subject_id` | ~~target_type / target_id~~ |
 | 推荐候选目标 | `candidate_type` / `candidate_id` | ~~recommended_target_id~~ |
+| 通用推荐来源 | `source_type` / `source_id` | 无 |
+| 通用推荐目标 | `target_type` / `target_id` | 无；这是 `STRUCTURE_DESIGN.md` 为 NEXT-compatible 推荐抽象重新引入的字段，不等同于旧废弃含义 |
+| 复杂候选草案 | `candidate_payload_json` | 无 |
 
-**本文档不出现以下废弃命名：** `target_type`、`target_id`、`recommended_target_id`。
+**废弃命名说明**：旧语义下的 `target_type` / `target_id` 已废弃；新语义下的 `target_type` / `target_id` 是 `STRUCTURE_DESIGN.md` 中为 tag/project/cluster/mind_edge/workspace_pack 等通用推荐目标预留的 NEXT-compatible 字段。`recommended_target_id` 仍不使用。
 
 ---
 
