@@ -5,6 +5,12 @@ export type AppEvent =
   | { type: 'archive_completed'; dockItemId: number; sourceType: SourceType }
   | { type: 'weekly_review_opened' }
   | { type: 'browse_revisit'; entryId: number }
+  | { type: 'tip_created'; tipId: number }
+  | { type: 'tip_converted'; tipId: number; draftId: number }
+  | { type: 'tip_discarded'; tipId: number }
+  | { type: 'draft_created'; draftId: number }
+  | { type: 'draft_updated'; draftId: number }
+  | { type: 'draft_deleted'; draftId: number }
 
 export type AppMode = 'classic' | 'chat'
 

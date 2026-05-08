@@ -10,6 +10,7 @@ import {
   discardDraft,
   type StoredDraft,
 } from '@/lib/repository'
+import { emit } from '@/lib/events'
 
 export function useDrafts(userId: string) {
   const [drafts, setDrafts] = useState<StoredDraft[]>([])
@@ -37,6 +38,7 @@ export function useDrafts(userId: string) {
     const draft = await createDraft(userId, title, content)
     if (draft) {
       setDrafts((prev) => [draft, ...prev])
+      emit({ type: 'draft_created', draftId: draft.id })
     }
     return draft
   }, [userId])
@@ -46,6 +48,7 @@ export function useDrafts(userId: string) {
     const draft = await updateDraft(userId, draftId, updates)
     if (draft) {
       setDrafts((prev) => prev.map((d) => (d.id === draftId ? draft : d)))
+      emit({ type: 'draft_updated', draftId })
     }
     return draft
   }, [userId])
@@ -55,6 +58,8 @@ export function useDrafts(userId: string) {
     const result = await publishDraftToDocument(userId, draftId)
     if (result.draft) {
       setDrafts((prev) => prev.filter((d) => d.id !== draftId))
+      emit({ type: 'draft_updated', draftId })
+      emit({ type: 'archive_completed', dockItemId: 0, sourceType: 'text' })
     }
     return {
       draft: result.draft,
@@ -67,6 +72,7 @@ export function useDrafts(userId: string) {
     const draft = await discardDraft(userId, draftId)
     if (draft) {
       setDrafts((prev) => prev.filter((d) => d.id !== draftId))
+      emit({ type: 'draft_deleted', draftId })
       return true
     }
     return false

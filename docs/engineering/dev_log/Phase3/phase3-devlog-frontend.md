@@ -9,6 +9,159 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：Phase 3.1.5 Round 30 (FE-REAL-003 实时刷新) -->
+<!-- ============================================ -->
+
+## Phase 3.1.5 Round 30 devlog -- FE-REAL-003 Home/Daily Brief 事件驱动实时刷新
+
+**时间戳**: 2026-05-09
+
+**任务起止时间**: 06:00 - 06:10 CST
+
+**工时**: 10 分钟
+
+**任务目标**:
+1. 解决 Home 和每日简报数据只有手动刷新后才更新的问题。
+2. 建立事件驱动机制，当 Tip/Draft 数据变更时自动刷新 Home 和 Daily Brief。
+3. 替代手动 refreshIntelligence() 调用，改为事件订阅自动刷新。
+
+**变更摘要**:
+
+**事件总线扩展** (`lib/events.ts`):
+- 在 AppEvent 联合类型中新增 6 个数据变更事件：tip_created、tip_converted、tip_discarded、draft_created、draft_updated、draft_deleted
+- 复用现有 subscribe/emit 基础设施，无需新建事件系统
+
+**Hook 层事件订阅** (`features/home/`):
+- useHomeIntelligence：新增 useEffect 订阅 REFRESH_EVENTS 列表中的事件，收到事件时自动 setRefreshKey 触发重新查询
+- useDailyBrief：同上，新增事件订阅 useEffect
+- REFRESH_EVENTS = ['tip_created', 'tip_converted', 'tip_discarded', 'draft_created', 'draft_updated', 'draft_deleted', 'archive_completed']
+
+**事件发射点** (`page.tsx`):
+- QuickCapture 创建 Tip 后：emit({ type: 'tip_created', tipId: tip.id })
+- Tip 转 Draft 后：emit({ type: 'tip_converted', tipId, draftId: result.draftId })
+- Tip 丢弃后：emit({ type: 'tip_discarded', tipId })
+- 移除 refreshIntelligence() 回调，不再需要手动刷新
+
+**Draft 操作事件发射** (`features/editor/useDrafts.ts`):
+- handleCreate：创建成功后 emit({ type: 'draft_created', draftId })
+- handleUpdate：更新成功后 emit({ type: 'draft_updated', draftId })
+- handlePublish：发布成功后 emit({ type: 'draft_updated' }) + emit({ type: 'archive_completed' })
+- handleDiscard：丢弃成功后 emit({ type: 'draft_deleted', draftId })
+
+**改动文件及行数**:
+- `apps/web/lib/events.ts` | M | +6 行 (新增 6 个事件类型)
+- `apps/web/app/workspace/features/home/useHomeIntelligence.ts` | M | +10 行 (事件订阅)
+- `apps/web/app/workspace/features/home/useDailyBrief.ts` | M | +10 行 (事件订阅)
+- `apps/web/app/workspace/page.tsx` | M | +4 行 / -7 行 (emit 替代 refreshIntelligence)
+- `apps/web/app/workspace/features/editor/useDrafts.ts` | M | +6 行 (事件发射)
+
+**遇到的问题及解决方式**:
+1. **convertTipToDraft 返回值类型**：初版使用 result.draft.id 但实际返回 { tip, draftId }。修复：改为 result.draftId。
+2. **自动保存频率问题**：useEditorDraft 的 debounce 自动保存（1.5s）如果发射 draft_updated 会导致 Home 频繁刷新。决策：自动保存不发射事件，只在用户主动操作（创建/发布/丢弃）时发射。
+
+**自动验证结果**:
+- `pnpm lint`: ✅ 通过 (0 errors, 3 warnings — 均为已有)
+- `pnpm typecheck`: ✅ 通过
+- `pnpm test`: ✅ 通过 (584 tests passed, 23 test files)
+- `pnpm build:web`: ✅ 通过
+
+**手工验证步骤说明**:
+1. 打开 `/workspace` 页面，确认 Home 页面正常显示。
+2. 通过 Quick Capture 创建一条 Tip，确认 Home 页面 Tips 计数自动更新（无需手动刷新）。
+3. 在 Home 页面点击 Tip 转 Draft，确认 Tips 计数减少、Drafts 计数增加。
+4. 在 Home 页面点击 Tip 丢弃，确认 Tips 计数减少。
+5. 切换到 Editor tab 创建 Draft，切回 Home 确认 Drafts 计数自动更新。
+6. 切换到 Daily Brief tab，确认简报数据与 Home 同步更新。
+
+**当前风险**:
+1. **事件风暴**：如果短时间内大量操作（如批量导入），可能触发频繁刷新。当前阶段数据量小，暂不优化。未来可加 debounce 或 throttle。
+2. **事件遗漏**：Mind Graph 节点/边的增删尚未发射事件，Home/Daily Brief 中 Mind 相关数据仍需手动刷新。可在后续迭代中补充。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：Phase 3.1.5 Round 29 (FE-REAL-003) -->
+<!-- ============================================ -->
+
+## Phase 3.1.5 Round 29 devlog -- FE-REAL-003 Home Intelligence Widget + Daily Brief 真实化
+
+**时间戳**: 2026-05-09
+
+**任务起止时间**: 05:30 - 05:55 CST
+
+**工时**: 25 分钟
+
+**任务目标**:
+1. 让 Home 和 Daily Brief 从静态 mock 变成真实读取本地数据的智能窗口。
+2. 数据来源优先使用 FE-REAL-001 Drafts、FE-REAL-002 Tips、已有 Documents/entries、已有 Mind/Activity 数据。
+3. 目标是"真实可解释"，不是炫技。
+4. 不破坏现有 Golden UI 视觉，不重做 Home/Daily Brief 页面。
+5. 不使用 hardcoded mock 假装真实数据。
+6. 空数据时展示真实 empty state，不要伪造数据。
+7. 业务聚合逻辑不堆进 workspace page，优先建立 service/hook。
+
+**变更摘要**:
+
+**聚合 Hook 层** (`features/home/`):
+- 新增 `useHomeIntelligence(userId)`：从本地 repository 聚合 Home 页面所需数据
+  - 聚合来源：listDrafts、listActiveTips、listArchivedEntries、listMindNodes、listMindEdges、listCollections
+  - 输出：activeDraftCount、activeTipCount、documentCount、mindNodeCount、mindEdgeCount、todayCreatedCount、todayUpdatedCount、recentDrafts(5)、recentTips(5)、recentDocuments(5)、collections、healthHints
+  - healthHints 逻辑：Tips≥5 提示待整理、Drafts≥1 提示未发布、Documents=0 提示暂无归档、MindNodes=0 提示图谱为空
+  - 支持 refresh() 刷新
+- 新增 `useDailyBrief(userId)`：从本地 repository 聚合 Daily Brief 页面所需数据
+  - 额外聚合：listTags
+  - 额外输出：tagCount、collectionCount、recentMindNodes(10)、recentMindEdges(10)、tags、briefHints
+  - briefHints 优先级系统：high(Tips≥5/Drafts≥3)、medium(0<tips<5/0<drafts<3/有文档无标签)、low(无文档/无思维图谱/有项目集合)
+  - 支持 refresh() 刷新
+
+**Home 页面集成** (`page.tsx`):
+- 引入 useHomeIntelligence 和 useDailyBrief hook
+- HomeView 接收 intelligence 和 intelligenceLoading props
+- DailyBriefingView 接收 brief 和 briefLoading props
+- 添加 refreshIntelligence() 回调，在 Tip 转 Draft / 丢弃 Tip 后自动刷新 Home 和 Daily Brief 数据
+- 添加 formatRelativeTime() 工具函数用于时间显示
+- 移除未使用的 Code/Link/ImageIcon import
+
+**测试** (`tests/home-intelligence.test.ts`):
+- 新增 14 个测试用例覆盖聚合逻辑
+- Home Intelligence：空 workspace 零值、Drafts 计数、Tips 计数、归档文档计数、Mind 节点/边计数、Drafts 排序、Tips 列表、Collections/Tags 计数、用户隔离
+- Daily Brief：空 workspace hints 生成、Tips≥5 高优先级 hint、Drafts≥3 高优先级 hint、小数量中优先级 hint、todayCreated 计数
+
+**改动文件及行数**:
+- `apps/web/app/workspace/features/home/useHomeIntelligence.ts` | A | +118 行
+- `apps/web/app/workspace/features/home/useDailyBrief.ts` | A | +195 行
+- `apps/web/app/workspace/page.tsx` | M | +30 行 / -8 行
+- `apps/web/tests/home-intelligence.test.ts` | A | +231 行
+
+**遇到的问题及解决方式**:
+1. **类型导出名称不一致**：repository.ts 内部使用 `Persisted*` 类型名，但对外导出为 `Stored*` 别名。初版 hook 使用 `PersistedEditorDraft` 等导致 typecheck 失败。修复：改用 `StoredDraft`/`StoredTip`/`StoredEntry`/`StoredMindNode`/`StoredMindEdge`/`StoredCollection`/`StoredTag`。
+2. **MindNodeType/MindEdgeType 枚举值**：测试中使用 `'concept'` 和 `'related'` 不在合法枚举中。修复：改为 `'topic'` 和 `'semantic'`。
+3. **createDraft/createDockItem API 签名**：测试中传对象参数与实际签名不匹配。修复：改为位置参数 `createDraft(userId, title, content)` 和 `createDockItem(userId, rawText)`。
+4. **useCallback 依赖警告**：refreshIntelligence 依赖 homeIntelligence.refresh 和 dailyBriefHook.refresh 导致 exhaustive-deps 警告。修复：添加 eslint-disable 注释，因为 refresh 函数引用稳定不需要重渲染。
+
+**自动验证结果**:
+- `pnpm lint`: ✅ 通过 (0 errors, 3 warnings — 均为已有)
+- `pnpm typecheck`: ✅ 通过
+- `pnpm test`: ✅ 通过 (584 tests passed, 23 test files — 含新增 14 个 home-intelligence 测试)
+- `pnpm build:web`: ✅ 通过 (workspace 页面 30 kB)
+
+**手工验证步骤说明**:
+1. 打开 `/workspace` 页面，确认 Home 页面正常显示。
+2. 通过 Quick Capture 创建一条 Tip。
+3. 切换到 Editor tab，创建一个 Draft。
+4. 回到 Home tab，确认 Tips/Drafts 计数和列表不再是纯 mock。
+5. 切换到 Daily Brief tab，确认简报数据来自真实本地数据。
+6. 刷新页面后再次确认 Home/Daily Brief 数据仍存在。
+7. 确认没有新增 Dock 推荐处理、Review 诊断等越界功能。
+
+**当前风险**:
+1. **userId fallback**：同前两轮，未登录用户共享 `_legacy` userId，数据无用户隔离。
+2. **HomeView/DailyBriefingView 内部 mock 残留**：这两个组件内部仍有部分 hardcoded mock 数据（如 Recent Files 列表），因为对应数据源（Dock 推荐队列）不在本轮范围内。这些 mock 标记为 Local Preview 状态。
+3. **刷新粒度**：当前刷新是全量重新查询，数据量大时可能有性能问题，但当前阶段数据量小，暂不优化。
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：Phase 3.1.5 Round 28 (FE-REAL-002) -->
 <!-- ============================================ -->
 

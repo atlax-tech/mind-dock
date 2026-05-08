@@ -6,6 +6,9 @@ import DraftEditorView from './features/editor/DraftEditorView';
 import { useTips } from './features/tips/useTips';
 import QuickCapture from './features/tips/QuickCapture';
 import TipsPanel from './features/tips/TipsPanel';
+import { useHomeIntelligence, type HomeIntelligenceData } from './features/home/useHomeIntelligence';
+import { useDailyBrief, type DailyBriefData } from './features/home/useDailyBrief';
+import { emit } from '@/lib/events';
 import {
   Home,
   Brain,
@@ -19,9 +22,6 @@ import {
   Download,
   Command,
   FileText,
-  Code,
-  Link,
-  Image as ImageIcon,
   CheckCircle2,
   AlertCircle,
   Plus,
@@ -65,6 +65,19 @@ import {
 // ==========================================
 // 设计系统组件 (Design System Components)
 // ==========================================
+
+function formatRelativeTime(date: Date): string {
+  const now = new Date()
+  const diffMs = now.getTime() - date.getTime()
+  const diffMin = Math.floor(diffMs / 60000)
+  if (diffMin < 1) return '刚刚'
+  if (diffMin < 60) return `${diffMin} 分钟前`
+  const diffHour = Math.floor(diffMin / 60)
+  if (diffHour < 24) return `${diffHour} 小时前`
+  const diffDay = Math.floor(diffHour / 24)
+  if (diffDay < 7) return `${diffDay} 天前`
+  return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+}
 
 // 毛玻璃面板基础组件
 const GlassPanel = ({ children, className = "", onClick }: { children: React.ReactNode; className?: string; onClick?: () => void }) => (
@@ -112,15 +125,24 @@ interface HomeViewProps {
   onConvertTipToDraft: (tipId: number) => Promise<{ tip: StoredTip | null; draftId: number | null }>
   onDiscardTip: (tipId: number) => Promise<boolean>
   onToast?: (msg: string) => void
+  intelligence: HomeIntelligenceData
+  intelligenceLoading: boolean
 }
 
-const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToast }: HomeViewProps) => {
+const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToast, intelligence, intelligenceLoading }: HomeViewProps) => {
+  const activeSessionCount = intelligence.mindNodeCount + intelligence.activeDraftCount + intelligence.activeTipCount
   return (
     <div className="max-w-[1400px] mx-auto animate-in fade-in duration-500">
       {/* 头部标题区 */}
       <div className="mb-6 mt-2">
         <h1 className="text-3xl font-semibold mb-2 text-white tracking-tight">早上好。</h1>
-        <p className="text-[#899298] text-sm">您的本地工作区已同步。4 个活跃的思维会话。</p>
+        <p className="text-[#899298] text-sm">
+          {intelligenceLoading
+            ? '正在读取本地工作区...'
+            : activeSessionCount > 0
+              ? `您的本地工作区已同步。${activeSessionCount} 个活跃的思维会话。`
+              : '您的本地工作区已同步。开始捕获想法吧。'}
+        </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
@@ -140,30 +162,40 @@ const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToas
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <GlassCard className="p-4 relative overflow-hidden group">
-                <div className="absolute top-3 right-3 w-1 h-1 rounded-full bg-[#86d7ff] shadow-[0_0_6px_#86d7ff]"></div>
-                <h3 className="text-sm text-white font-medium mb-1.5 group-hover:text-[#86d7ff] transition-colors">空间 UI 架构</h3>
-                <p className="text-xs text-[#899298] mb-3 leading-relaxed">探索桌面环境的分层毛玻璃和深度层级。</p>
-                <Pill text="设计" type="design" />
-              </GlassCard>
-
-              <GlassCard className="p-4 group">
-                <h3 className="text-sm text-white font-medium mb-1.5 group-hover:text-[#a8c8ff] transition-colors">Q3 战略综合</h3>
-                <p className="text-xs text-[#899298] mb-3 leading-relaxed">将本地数据存储与远程同步协议合并以实现离线优先功能。</p>
-                <Pill text="规划" type="planning" />
-              </GlassCard>
-
-              <GlassCard className="p-4 group">
-                <h3 className="text-sm text-white font-medium mb-1.5 group-hover:text-[#9cf4d4] transition-colors">本地优先同步设计</h3>
-                <p className="text-xs text-[#899298] mb-3 leading-relaxed">构建基于 CRDT 的同步架构以实现即时数据更新。</p>
-                <Pill text="活跃" type="active" />
-              </GlassCard>
-
-              <GlassCard className="p-4 group">
-                <h3 className="text-sm text-white font-medium mb-1.5 group-hover:text-[#c8a0f0] transition-colors">知识图谱</h3>
-                <p className="text-xs text-[#899298] mb-3 leading-relaxed">映射不同思维向量之间的语义关系。</p>
-                <Pill text="研究" type="research" />
-              </GlassCard>
+              {intelligence.recentDrafts.length === 0 && intelligence.recentTips.length === 0 && intelligence.recentDocuments.length === 0 ? (
+                <div className="col-span-full py-8 text-center rounded-[16px] border border-dashed border-white/5 bg-white/[0.01]">
+                  <Brain className="w-6 h-6 text-[#899298]/30 mx-auto mb-2" />
+                  <p className="text-[11px] text-[#899298]">暂无活跃思维</p>
+                  <p className="text-[10px] text-[#899298]/60 mt-1">创建 Draft 或捕获 Tip 后将在此显示</p>
+                </div>
+              ) : (
+                <>
+                  {intelligence.recentDrafts.slice(0, 2).map((draft) => (
+                    <GlassCard key={`draft-${draft.id}`} className="p-4 relative overflow-hidden group">
+                      <div className="absolute top-3 right-3 w-1 h-1 rounded-full bg-[#9cf4d4] shadow-[0_0_6px_#9cf4d4]"></div>
+                      <h3 className="text-sm text-white font-medium mb-1.5 group-hover:text-[#9cf4d4] transition-colors truncate">{draft.title || '无标题草稿'}</h3>
+                      <p className="text-xs text-[#899298] mb-3 leading-relaxed truncate">{draft.content?.slice(0, 60) || '空内容'}</p>
+                      <Pill text="草稿" type="active" />
+                    </GlassCard>
+                  ))}
+                  {intelligence.recentTips.slice(0, 2).map((tip) => (
+                    <GlassCard key={`tip-${tip.id}`} className="p-4 relative overflow-hidden group">
+                      <div className="absolute top-3 right-3 w-1 h-1 rounded-full bg-[#86d7ff] shadow-[0_0_6px_#86d7ff]"></div>
+                      <h3 className="text-sm text-white font-medium mb-1.5 group-hover:text-[#86d7ff] transition-colors truncate">{tip.content.slice(0, 40)}</h3>
+                      <p className="text-xs text-[#899298] mb-3 leading-relaxed truncate">{tip.sourceType === 'quick-capture' ? 'Quick Capture' : '手动输入'}</p>
+                      <Pill text="Tip" type="design" />
+                    </GlassCard>
+                  ))}
+                  {intelligence.recentDocuments.slice(0, 2).map((doc) => (
+                    <GlassCard key={`doc-${doc.id}`} className="p-4 relative overflow-hidden group">
+                      <div className="absolute top-3 right-3 w-1 h-1 rounded-full bg-[#c8a0f0] shadow-[0_0_6px_#c8a0f0]"></div>
+                      <h3 className="text-sm text-white font-medium mb-1.5 group-hover:text-[#c8a0f0] transition-colors truncate">{doc.title}</h3>
+                      <p className="text-xs text-[#899298] mb-3 leading-relaxed truncate">{doc.type || '文档'}</p>
+                      <Pill text="文档" type="research" />
+                    </GlassCard>
+                  ))}
+                </>
+              )}
             </div>
           </GlassPanel>
 
@@ -172,30 +204,33 @@ const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToas
             <div className="flex items-center gap-2 mb-4">
               <FileText className="w-4 h-4 text-[#86d7ff]" />
               <h2 className="text-base font-medium text-white">最近草稿</h2>
+              {!intelligenceLoading && intelligence.activeDraftCount > 0 && (
+                <span className="ml-auto text-[10px] text-[#899298]">{intelligence.activeDraftCount} 篇</span>
+              )}
             </div>
 
             <div className="flex flex-col gap-1.5">
-              {[
-                { icon: FileText, title: "Atlax 项目宣言", time: "2 小时前编辑" },
-                { icon: FileText, title: "设计系统令牌", time: "昨天编辑" },
-                { icon: Code, title: "API 同步端点", time: "3 天前编辑" }
-              ].map((draft, i) => (
-                <div key={i} className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 transition-colors cursor-pointer group">
-                  <div className="w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-[#899298] group-hover:text-[#86d7ff] group-hover:border-[#86d7ff]/30 transition-all">
-                    <draft.icon className="w-3.5 h-3.5" />
-                  </div>
-                  <div>
-                    <h4 className="text-xs text-white font-medium">{draft.title}</h4>
-                    <p className="text-[10px] text-[#899298] mt-0.5">{draft.time}</p>
-                  </div>
+              {intelligenceLoading ? (
+                <div className="py-4 text-center text-[9px] text-[#899298]">Loading...</div>
+              ) : intelligence.recentDrafts.length === 0 ? (
+                <div className="py-6 text-center rounded-[16px] border border-dashed border-white/5 bg-white/[0.01]">
+                  <FileText className="w-5 h-5 text-[#899298]/30 mx-auto mb-2" />
+                  <p className="text-[11px] text-[#899298]">暂无草稿</p>
+                  <p className="text-[10px] text-[#899298]/60 mt-1">在 Editor 中创建 Draft 或从 Tip 转化</p>
                 </div>
-              ))}
-            </div>
-
-            <div className="absolute bottom-5 right-5">
-              <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs text-white hover:bg-white/10 transition-colors">
-                <Command className="w-3.5 h-3.5" /> 快速笔记
-              </button>
+              ) : (
+                intelligence.recentDrafts.slice(0, 3).map((draft) => (
+                  <div key={draft.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 transition-colors cursor-pointer group">
+                    <div className="w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-[#899298] group-hover:text-[#86d7ff] group-hover:border-[#86d7ff]/30 transition-all">
+                      <FileText className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs text-white font-medium truncate">{draft.title || '无标题草稿'}</h4>
+                      <p className="text-[10px] text-[#899298] mt-0.5">{formatRelativeTime(draft.updatedAt)}</p>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </GlassPanel>
 
@@ -217,27 +252,31 @@ const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToas
           {/* 今日知识简报 */}
           <GlassPanel className="p-5">
             <h2 className="text-lg font-medium text-white mb-1">今日知识简报</h2>
-            <p className="text-xs text-[#899298] mb-5">来自分析的 6 条建议</p>
+            <p className="text-xs text-[#899298] mb-5">
+              {intelligenceLoading
+                ? '正在分析...'
+                : intelligence.healthHints.length > 0
+                  ? `来自分析的 ${intelligence.healthHints.length} 条建议`
+                  : '工作区状态良好'}
+            </p>
 
             <div className="flex flex-col gap-4 mb-6 relative">
               <div className="absolute left-[3px] top-2 bottom-2 w-px bg-white/5 z-0"></div>
 
-              <div className="relative z-10 pl-3 border-l-2 border-[#86d7ff]">
-                <h4 className="text-xs text-white font-medium">跟进事项</h4>
-                <p className="text-[10px] text-[#899298] mt-0.5">2 个标记为日常跟进的项目</p>
-              </div>
-              <div className="relative z-10 pl-3 border-l-2 border-[#899298] opacity-70">
-                <h4 className="text-xs text-white font-medium">复习</h4>
-                <p className="text-[10px] text-[#899298] mt-0.5">8 条笔记最近未打开</p>
-              </div>
-              <div className="relative z-10 pl-3 border-l-2 border-[#899298] opacity-70">
-                <h4 className="text-xs text-white font-medium">草稿</h4>
-                <p className="text-[10px] text-[#899298] mt-0.5">3 份未完成草稿需要决策</p>
-              </div>
-              <div className="relative z-10 pl-3 border-l-2 border-[#899298] opacity-70">
-                <h4 className="text-xs text-white font-medium">提示</h4>
-                <p className="text-[10px] text-[#899298] mt-0.5">5 条快速笔记已准备好整理</p>
-              </div>
+              {intelligenceLoading ? (
+                <div className="py-4 text-center text-[9px] text-[#899298]">Loading...</div>
+              ) : intelligence.healthHints.length === 0 ? (
+                <div className="relative z-10 pl-3 border-l-2 border-[#9cf4d4]">
+                  <h4 className="text-xs text-white font-medium">一切就绪</h4>
+                  <p className="text-[10px] text-[#899298] mt-0.5">当前无待处理事项</p>
+                </div>
+              ) : (
+                intelligence.healthHints.map((hint, i) => (
+                  <div key={i} className={`relative z-10 pl-3 border-l-2 ${i === 0 ? 'border-[#86d7ff]' : 'border-[#899298] opacity-70'}`}>
+                    <h4 className="text-xs text-white font-medium">{hint}</h4>
+                  </div>
+                ))
+              )}
             </div>
 
             <button className="w-full py-2 rounded-full bg-white/5 border border-white/10 text-[10px] font-semibold tracking-wider text-white hover:bg-white/10 transition-colors uppercase">
@@ -266,23 +305,23 @@ const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToas
                 <Archive className="w-4 h-4 text-white" />
                 <h2 className="text-base font-medium text-white">待处理数据包</h2>
               </div>
-              <span className="w-4 h-4 rounded-full bg-white/10 text-[9px] flex items-center justify-center text-white">3</span>
+              <span className="w-4 h-4 rounded-full bg-white/10 text-[9px] flex items-center justify-center text-white">{intelligence.activeTipCount}</span>
             </div>
             <p className="text-[11px] text-[#899298] mb-4">传入的数据等待分拣到您的停靠区。</p>
 
             <div className="grid grid-cols-3 gap-2">
-              <button className="flex flex-col items-center justify-center py-2 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 transition-all gap-1.5">
-                <Link className="w-3.5 h-3.5 text-[#899298]" />
-                <span className="text-[10px] font-medium text-white">网页剪报</span>
-              </button>
-              <button className="flex flex-col items-center justify-center py-2 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 transition-all gap-1.5">
-                <ImageIcon className="w-3.5 h-3.5 text-[#899298]" />
-                <span className="text-[10px] font-medium text-white">媒体</span>
-              </button>
-              <button className="flex flex-col items-center justify-center py-2 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 transition-all gap-1.5">
-                <FileText className="w-3.5 h-3.5 text-[#899298]" />
-                <span className="text-[10px] font-medium text-white">笔记</span>
-              </button>
+              <div className="flex flex-col items-center justify-center py-2 rounded-xl bg-white/5 border border-white/5 gap-1.5">
+                <span className="text-sm font-bold text-white">{intelligence.activeTipCount}</span>
+                <span className="text-[10px] font-medium text-[#899298]">Tips</span>
+              </div>
+              <div className="flex flex-col items-center justify-center py-2 rounded-xl bg-white/5 border border-white/5 gap-1.5">
+                <span className="text-sm font-bold text-[#9cf4d4]">{intelligence.activeDraftCount}</span>
+                <span className="text-[10px] font-medium text-[#899298]">Drafts</span>
+              </div>
+              <div className="flex flex-col items-center justify-center py-2 rounded-xl bg-white/5 border border-white/5 gap-1.5">
+                <span className="text-sm font-bold text-[#86d7ff]">{intelligence.documentCount}</span>
+                <span className="text-[10px] font-medium text-[#899298]">文档</span>
+              </div>
             </div>
           </GlassPanel>
 
@@ -1317,8 +1356,8 @@ const SettingsView = () => (
 );
 
 // 7. 每日简报视图 (Daily Briefing View)
-// 此处为Mock功能，等待后端接入 — 所有简报内容、进展、推荐均为Mock数据
-const DailyBriefingView = () => {
+// 真实数据接入：使用 useDailyBrief hook 聚合本地数据
+const DailyBriefingView = ({ brief, briefLoading }: { brief: DailyBriefData; briefLoading: boolean }) => {
   const currentDate = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
   return (
     <div className="max-w-[1200px] mx-auto animate-in fade-in duration-500 pb-12">
@@ -1326,9 +1365,9 @@ const DailyBriefingView = () => {
       <div className="border-b-[1.5px] border-white/20 pb-6 mb-8 pt-8">
         <h1 className="text-5xl font-bold tracking-tighter text-white uppercase text-center mb-4">Atlax Daily Briefing</h1>
         <div className="flex justify-between items-center text-[#899298] text-[10px] font-semibold tracking-widest uppercase border-y border-white/10 py-2.5">
-          <span>Vol. 042</span>
+          <span>Local Edition</span>
           <span>{currentDate}</span>
-          <span>Personal Edition</span>
+          <span>Personal</span>
         </div>
       </div>
 
@@ -1342,7 +1381,7 @@ const DailyBriefingView = () => {
           <section>
             <div className="flex items-center gap-2 border-b border-white/10 pb-3 mb-5">
               <Network className="w-5 h-5 text-[#86d7ff]" />
-              <h2 className="text-xl font-bold text-white tracking-tight uppercase">昨日 Mind 视图拓扑</h2>
+              <h2 className="text-xl font-bold text-white tracking-tight uppercase">今日概览</h2>
             </div>
 
             <div className="aspect-[21/9] border border-white/5 bg-[#1c2023]/40 rounded-sm relative overflow-hidden flex items-center justify-center group mb-5">
@@ -1353,58 +1392,110 @@ const DailyBriefingView = () => {
                 <div className="w-12 h-12 rounded-full bg-[#86d7ff]/10 border border-[#86d7ff]/30 backdrop-blur-md flex items-center justify-center mx-auto mb-3">
                   <Brain className="w-6 h-6 text-[#86d7ff]" />
                 </div>
-                <p className="text-xs text-[#899298] tracking-widest uppercase">3 Clusters • 12 New Edges</p>
+                {briefLoading ? (
+                  <p className="text-xs text-[#899298] tracking-widest uppercase">Loading...</p>
+                ) : (
+                  <p className="text-xs text-[#899298] tracking-widest uppercase">{brief.mindNodeCount} Nodes • {brief.mindEdgeCount} Edges</p>
+                )}
               </div>
             </div>
             <p className="text-sm text-[#e0e3e6] leading-relaxed columns-1 md:columns-2 gap-8 text-justify">
-              昨日您的神经图谱在<span className="text-[#86d7ff] font-medium">“空间计算”</span>与<span className="text-[#86d7ff] font-medium">“本地优先架构”</span>领域产生了高度的活跃。图谱算法为您自动建立并强化了多条新的语义链接，形成了一个连贯的思想脉络。这可能成为您下一篇技术博文的绝佳基础。您的数字花园正在茁壮成长，我们建议您进入“思维”选项卡进行深度整理。
+              {briefLoading ? (
+                '正在读取本地数据...'
+              ) : brief.mindNodeCount === 0 ? (
+                <span>您的思维图谱尚为空。开始捕获想法并归档文档后，图谱将自动构建。<span className="text-[#86d7ff] font-medium">本地优先</span>，所有数据仅存储在您的设备上。</span>
+              ) : (
+                <span>您的神经图谱目前有 <span className="text-[#86d7ff] font-medium">{brief.mindNodeCount} 个节点</span>和 <span className="text-[#86d7ff] font-medium">{brief.mindEdgeCount} 条连线</span>。{brief.todayCreatedCount > 0 ? `今日新增 ${brief.todayCreatedCount} 条内容。` : '今日暂无新增内容。'}{brief.activeTipCount > 0 ? `有 ${brief.activeTipCount} 条 Tips 等待整理。` : ''}所有数据<span className="text-[#86d7ff] font-medium">本地优先</span>，仅存储在您的设备上。</span>
+              )}
             </p>
           </section>
 
           <hr className="border-t border-white/10 border-b-0" />
 
-          {/* 昨日进展 & 今日推荐 */}
+          {/* 待整理 Tips & 活跃 Drafts */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
             <section className="md:border-r border-white/10 md:pr-10">
               <h3 className="text-sm font-bold text-white mb-4 uppercase tracking-wider flex items-center gap-2">
-                <Activity className="w-4 h-4 text-[#9cf4d4]" /> 昨日进展简述
+                <Activity className="w-4 h-4 text-[#9cf4d4]" /> 待整理 Tips
               </h3>
-              <ul className="space-y-4">
-                <li className="flex items-start gap-3">
-                  <CheckCircle2 className="w-4 h-4 text-[#9cf4d4] shrink-0 mt-0.5" />
-                  <span className="text-sm text-[#e0e3e6] leading-relaxed">完成了《Atlax 项目宣言》的初步修订并保存至本地金库。</span>
-                </li>
-                <li className="flex items-start gap-3">
-                  <CheckCircle2 className="w-4 h-4 text-[#9cf4d4] shrink-0 mt-0.5" />
-                  <span className="text-sm text-[#e0e3e6] leading-relaxed">捕获了 14 条全新的网页剪报和 3 段音频备忘录。</span>
-                </li>
-                <li className="flex items-start gap-3 opacity-60">
-                  <CheckCircle2 className="w-4 h-4 text-white shrink-0 mt-0.5" />
-                  <span className="text-sm text-white leading-relaxed">系统自动清理并合并了 5 个陈旧的相似标签。</span>
-                </li>
-              </ul>
+              {briefLoading ? (
+                <p className="text-sm text-[#899298]">Loading...</p>
+              ) : brief.recentTips.length === 0 ? (
+                <div className="py-6 text-center rounded-[16px] border border-dashed border-white/5 bg-white/[0.01]">
+                  <p className="text-[11px] text-[#899298]">暂无待整理 Tips</p>
+                  <p className="text-[10px] text-[#899298]/60 mt-1">通过 Quick Capture 捕获想法</p>
+                </div>
+              ) : (
+                <ul className="space-y-3">
+                  {brief.recentTips.slice(0, 4).map((tip) => (
+                    <li key={tip.id} className="flex items-start gap-3">
+                      <CheckCircle2 className="w-4 h-4 text-[#9cf4d4] shrink-0 mt-0.5" />
+                      <div>
+                        <span className="text-sm text-[#e0e3e6] leading-relaxed">{tip.content.slice(0, 80)}</span>
+                        <p className="text-[10px] text-[#899298] mt-0.5">{formatRelativeTime(tip.createdAt)}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </section>
 
             <section>
               <h3 className="text-sm font-bold text-white mb-4 uppercase tracking-wider flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-[#c8a0f0]" /> 今日重点推进
+                <Sparkles className="w-4 h-4 text-[#c8a0f0]" /> 活跃 Drafts
               </h3>
-              <div className="space-y-6">
-                <div className="group cursor-pointer">
-                  <h4 className="text-sm font-semibold text-white group-hover:text-[#86d7ff] transition-colors mb-1">接续撰写: 空间界面</h4>
-                  <p className="text-xs text-[#899298] leading-relaxed">
-                    您的草稿《空间界面作为认知脚手架》已停滞。建议今天投入 25 分钟补全缺失的结论部分。
-                  </p>
+              {briefLoading ? (
+                <p className="text-sm text-[#899298]">Loading...</p>
+              ) : brief.recentDrafts.length === 0 ? (
+                <div className="py-6 text-center rounded-[16px] border border-dashed border-white/5 bg-white/[0.01]">
+                  <p className="text-[11px] text-[#899298]">暂无活跃草稿</p>
+                  <p className="text-[10px] text-[#899298]/60 mt-1">在 Editor 中创建新 Draft</p>
                 </div>
-                <div className="group cursor-pointer">
-                  <h4 className="text-sm font-semibold text-white group-hover:text-[#86d7ff] transition-colors mb-1">回顾文献: CRDT 算法</h4>
-                  <p className="text-xs text-[#899298] leading-relaxed">
-                    您有 3 篇关于本地优先同步架构的未读高优文献，停留在您的阅读缓冲区。
-                  </p>
+              ) : (
+                <div className="space-y-4">
+                  {brief.recentDrafts.slice(0, 3).map((draft) => (
+                    <div key={draft.id} className="group cursor-pointer">
+                      <h4 className="text-sm font-semibold text-white group-hover:text-[#86d7ff] transition-colors mb-1">{draft.title || '无标题草稿'}</h4>
+                      <p className="text-xs text-[#899298] leading-relaxed">
+                        {draft.content ? `${draft.content.slice(0, 60)}...` : '空内容'} • {formatRelativeTime(draft.updatedAt)}
+                      </p>
+                    </div>
+                  ))}
                 </div>
-              </div>
+              )}
             </section>
           </div>
+
+          {/* 最近 Documents */}
+          <section>
+            <div className="flex items-center gap-2 border-b border-white/10 pb-3 mb-5 mt-6">
+              <FileText className="w-4 h-4 text-[#86d7ff]" />
+              <h2 className="text-lg font-bold text-white tracking-tight uppercase">最近 Documents</h2>
+            </div>
+            {briefLoading ? (
+              <p className="text-sm text-[#899298]">Loading...</p>
+            ) : brief.recentDocuments.length === 0 ? (
+              <div className="py-8 text-center rounded-[16px] border border-dashed border-white/5 bg-white/[0.01]">
+                <FileText className="w-6 h-6 text-[#899298]/30 mx-auto mb-2" />
+                <p className="text-[11px] text-[#899298]">暂无已归档文档</p>
+                <p className="text-[10px] text-[#899298]/60 mt-1">将 Draft 发布或从 Tip 转化后文档将在此显示</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {brief.recentDocuments.slice(0, 5).map((doc) => (
+                  <div key={doc.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 transition-colors cursor-pointer group">
+                    <div className="w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-[#899298] group-hover:text-[#86d7ff] group-hover:border-[#86d7ff]/30 transition-all">
+                      <FileText className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs text-white font-medium">{doc.title}</h4>
+                      <p className="text-[10px] text-[#899298] mt-0.5">{doc.type || '文档'} • {formatRelativeTime(doc.archivedAt || doc.createdAt)}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
 
         </div>
 
@@ -1421,43 +1512,65 @@ const DailyBriefingView = () => {
               <div>
                 <div className="flex justify-between items-end mb-1.5">
                   <span className="text-xs text-[#899298] flex items-center gap-1.5"><Command className="w-3.5 h-3.5" /> Quick Notes</span>
-                  <span className="text-xs font-semibold text-[#ffb4ab]">8 待处理</span>
+                  <span className={`text-xs font-semibold ${brief.activeTipCount >= 5 ? 'text-[#ffb4ab]' : 'text-[#86d7ff]'}`}>{brief.activeTipCount} 待处理</span>
                 </div>
                 <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
-                  <div className="h-full bg-[#ffb4ab]" style={{ width: '75%' }}></div>
+                  <div className={`h-full ${brief.activeTipCount >= 5 ? 'bg-[#ffb4ab]' : 'bg-[#86d7ff]'}`} style={{ width: `${Math.min(100, Math.round((brief.activeTipCount / 10) * 100))}%` }}></div>
                 </div>
               </div>
               <div>
                 <div className="flex justify-between items-end mb-1.5">
                   <span className="text-xs text-[#899298] flex items-center gap-1.5"><FileText className="w-3.5 h-3.5" /> Drafts 积压</span>
-                  <span className="text-xs font-semibold text-[#a8c8ff]">12 份草稿</span>
+                  <span className={`text-xs font-semibold ${brief.activeDraftCount >= 5 ? 'text-[#ffb4ab]' : 'text-[#a8c8ff]'}`}>{brief.activeDraftCount} 份草稿</span>
                 </div>
                 <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
-                  <div className="h-full bg-[#a8c8ff]" style={{ width: '45%' }}></div>
+                  <div className={`h-full ${brief.activeDraftCount >= 5 ? 'bg-[#ffb4ab]' : 'bg-[#a8c8ff]'}`} style={{ width: `${Math.min(100, Math.round((brief.activeDraftCount / 20) * 100))}%` }}></div>
                 </div>
               </div>
             </div>
           </section>
 
-          {/* 各个知识库状态 */}
+          {/* 本地维护建议 */}
           <section>
-            <h3 className="text-xs font-bold text-white mb-3 uppercase tracking-wider border-b border-white/10 pb-2">金库同步追踪</h3>
+            <h3 className="text-xs font-bold text-white mb-3 uppercase tracking-wider border-b border-white/10 pb-2">本地维护建议</h3>
+            {briefLoading ? (
+              <p className="text-sm text-[#899298]">Loading...</p>
+            ) : brief.briefHints.length === 0 ? (
+              <div className="py-4 text-center">
+                <CheckCircle2 className="w-5 h-5 text-[#9cf4d4] mx-auto mb-2" />
+                <p className="text-[11px] text-[#9cf4d4]">工作区状态良好</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-white/5">
+                {brief.briefHints.map((hint, i) => (
+                  <div key={i} className="py-2.5 flex justify-between items-center group">
+                    <span className={`text-xs ${hint.priority === 'high' ? 'text-[#e0e3e6]' : 'text-[#899298]'} group-hover:text-white transition-colors`}>{hint.label}</span>
+                    <span className={`text-[10px] font-mono ${hint.priority === 'high' ? 'text-[#ffb4ab]' : hint.priority === 'medium' ? 'text-[#86d7ff]' : 'text-[#899298]'}`}>{hint.detail}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* 金库统计 */}
+          <section>
+            <h3 className="text-xs font-bold text-white mb-3 uppercase tracking-wider border-b border-white/10 pb-2">金库统计</h3>
             <div className="divide-y divide-white/5">
               <div className="py-2.5 flex justify-between items-center group">
-                <span className="text-xs text-[#e0e3e6] group-hover:text-white transition-colors">Atlax 架构设计</span>
-                <span className="text-[10px] text-[#9cf4d4] font-mono">+12 新节点</span>
+                <span className="text-xs text-[#e0e3e6] group-hover:text-white transition-colors">Documents</span>
+                <span className="text-[10px] text-[#9cf4d4] font-mono">{brief.documentCount}</span>
               </div>
               <div className="py-2.5 flex justify-between items-center group">
-                <span className="text-xs text-[#e0e3e6] group-hover:text-white transition-colors">设计规范 V2</span>
-                <span className="text-[10px] text-[#9cf4d4] font-mono">+3 新节点</span>
+                <span className="text-xs text-[#e0e3e6] group-hover:text-white transition-colors">Mind Nodes</span>
+                <span className="text-[10px] text-[#9cf4d4] font-mono">{brief.mindNodeCount}</span>
               </div>
               <div className="py-2.5 flex justify-between items-center group">
-                <span className="text-xs text-[#899298] group-hover:text-white transition-colors">用户研究数据库</span>
-                <span className="text-[10px] text-[#899298] font-mono">稳定</span>
+                <span className="text-xs text-[#899298] group-hover:text-white transition-colors">Tags</span>
+                <span className="text-[10px] text-[#899298] font-mono">{brief.tagCount}</span>
               </div>
               <div className="py-2.5 flex justify-between items-center group">
-                <span className="text-xs text-[#899298] group-hover:text-white transition-colors">Q3 财务规划</span>
-                <span className="text-[10px] text-[#899298] font-mono">稳定</span>
+                <span className="text-xs text-[#899298] group-hover:text-white transition-colors">Collections</span>
+                <span className="text-[10px] text-[#899298] font-mono">{brief.collectionCount}</span>
               </div>
             </div>
           </section>
@@ -1514,6 +1627,8 @@ export default function WorkspacePage() {
   }, [])
 
   const tipsHook = useTips(userId)
+  const homeIntelligence = useHomeIntelligence(userId)
+  const dailyBriefHook = useDailyBrief(userId)
 
   // 聚焦搜索相关状态
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -1724,10 +1839,10 @@ export default function WorkspacePage() {
         <main className={`flex-1 ${activeTab === 'editor' || activeTab === 'dock' || activeTab === 'mind' ? 'overflow-hidden pb-0' : 'overflow-y-auto pb-12 custom-scrollbar'} ${activeTab === 'dock' || activeTab === 'mind' ? 'px-0' : 'px-8'}`}>
           {activeTab === 'home' && (
             <>
-              <HomeView tips={tipsHook.tips} tipsLoading={tipsHook.loading} onConvertTipToDraft={tipsHook.convertTipToDraft} onDiscardTip={tipsHook.discardTip} onToast={showToast} />
+              <HomeView tips={tipsHook.tips} tipsLoading={tipsHook.loading} onConvertTipToDraft={async (tipId: number) => { const result = await tipsHook.convertTipToDraft(tipId); if (result.draftId) emit({ type: 'tip_converted', tipId, draftId: result.draftId }); return result; }} onDiscardTip={async (tipId: number) => { const result = await tipsHook.discardTip(tipId); emit({ type: 'tip_discarded', tipId }); return result; }} onToast={showToast} intelligence={homeIntelligence.data} intelligenceLoading={homeIntelligence.loading} />
             </>
           )}
-          {activeTab === 'briefing' && <DailyBriefingView />}
+          {activeTab === 'briefing' && <DailyBriefingView brief={dailyBriefHook.data} briefLoading={dailyBriefHook.loading} />}
           {activeTab === 'toolbox' && <ToolboxView />}
           {activeTab === 'mind' && <MindView />}
           {activeTab === 'dock' && <DockView setActiveTab={setActiveTab} />}
@@ -1857,6 +1972,7 @@ export default function WorkspacePage() {
         onSubmit={async (text: string) => {
           const tip = await tipsHook.createTip(text, 'quick-capture')
           if (tip) {
+            emit({ type: 'tip_created', tipId: tip.id })
             showToast('Tip 已创建')
           }
         }}
