@@ -111,6 +111,7 @@ import {
   workspaceOpenTabsTable,
   workspaceSessionsTable,
   editorDraftsTable,
+  tipsTable,
   type ChatSessionRecord,
   type CollectionRecord,
   type EntryRecord,
@@ -128,6 +129,10 @@ import {
   type WorkspaceOpenTabRecord,
   type WorkspaceSessionRecord,
   type EditorDraftRecord,
+  type TipRecord,
+  type TipSourceType,
+  type TipStatus,
+  type PersistedTip,
   type PersistedDockItem,
   type PersistedEntry,
   type PersistedDocument,
@@ -172,6 +177,8 @@ export type { PersistedRecommendation as StoredRecommendation }
 export type { PersistedRecommendationEvent as StoredRecommendationEvent }
 export type { PersistedUserBehaviorEvent as StoredUserBehaviorEvent }
 export type { PersistedEditorDraft as StoredDraft }
+export type { PersistedTip as StoredTip }
+export type { TipSourceType, TipStatus }
 export type { DraftStatus }
 export type { ChainProvenance }
 export type { CalendarDayResult }
@@ -3431,4 +3438,91 @@ export async function listUserBehaviorEvents(
 
   const events = await collection.reverse().sortBy('createdAt')
   return events.flatMap((e) => { const p = toPersistedUserBehaviorEvent(e); return p ? [p] : [] })
+}
+
+function toPersistedTip(tip: TipRecord | undefined): PersistedTip | null {
+  if (!tip || typeof tip.id !== 'number') return null
+  return { ...tip, id: tip.id }
+}
+
+export async function createTip(
+  userId: string,
+  content: string,
+  sourceType: TipSourceType = 'quick-capture',
+): Promise<PersistedTip | null> {
+  const trimmed = content.trim()
+  if (!trimmed) throw new Error('content must not be empty')
+  if (!userId) throw new Error('userId must not be empty')
+
+  const now = new Date()
+  const id = await tipsTable.add({
+    userId,
+    content: trimmed,
+    sourceType,
+    status: 'active',
+    convertedDraftId: null,
+    createdAt: now,
+    updatedAt: now,
+  })
+  return toPersistedTip(await tipsTable.get(id as number))
+}
+
+export async function listActiveTips(userId: string): Promise<PersistedTip[]> {
+  const tips = await tipsTable
+    .where('userId')
+    .equals(userId)
+    .reverse()
+    .sortBy('createdAt')
+  return tips.flatMap((t) => {
+    if (t.status !== 'active') return []
+    const p = toPersistedTip(t)
+    return p ? [p] : []
+  })
+}
+
+export async function getTip(userId: string, tipId: number): Promise<PersistedTip | null> {
+  const tip = await tipsTable.get(tipId)
+  if (!tip || tip.userId !== userId) return null
+  return toPersistedTip(tip)
+}
+
+export async function convertTipToDraft(
+  userId: string,
+  tipId: number,
+): Promise<{ tip: PersistedTip | null; draft: PersistedEditorDraft | null }> {
+  const tip = await tipsTable.get(tipId)
+  if (!tip || tip.userId !== userId || tip.status !== 'active') {
+    return { tip: null, draft: null }
+  }
+
+  const draft = await createDraft(userId, tip.content.slice(0, 60), tip.content)
+  if (!draft) {
+    return { tip: null, draft: null }
+  }
+
+  await tipsTable.update(tipId, {
+    status: 'converted',
+    convertedDraftId: draft.id,
+    updatedAt: new Date(),
+  })
+
+  const updatedTip = toPersistedTip(await tipsTable.get(tipId))
+  return { tip: updatedTip, draft }
+}
+
+export async function discardTip(
+  userId: string,
+  tipId: number,
+): Promise<PersistedTip | null> {
+  const tip = await tipsTable.get(tipId)
+  if (!tip || tip.userId !== userId || tip.status !== 'active') {
+    return null
+  }
+
+  await tipsTable.update(tipId, {
+    status: 'discarded',
+    updatedAt: new Date(),
+  })
+
+  return toPersistedTip(await tipsTable.get(tipId))
 }

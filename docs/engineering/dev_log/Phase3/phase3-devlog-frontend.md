@@ -9,6 +9,130 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：Phase 3.1.5 Round 28 (FE-REAL-002) -->
+<!-- ============================================ -->
+
+## Phase 3.1.5 Round 28 devlog -- FE-REAL-002 Quick Capture + Tips 系统目录
+
+**时间戳**: 2026-05-09
+
+**任务起止时间**: 04:20 - 05:00 CST
+
+**工时**: 40 分钟（含 Review 修复）
+
+**任务目标**:
+1. 让全局 Quick Capture 成为真实输入入口，用户输入内容后写入本地 Tips 系统目录。
+2. Tips 可查看、可刷新恢复、可转 Draft、可丢弃。
+3. 不破坏现有 Golden UI 视觉和 /workspace shell。
+4. 不使用 mock / hardcoded / React state 假装持久化。
+5. 优先复用现有 Capture / Document / Draft / repository / IndexedDB 能力。
+6. Tip 转 Draft 必须接入 FE-REAL-001 的 createDraft/listDrafts 链路。
+
+**变更摘要**:
+
+**数据库层** (`db.ts`):
+- 新增 `TipSourceType` 类型：`'text' | 'manual' | 'quick-capture'`
+- 新增 `TipStatus` 类型：`'active' | 'converted' | 'discarded'`
+- 新增 `TipRecord` 接口：id, userId, content, sourceType, status, convertedDraftId, createdAt, updatedAt
+- 新增 `PersistedTip` 接口：继承 TipRecord，id 为 number（非可选）
+- 新增 DB version 20：tips 表，索引 `++id, userId, sourceType, status, [userId+status], createdAt, updatedAt`
+- 导出 `tipsTable`
+
+**Repository 层** (`repository.ts`):
+- 新增 `createTip(userId, content, sourceType?)`：创建 Tip，默认 sourceType='quick-capture'，校验 content 和 userId 非空
+- 新增 `listActiveTips(userId)`：列出指定用户所有 status='active' 的 Tips，按 createdAt 降序
+- 新增 `getTip(userId, tipId)`：获取单个 Tip，校验 userId
+- 新增 `convertTipToDraft(userId, tipId)`：Tip 转 Draft，调用已有 createDraft，Tip 标记为 converted 并记录 convertedDraftId
+- 新增 `discardTip(userId, tipId)`：Tip 标记为 discarded
+- 导出 `StoredTip` 类型别名和 `TipSourceType`、`TipStatus` 类型
+
+**前端 Hooks** (`features/tips/`):
+- 新增 `useTips(userId)`：管理 Tip 列表状态，提供 createTip/getTip/convertTipToDraft/discardTip 操作，支持 forceRefresh
+
+**Quick Capture 全局悬浮胶囊** (`features/tips/QuickCapture.tsx`):
+- 新建 `QuickCapture` 组件：全局底部居中悬浮胶囊
+- 默认收起为轻量胶囊，hover 有淡淡边框光效（`border-[#86d7ff]/30`）
+- 点击展开输入框，不主动 focus
+- 高透明液态玻璃/水滴质感（`bg-white/[0.04] backdrop-blur-[40px]`，展开态 `bg-white/[0.06]`）
+- 提交成功后清空输入、收起胶囊、触发 toast 反馈
+- Escape 键收起并清空
+- 严格遵循 SSOT 设计规范：情报蓝 `#86d7ff`、正文色 `#e0e3e6`、辅助色 `#899298`
+
+**Tips 列表 UI** (`features/tips/TipsPanel.tsx`):
+- 新建 `TipsPanel` 组件：显示活跃 Tips 列表
+- 每个 Tip 显示内容、来源标签、相对时间
+- hover 显示操作按钮：转为 Draft（箭头图标）、丢弃（垃圾桶图标）
+- 操作时显示 loading spinner
+- 空状态显示引导文案
+- 严格遵循 SSOT：GlassCard 材质 `bg-[#1c2023]/40 backdrop-blur-[16px]`、`rounded-[16px]`、微标签 `text-[9px] font-semibold tracking-wider uppercase`
+
+**页面集成** (`page.tsx`):
+- 保留原有 Golden UI Home（MockHomeView → HomeView），不替换
+- 引入 useTips hook
+- QuickCapture 挂载为 workspace shell 全局悬浮组件（固定底部居中，所有 tab 可见）
+- Quick Capture 只写 Tip，不写 DockItem（移除双写）
+- TipsPanel 最小侵入挂载到 Home tab 底部（HomeView 下方）
+- 提交成功后 toast 反馈"Tip 已创建"
+
+**.gitignore**:
+- 将 `.trae/` 目录下的逐条忽略规则合并为 `.trae/` 整目录忽略
+
+**测试** (`tests/tip-repository.test.ts`):
+- 新增 20 个测试用例覆盖 Tip CRUD 全流程：createTip、listActiveTips、getTip、convertTipToDraft、discardTip
+- 包含用户隔离、活跃列表过滤、错误用户校验、空内容校验、sourceType 自定义、内容 trim、时间排序、重复操作幂等性等边界测试
+
+**改动文件及行数**:
+- `apps/web/lib/db.ts` | M | +18 行 / -0 行
+- `apps/web/lib/repository.ts` | M | +93 行 / -0 行
+- `apps/web/app/workspace/features/tips/useTips.ts` | A | +73 行
+- `apps/web/app/workspace/features/tips/TipsPanel.tsx` | A | +143 行
+- `apps/web/app/workspace/features/tips/QuickCapture.tsx` | A | +75 行
+- `apps/web/app/workspace/page.tsx` | M | +18 行 / -8 行
+- `apps/web/tests/tip-repository.test.ts` | A | +140 行
+- `.gitignore` | M | +1 行 / -30 行
+
+**Review 修复记录**:
+1. **Home Page 视觉破坏**：初版将 page.tsx 的 home tab 从 Golden UI Home（MockHomeView）替换为旧式 features/home/HomeView.tsx（大标题 Knowledge, Structured.、中央大输入框、feature grid），破坏了现有 Golden UI layout。修复：恢复原有 HomeView，TipsPanel 以最小侵入方式挂载到 Home tab 底部。
+2. **Quick Capture UI 位置错误**：初版将 Quick Capture 作为 Home 页面中心的大输入框。修复：重新实现为全局 workspace shell 底部居中的悬浮胶囊组件，收起态为轻量胶囊，展开态为液态玻璃输入框，不主动 focus。
+3. **DockItem 双写**：初版 Quick Capture 同时调用 createDockItem 和 createTip。修复：移除 DockItem 写入，Quick Capture 只写 Tip。
+4. **缺少成功反馈**：初版 Quick Capture 提交后无 UI 反馈。修复：提交成功后触发 toast"Tip 已创建"。
+5. **TipsPanel 设计规范合规**：初版使用 `#fbbf24`（琥珀色）等非 SSOT 颜色。修复：全部替换为 SSOT 令牌（`#86d7ff` 情报蓝、`#ffb4ab` 警示红、`#e0e3e6` 正文色、GlassCard 材质）。
+
+**遇到的问题及解决方式**:
+1. **convertTipToDraft 跨表事务**：Tip 转 Draft 需要同时操作 tips 表和 editorDrafts 表。当前实现先调用 createDraft（已有链路），再 update tips 表状态。未使用 Dexie 事务，因为 createDraft 内部已有独立的 add 操作，且两步操作的失败场景已通过返回 null 处理。
+2. **Quick Capture 不主动 focus**：Review 要求点击展开后不主动 focus 输入框。移除了 useEffect 中的 inputRef.current.focus() 调用。
+
+**自动验证结果**:
+- `pnpm typecheck`: ✅ 通过
+- `pnpm lint`: ✅ 通过 (0 errors, 3 warnings — 均为已有，非本次引入)
+- `pnpm test`: ✅ 通过 (570 tests passed, 22 test files — 含新增 20 个 tip 测试)
+- `pnpm build:web`: ✅ 通过 (workspace 页面 28.7 kB)
+
+**手工验证步骤说明**:
+1. 打开 `/workspace` 页面，确认 Golden UI Home 布局未变。
+2. 确认页面底部居中出现轻量悬浮胶囊"Capture"。
+3. hover 胶囊，确认边框出现淡淡光效。
+4. 点击胶囊，确认展开为输入框（不自动聚焦），输入框有液态玻璃质感。
+5. 输入一条文本，按 Enter 或点击发送按钮。
+6. 确认输入框收起，toast 提示"Tip 已创建"。
+7. 在 Home tab 底部找到 Tips 面板，确认新 Tip 出现。
+8. 刷新页面，确认 Tip 仍存在。
+9. hover 该 Tip，点击"转为 Draft"按钮。
+10. 确认 toast 提示转 Draft 成功，Tip 从列表消失。
+11. 切换到 Editor tab，确认 Drafts 列表中出现新 Draft。
+12. 返回 Home tab，通过 Quick Capture 新建另一条 Tip。
+13. hover 该 Tip，点击"丢弃"按钮。
+14. 确认 toast 提示丢弃成功，Tip 从列表消失。
+15. 刷新页面，确认丢弃的 Tip 不再出现。
+
+**当前风险**:
+1. **userId fallback**：同 FE-REAL-001，未登录用户共享 `_legacy` userId，Tips 数据无用户隔离。
+2. **Tips 列表位置**：当前 Tips 面板放在 Home tab 底部（HomeView 下方），如果 Tips 数量多可能需要折叠或分页。
+3. **Quick Capture 不自动 focus**：展开后用户需手动点击输入框才能开始输入，这是 Review 明确要求的行为。
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：Phase 3.1.5 Round 27 (FE-REAL-001) -->
 <!-- ============================================ -->
 

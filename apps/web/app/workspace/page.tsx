@@ -3,6 +3,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { getCurrentUser } from '@/lib/auth';
 import DraftEditorView from './features/editor/DraftEditorView';
+import { useTips } from './features/tips/useTips';
+import QuickCapture from './features/tips/QuickCapture';
+import TipsPanel from './features/tips/TipsPanel';
 import {
   Home,
   Brain,
@@ -101,10 +104,17 @@ const Pill = ({ text, type = "default" }: { text: string; type?: 'design' | 'pla
 // 页面视图组件 (Page Views)
 // ==========================================
 
-// 1. 主页视图 (Home View)
-// 此处为Mock功能，等待后端接入 — 活跃思维、最近草稿、今日知识简报均为Mock数据
-// To-do: 后端已支持 listDockItems(), 可对接真实数据
-const HomeView = () => {
+import type { StoredTip } from '@/lib/repository'
+
+interface HomeViewProps {
+  tips: StoredTip[]
+  tipsLoading: boolean
+  onConvertTipToDraft: (tipId: number) => Promise<{ tip: StoredTip | null; draftId: number | null }>
+  onDiscardTip: (tipId: number) => Promise<boolean>
+  onToast?: (msg: string) => void
+}
+
+const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToast }: HomeViewProps) => {
   return (
     <div className="max-w-[1400px] mx-auto animate-in fade-in duration-500">
       {/* 头部标题区 */}
@@ -187,6 +197,16 @@ const HomeView = () => {
                 <Command className="w-3.5 h-3.5" /> 快速笔记
               </button>
             </div>
+          </GlassPanel>
+
+          <GlassPanel className="p-5">
+            <TipsPanel
+              tips={tips}
+              loading={tipsLoading}
+              onConvertToDraft={onConvertTipToDraft}
+              onDiscard={onDiscardTip}
+              onToast={onToast}
+            />
           </GlassPanel>
 
         </div>
@@ -1476,17 +1496,6 @@ const DailyBriefingView = () => {
 // ==========================================
 
 export default function WorkspacePage() {
-  // ==========================================
-  // To-do: 后端支持但当前设计未实现的功能
-  // - handleLogout() (用户登出)
-  // - loadData() (获取真实 Dock Items)
-  // - handleCapture() (全局捕获新内容并入库)
-  // - handleSaveEditor() (保存编辑器草稿或内容)
-  // - loadItemRecommendations() (加载真实推荐数据)
-  // - loadMindData() (加载真实图谱节点/边)
-  // - WorkspaceTabs持久化逻辑 (openWorkspaceTab, etc.)
-  // ==========================================
-
   const [activeTab, setActiveTab] = useState('home');
   const [showSourcePacket, setShowSourcePacket] = useState(true);
   const [showInspector, setShowInspector] = useState(true);
@@ -1503,6 +1512,8 @@ export default function WorkspacePage() {
     setToastMsg(msg)
     setTimeout(() => setToastMsg(null), 3000)
   }, [])
+
+  const tipsHook = useTips(userId)
 
   // 聚焦搜索相关状态
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -1711,7 +1722,11 @@ export default function WorkspacePage() {
 
         {/* 动态页面内容区 - 如果是 Dock 视图，彻底移除左右边距，实现无缝铺满 */}
         <main className={`flex-1 ${activeTab === 'editor' || activeTab === 'dock' || activeTab === 'mind' ? 'overflow-hidden pb-0' : 'overflow-y-auto pb-12 custom-scrollbar'} ${activeTab === 'dock' || activeTab === 'mind' ? 'px-0' : 'px-8'}`}>
-          {activeTab === 'home' && <HomeView />}
+          {activeTab === 'home' && (
+            <>
+              <HomeView tips={tipsHook.tips} tipsLoading={tipsHook.loading} onConvertTipToDraft={tipsHook.convertTipToDraft} onDiscardTip={tipsHook.discardTip} onToast={showToast} />
+            </>
+          )}
           {activeTab === 'briefing' && <DailyBriefingView />}
           {activeTab === 'toolbox' && <ToolboxView />}
           {activeTab === 'mind' && <MindView />}
@@ -1837,6 +1852,16 @@ export default function WorkspacePage() {
       `}} />
 
       {/* Toast 通知 */}
+
+      <QuickCapture
+        onSubmit={async (text: string) => {
+          const tip = await tipsHook.createTip(text, 'quick-capture')
+          if (tip) {
+            showToast('Tip 已创建')
+          }
+        }}
+      />
+
       {toastMsg && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] animate-in fade-in slide-in-from-bottom-4 duration-300">
           <div className="px-4 py-2.5 bg-[#1c2023]/90 backdrop-blur-[20px] border border-white/10 rounded-xl shadow-2xl text-sm text-white">

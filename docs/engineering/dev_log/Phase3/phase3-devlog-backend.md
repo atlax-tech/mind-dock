@@ -9,6 +9,58 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：Phase 3.1.5 Round 28 (FE-REAL-002 Backend) -->
+<!-- ============================================ -->
+
+## Phase 3.1.5 Round 28 devlog -- FE-REAL-002 Tips 数据访问层
+
+**时间戳**: 2026-05-09
+
+**任务起止时间**: 04:20 - 04:35 CST
+
+**工时**: 15 分钟（Review 后无数据层变更）
+
+**任务目标**:
+1. 新增 Tip 数据模型，支持 quick-capture/manual/text 三种来源类型。
+2. 补齐 Tip CRUD 数据访问层：createTip、listActiveTips、getTip、convertTipToDraft、discardTip。
+3. 新增 DB version 20 迁移，创建 tips 表。
+4. convertTipToDraft 必须调用已有 createDraft 链路，不另造 Draft 数据。
+
+**变更摘要**:
+
+**数据库 Schema** (`db.ts`):
+- 新增 `TipSourceType` 类型：`'text' | 'manual' | 'quick-capture'`
+- 新增 `TipStatus` 类型：`'active' | 'converted' | 'discarded'`
+- 新增 `TipRecord` 接口：id?, userId, content, sourceType, status, convertedDraftId, createdAt, updatedAt
+- 新增 `PersistedTip` 接口：继承 TipRecord，id 为 number
+- 新增 DB version 20：tips 表，索引 `++id, userId, sourceType, status, [userId+status], createdAt, updatedAt`
+- 导出 `tipsTable`
+
+**Repository 层** (`repository.ts`):
+- 新增 `createTip(userId, content, sourceType?)`：创建 Tip，校验 content/userId 非空，默认 sourceType='quick-capture'
+- 新增 `listActiveTips(userId)`：列出 status='active' 的 Tips，按 createdAt 降序
+- 新增 `getTip(userId, tipId)`：获取单个 Tip，校验 userId
+- 新增 `convertTipToDraft(userId, tipId)`：调用 createDraft 创建 Draft，Tip 标记为 converted，记录 convertedDraftId
+- 新增 `discardTip(userId, tipId)`：Tip 标记为 discarded
+- 导出 `StoredTip`、`TipSourceType`、`TipStatus` 类型
+
+**改动文件及行数**:
+- `apps/web/lib/db.ts` | M | +18 行 / -0 行
+- `apps/web/lib/repository.ts` | M | +93 行 / -0 行
+
+**遇到的问题及解决方式**:
+1. **convertTipToDraft 跨表操作**：Tip 转 Draft 需同时操作 tips 表和 editorDrafts 表。当前实现先调用 createDraft（已有链路），再 update tips 表状态。两步操作失败场景通过返回 null 处理。
+
+**自动验证结果**:
+- `pnpm typecheck`: ✅ 通过
+- `pnpm test`: ✅ 通过 (570 tests passed，含新增 20 个 tip 测试)
+
+**当前风险**:
+1. **无 Dexie 事务保护**：convertTipToDraft 中 createDraft 和 tips.update 不在同一事务中，极端情况下可能 Draft 创建成功但 Tip 状态未更新。后续可引入 Dexie 事务。
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：Phase 3.1.5 Round 27 (FE-REAL-001 Backend) -->
 <!-- ============================================ -->
 
