@@ -83,14 +83,11 @@ describe('FE-001: page.tsx — FloatingRecorder / Classic-Chat removed', () => {
     expect('FloatingRecorder' in mod).toBe(false)
   })
 
-  it('onOpenRecorder only appears in DockFinderView definition (not GoldenTopNav)', () => {
-    // onOpenRecorder should still exist in DockFinderView props and menu
-    // but the count is low (only prop def + destructure + menu item usage)
+  it('onOpenRecorder fully removed (old DockFinderView replaced by DockView console)', () => {
+    // In the new design, DockFinderView no longer exists.
+    // The new DockView is a knowledge console that doesn't use onOpenRecorder.
     const matches = src.match(/onOpenRecorder/g)
-    expect(matches).not.toBeNull()
-    if (matches) {
-      expect(matches.length).toBeLessThanOrEqual(5)
-    }
+    expect(matches).toBeNull()
   })
 })
 
