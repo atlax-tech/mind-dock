@@ -148,6 +148,7 @@ import {
   type PersistedWorkspaceOpenTab,
   type PersistedWorkspaceSession,
   type PersistedEditorDraft,
+  type DraftStatus,
   type TagRecord,
   type WidgetRecord,
 } from './db'
@@ -170,6 +171,8 @@ export type { PersistedRecentDocument as StoredRecentDocument }
 export type { PersistedRecommendation as StoredRecommendation }
 export type { PersistedRecommendationEvent as StoredRecommendationEvent }
 export type { PersistedUserBehaviorEvent as StoredUserBehaviorEvent }
+export type { PersistedEditorDraft as StoredDraft }
+export type { DraftStatus }
 export type { ChainProvenance }
 export type { CalendarDayResult }
 export type { CalendarMonthOverview }
@@ -1916,7 +1919,110 @@ export async function recordRecentDocumentOpen(input: {
 
 function toPersistedEditorDraft(draft: EditorDraftRecord | undefined): PersistedEditorDraft | null {
   if (!draft || typeof draft.id !== 'number') return null
-  return { ...draft, id: draft.id }
+  return { ...draft, id: draft.id, status: draft.status ?? 'active' }
+}
+
+export async function createDraft(
+  userId: string,
+  title: string = '',
+  content: string = '',
+): Promise<PersistedEditorDraft | null> {
+  const now = new Date()
+  const id = await editorDraftsTable.add({
+    userId,
+    draftKey: 0,
+    title,
+    content,
+    status: 'active',
+    createdAt: now,
+    updatedAt: now,
+  })
+  const saved = await editorDraftsTable.get(id as number)
+  if (saved) {
+    await editorDraftsTable.update(id as number, { draftKey: id as number })
+    saved.draftKey = id as number
+  }
+  return toPersistedEditorDraft(saved)
+}
+
+export async function listDrafts(userId: string): Promise<PersistedEditorDraft[]> {
+  const drafts = await editorDraftsTable
+    .where('userId')
+    .equals(userId)
+    .reverse()
+    .sortBy('updatedAt')
+  return drafts.flatMap((d) => {
+    if (d.status && d.status !== 'active') return []
+    const p = toPersistedEditorDraft(d)
+    return p ? [p] : []
+  })
+}
+
+export async function getDraft(userId: string, draftId: number): Promise<PersistedEditorDraft | null> {
+  const draft = await editorDraftsTable.get(draftId)
+  if (!draft || draft.userId !== userId) return null
+  return toPersistedEditorDraft(draft)
+}
+
+export async function updateDraft(
+  userId: string,
+  draftId: number,
+  updates: { title?: string; content?: string },
+): Promise<PersistedEditorDraft | null> {
+  const draft = await editorDraftsTable.get(draftId)
+  if (!draft || draft.userId !== userId) return null
+  const patch: Partial<EditorDraftRecord> = { updatedAt: new Date() }
+  if (updates.title !== undefined) patch.title = updates.title
+  if (updates.content !== undefined) patch.content = updates.content
+  await editorDraftsTable.update(draftId, patch)
+  return toPersistedEditorDraft(await editorDraftsTable.get(draftId))
+}
+
+export async function publishDraftToDocument(
+  userId: string,
+  draftId: number,
+): Promise<{ draft: PersistedEditorDraft | null; entry: PersistedEntry | null }> {
+  const draft = await editorDraftsTable.get(draftId)
+  if (!draft || draft.userId !== userId || (draft.status && draft.status !== 'active')) {
+    return { draft: null, entry: null }
+  }
+
+  const now = new Date()
+  const entryId = await entriesTable.add({
+    userId,
+    sourceDockItemId: 0,
+    title: draft.title || 'Untitled',
+    content: draft.content,
+    type: 'note',
+    tags: [],
+    project: null,
+    actions: [],
+    createdAt: now,
+    archivedAt: now,
+  })
+
+  await editorDraftsTable.update(draftId, {
+    status: 'published',
+    updatedAt: now,
+  })
+
+  return {
+    draft: toPersistedEditorDraft(await editorDraftsTable.get(draftId)),
+    entry: toPersistedEntry(await entriesTable.get(entryId as number)),
+  }
+}
+
+export async function discardDraft(
+  userId: string,
+  draftId: number,
+): Promise<PersistedEditorDraft | null> {
+  const draft = await editorDraftsTable.get(draftId)
+  if (!draft || draft.userId !== userId) return null
+  await editorDraftsTable.update(draftId, {
+    status: 'discarded',
+    updatedAt: new Date(),
+  })
+  return toPersistedEditorDraft(await editorDraftsTable.get(draftId))
 }
 
 export async function saveEditorDraft(
@@ -1945,6 +2051,7 @@ export async function saveEditorDraft(
     draftKey,
     title,
     content,
+    status: 'active',
     createdAt: now,
     updatedAt: now,
   })

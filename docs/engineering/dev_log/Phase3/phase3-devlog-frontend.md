@@ -9,6 +9,102 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：Phase 3.1.5 Round 27 (FE-REAL-001) -->
+<!-- ============================================ -->
+
+## Phase 3.1.5 Round 27 devlog -- FE-REAL-001 Editor + Drafts 基础可用
+
+**时间戳**: 2026-05-09
+
+**任务起止时间**: 03:40 - 04:00 CST
+
+**工时**: 20 分钟
+
+**任务目标**:
+1. 让 Editor 成为真实可编辑的长期资产层，建立 Drafts 系统目录。
+2. 用户可创建 Draft、编辑 Markdown、自动保存、刷新恢复、在 Drafts 中看到、继续编辑、转正式 Document、丢弃 Draft。
+3. 不破坏现有 Golden UI 视觉，尤其 Editor 三栏结构。
+4. Draft 持久化到本地 IndexedDB/Dexie，不使用 mock 数据。
+
+**变更摘要**:
+
+**数据库层** (`db.ts`):
+- 新增 `DraftStatus` 类型：`'active' | 'published' | 'discarded'`
+- `EditorDraftRecord` 新增 `status: DraftStatus` 字段
+- 新增 DB version 19：editorDrafts 表增加 status 索引、复合索引 `[userId+status]`、`[userId+draftKey]`、updatedAt 索引
+- version 19 upgrade 迁移：为已有记录填充 `status: 'active'`
+
+**Repository 层** (`repository.ts`):
+- 新增 `createDraft(userId, title?, content?)`：创建独立 Draft，draftKey 自动设为 id
+- 新增 `listDrafts(userId)`：列出指定用户所有 status='active' 的草稿，按 updatedAt 降序
+- 新增 `getDraft(userId, draftId)`：获取单个 Draft，校验 userId
+- 新增 `updateDraft(userId, draftId, updates)`：更新 Draft 的 title/content，自动更新 updatedAt
+- 新增 `publishDraftToDocument(userId, draftId)`：Draft 转 Entry，Draft 标记为 published
+- 新增 `discardDraft(userId, draftId)`：Draft 标记为 discarded
+- 导出 `StoredDraft` 类型别名和 `DraftStatus` 类型
+
+**前端 Hooks** (`features/editor/`):
+- 新增 `useDrafts(userId)`：管理 Draft 列表状态，提供 createDraft/updateDraft/publishDraft/discardDraft/getDraft 操作
+- 新增 `useEditorDraft({ userId, draftId, enabled, debounceMs })`：管理单个 Draft 的编辑状态，内置 debounce autosave（默认 1500ms），支持 flushSave 和 resetForDraft
+
+**Editor 视图** (`features/editor/DraftEditorView.tsx`):
+- 新建 `DraftEditorView` 组件，替换原 mock `EditorView`
+- 左侧 Drafts 列表面板：显示所有活跃草稿，支持新建/选择/丢弃
+- 中间 Main Canvas：标题输入 + Markdown textarea 编辑，显示保存状态（idle/saving/saved/failed）
+- 右侧 Inspector：显示 Draft 属性（状态/类型/字数/创建时间/更新时间），提供发布和丢弃操作
+- 顶部工具栏：切换 Drafts 列表、保存状态指示、发布/丢弃按钮
+- Toast 通知：操作反馈（创建/发布/丢弃）
+
+**页面集成** (`page.tsx`):
+- 移除 mock `EditorView`（约 170 行 JSX）
+- 引入 `DraftEditorView` 组件，传入 userId、面板开关、toast 回调
+- 新增 userId 状态（从 `getCurrentUser()` 获取，fallback `_legacy`）
+- 新增 toast 通知组件
+
+**测试** (`tests/draft-repository.test.ts`):
+- 新增 14 个测试用例覆盖 Draft CRUD 全流程：createDraft、listDrafts、getDraft、updateDraft、publishDraftToDocument、discardDraft
+- 包含用户隔离、活跃列表过滤、错误用户校验等边界测试
+
+**改动文件及行数**:
+- `apps/web/lib/db.ts` | M | +15 行 / -2 行
+- `apps/web/lib/repository.ts` | M | +95 行 / -0 行
+- `apps/web/app/workspace/features/editor/useDrafts.ts` | A | +95 行
+- `apps/web/app/workspace/features/editor/useEditorDraft.ts` | A | +115 行
+- `apps/web/app/workspace/features/editor/DraftEditorView.tsx` | A | +310 行
+- `apps/web/app/workspace/page.tsx` | M | +18 行 / -175 行
+- `apps/web/tests/draft-repository.test.ts` | A | +115 行
+
+**遇到的问题及解决方式**:
+1. **mock EditorView 残留**：替换 EditorView 后，page.tsx 中残留大量未使用的 JSX 代码和 import（Mic, Globe, SlidersHorizontal, FolderOpen, Archive, Link, Activity）。通过逐步搜索替换和 sed 删除清理，最终将 ~170 行 mock 代码替换为 3 行注释。
+2. **useDrafts refresh 机制**：初始实现使用 useRef 管理 refreshKey，但 React Hook useEffect 的 exhaustive-deps 规则不允许将 `refreshKeyRef.current` 作为依赖。改为使用 useState 管理 refreshKey，通过 setRefreshKey 触发重新渲染。
+3. **TerminalSquare 引用丢失**：删除 mock EditorView 时误删了 TerminalSquare 的 import，但 HomeView 中仍在使用。补回 import 后修复。
+4. **测试文件非空断言**：初版 `draft-repository.test.ts` 使用了 15 处 `!` 非空断言（如 `draft.id!`、`result.draft!`、`result.entry!`），触发 `@typescript-eslint/no-non-null-assertion` 规则。修复：所有 `draft.id!` 改为 `draft.id`（因 `unwrap` 返回 `PersistedEditorDraft`，其 `id` 为 `number` 非可选）；所有 `result.draft!` / `result.entry!` 改为先 `unwrap()` 再访问属性；`found!.title` 改为 `unwrap(found).title`。
+
+**自动验证结果**:
+- `pnpm typecheck`: ✅ 通过
+- `pnpm lint`: ✅ 通过 (0 errors, 3 warnings — 均为已有，非本次引入)
+- `pnpm build:web`: ✅ 通过 (workspace 页面 26.8 kB)
+- `pnpm test`: ✅ 通过 (550 tests passed, 21 test files — 含新增 14 个 draft 测试)
+
+**手工验证步骤说明**:
+1. 打开 `/workspace` 页面，切换到 Editor tab。
+2. 点击左侧 Drafts 面板的 + 按钮或中间区域的"新建草稿"按钮，创建新 Draft。
+3. 输入标题和 Markdown 正文，等待 1.5 秒观察保存状态从 "Saving..." 变为 "Saved"。
+4. 刷新页面，切换回 Editor tab，确认 Draft 内容恢复。
+5. 从 Drafts 列表点击已创建的 Draft，确认内容正确加载。
+6. 继续编辑并等待自动保存。
+7. 点击"发布"按钮，确认 toast 提示发布成功，Drafts 列表不再显示该草稿。
+8. 新建另一个 Draft，点击"丢弃"按钮，确认 toast 提示丢弃成功，Drafts 列表不再显示。
+9. 检查右侧 Inspector 面板显示正确的属性信息。
+
+**当前风险**:
+1. **userId fallback**：若用户未注册/登录，userId 为 `_legacy`，所有未登录用户共享同一 Draft 数据。后续需接入 auth 系统确保用户隔离。
+2. **Markdown 渲染**：当前使用 textarea 纯文本编辑，未实现 Markdown 实时预览。后续可引入轻量 Markdown 渲染。
+3. **Source Packet 面板**：当前仅显示占位信息"此草稿由 Editor 直接创建，暂无关联的源数据包"。后续需接入真实源数据关联。
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：Local Core Phase 3.1.5 Round 26 (MG-FIX-03) -->
 <!-- ============================================ -->
 

@@ -9,6 +9,54 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：Phase 3.1.5 Round 27 (FE-REAL-001 Backend) -->
+<!-- ============================================ -->
+
+## Phase 3.1.5 Round 27 devlog -- FE-REAL-001 Draft 数据访问层扩展
+
+**时间戳**: 2026-05-09
+
+**任务起止时间**: 03:40 - 03:55 CST
+
+**工时**: 15 分钟
+
+**任务目标**:
+1. 扩展 EditorDraftRecord 增加 status 字段，支持 active/published/discarded 三种状态。
+2. 补齐 Draft CRUD 数据访问层：createDraft、listDrafts、getDraft、updateDraft、publishDraftToDocument、discardDraft。
+3. 新增 DB version 19 迁移，确保已有数据兼容。
+
+**变更摘要**:
+
+**数据库 Schema** (`db.ts`):
+- 新增 `DraftStatus` 类型：`'active' | 'published' | 'discarded'`
+- `EditorDraftRecord` 新增 `status: DraftStatus` 字段
+- 新增 DB version 19：editorDrafts 表增加 `status`、`[userId+status]`、`[userId+draftKey]`、`updatedAt` 索引
+- upgrade 迁移：为已有记录填充 `status: 'active'`
+
+**Repository 层** (`repository.ts`):
+- 新增 6 个 Draft CRUD 函数（createDraft/listDrafts/getDraft/updateDraft/publishDraftToDocument/discardDraft）
+- 导出 `StoredDraft` 类型别名和 `DraftStatus` 类型
+
+**改动文件及行数**:
+- `apps/web/lib/db.ts` | M | +15 行 / -2 行
+- `apps/web/lib/repository.ts` | M | +95 行 / -0 行
+
+**遇到的问题及解决方式**:
+1. 无重大问题。DB version 19 的 upgrade 函数使用 `toCollection().modify()` 为已有记录填充 status 默认值，确保平滑迁移。
+
+**自动验证结果**:
+- `pnpm test`: ✅ 通过 (550 tests passed，含新增 14 个 draft-repository 测试)
+
+**手工验证步骤说明**:
+1. 通过前端 Editor 视图创建/编辑/发布/丢弃 Draft，验证数据层正确响应。
+2. 刷新页面后确认 Draft 数据持久化恢复。
+
+**当前风险**:
+1. DB version 19 迁移为已有记录统一设置 `status: 'active'`，若用户之前有残留的 editorDrafts 数据，它们会被标记为 active 并出现在 Drafts 列表中。
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：Phase 3 Round 30 (LC-015 Review Fix 2) -->
 <!-- ============================================ -->
 

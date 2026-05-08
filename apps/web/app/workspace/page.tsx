@@ -1,6 +1,8 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { getCurrentUser } from '@/lib/auth';
+import DraftEditorView from './features/editor/DraftEditorView';
 import {
   Home,
   Brain,
@@ -24,12 +26,8 @@ import {
   Activity,
   HardDrive,
   Share2,
-  Mic,
-  Globe,
   Calendar,
   TerminalSquare,
-  SlidersHorizontal,
-  FolderOpen,
   Sparkles,
   PanelLeft,
   PanelRight,
@@ -905,181 +903,8 @@ const DockView = ({ setActiveTab }: { setActiveTab: (tab: string) => void }) => 
 };
 
 
-// 4. 编辑器视图 (Editor View)
-// 此处为Mock功能，等待后端接入 — 文章内容、源数据包、检查器属性均为Mock数据
-// To-do: 后端已支持 useAutosave hook 和 EditorTabView 组件可对接
-const EditorView = ({ showSourcePacket, showInspector }: { showSourcePacket: boolean; showInspector: boolean }) => (
-  <div className="w-full h-full flex gap-8 animate-in fade-in duration-500 overflow-hidden text-sm">
-
-    {/* 左侧：源数据包 (Source Packet) */}
-    {showSourcePacket && (
-      <div className="w-[260px] flex flex-col shrink-0 overflow-y-auto custom-scrollbar pb-10">
-        <div className="flex justify-between items-center mb-2">
-          <div className="flex items-center gap-2 text-white font-medium text-sm">
-            <TerminalSquare className="w-4 h-4" /> 源数据包
-          </div>
-          <span className="px-1.5 py-0.5 rounded-full bg-white/10 text-[9px] text-[#899298] font-medium tracking-wider">2 个项目</span>
-        </div>
-        <div className="flex items-center gap-1.5 text-[#899298] text-[11px] mb-5">
-          <Globe className="w-3 h-3" /> 源自 <span className="text-white">思维导图</span>
-        </div>
-
-        <div className="flex flex-col gap-3">
-          {/* 音频捕获卡片 */}
-          <GlassCard className="p-3.5 flex flex-col gap-2.5 group relative overflow-hidden">
-            <div className="absolute left-0 top-0 w-1 h-full bg-[#9cf4d4]/80"></div>
-            <div className="flex justify-between items-center">
-              <div className="flex items-center gap-1.5 text-[#9cf4d4] text-[11px] font-medium">
-                <Mic className="w-3 h-3" /> 音频捕获
-              </div>
-              <span className="text-[9px] text-[#899298]">10:42 AM</span>
-            </div>
-            <p className="text-[#e0e3e6] text-[11px] leading-relaxed line-clamp-3">
-              {`"核心思想是空间计算不仅仅是关于头显。它是一种操作系统范式，信息在数字空间中具有持久性。我们..."`}
-            </p>
-            <div className="flex items-center gap-1 text-[9px] text-[#899298] mt-0.5 border-t border-white/5 pt-2.5">
-              <Archive className="w-2.5 h-2.5" /> 保存在 <span className="text-white">停靠区 / 灵感</span>
-            </div>
-          </GlassCard>
-
-          {/* 网页剪报卡片 */}
-          <GlassCard className="p-3.5 flex flex-col gap-2.5 group relative overflow-hidden">
-            <div className="absolute left-0 top-0 w-1 h-full bg-[#86d7ff]/80"></div>
-            <div className="flex justify-between items-center">
-              <div className="flex items-center gap-1.5 text-[#86d7ff] text-[11px] font-medium">
-                <Link className="w-3 h-3" /> 网页剪报
-              </div>
-              <span className="text-[9px] text-[#899298]">昨天</span>
-            </div>
-            <div className="mb-0.5">
-              <div className="text-white text-[11px] font-medium mb-1">本地优先技术的原则</div>
-              <div className="text-[#899298] text-[9px]">inkandswitch.com/local-first</div>
-            </div>
-            <div className="flex items-center gap-1 text-[9px] text-[#899298] mt-0.5 border-t border-white/5 pt-2.5">
-              <Archive className="w-2.5 h-2.5" /> 保存在 <span className="text-white">停靠区 / 研究</span>
-            </div>
-          </GlassCard>
-        </div>
-      </div>
-    )}
-
-    {/* 中间：编辑器主体 (Main Canvas) */}
-    <div className="flex-1 flex flex-col overflow-y-auto custom-scrollbar pb-20 px-2">
-      <div className="max-w-[650px] w-full mx-auto">
-        <div className="flex items-center gap-2.5 text-[11px] text-[#899298] mb-5">
-          <span className="flex items-center gap-1.5"><Calendar className="w-3 h-3" /> 2023年10月24日</span>
-          <span>•</span>
-          <span>1,240 字</span>
-          <span>•</span>
-          <span className="px-1.5 py-0.5 rounded bg-white/10 text-white text-[9px] uppercase font-semibold">草稿</span>
-        </div>
-
-        <h1 className="text-2xl font-bold text-white mb-6 leading-tight tracking-tight">空间界面作为认知脚手架</h1>
-
-        <div className="text-[#e0e3e6] text-sm leading-relaxed space-y-5">
-          <p>
-            当我们超越扁平的、分页的屏幕进入空间环境时，UI的作用发生了根本性的变化。它不再仅仅是呈现信息的表面；它成为了支撑用户认知负荷的物理结构。
-          </p>
-
-          <blockquote className="border-l-2 border-[#899298]/50 pl-4 py-0.5 my-5 text-[#899298] italic bg-white/[0.02] rounded-r-lg">
-            “大脑依赖环境来卸载计算。如果数字环境具有空间持久性，我们就不必记住信息*是*什么，只需记住我们把它放在了*哪里*。”
-          </blockquote>
-
-          <h2 className="text-lg font-semibold text-white mt-8 mb-3 tracking-tight">1. 列表的问题</h2>
-
-          <p>
-            传统操作系统迫使我们进入嵌套层级和无休止的、无摩擦的滚动列表。这剥夺了上下文。在空间范式中，一项资产——就像这份文档本身——是相对于它周围的资产存在的。想象一张物理书桌：左边凌乱的纸堆正因为在左边，在咖啡杯旁边，才具有意义。
-          </p>
-
-          <div className="bg-[#1c2023]/80 border border-white/5 rounded-xl p-4 my-5 font-mono text-[11px] overflow-x-auto text-[#a8c8ff] leading-relaxed shadow-inner">
-            <span className="text-[#899298]">{"// 示例：上下文节点映射"}</span><br />
-            <span className="text-[#c8a0f0]">type</span> <span className="text-[#86d7ff]">MindNode</span> = {"{"}<br />
-            &nbsp;&nbsp;id: <span className="text-[#9cf4d4]">string</span>;<br />
-            &nbsp;&nbsp;content: <span className="text-[#9cf4d4]">string</span>;<br />
-            &nbsp;&nbsp;spatial_coords: {"{"} x: <span className="text-[#9cf4d4]">number</span>, y: <span className="text-[#9cf4d4]">number</span>, z: <span className="text-[#9cf4d4]">number</span> {"}"};<br />
-            &nbsp;&nbsp;gravity_weights: <span className="text-[#c8a0f0]">Record</span>{"<"}<span className="text-[#9cf4d4]">string</span>, <span className="text-[#9cf4d4]">number</span>{">"}; <span className="text-[#899298]">{"// 链接到周围资产"}</span><br />
-            {"};"}
-          </div>
-
-          <h2 className="text-lg font-semibold text-white mt-8 mb-3 tracking-tight">2. 本地优先架构</h2>
-          <p className="opacity-50">
-            正在输入内容...
-          </p>
-        </div>
-      </div>
-    </div>
-
-    {/* 右侧：检查器 (Inspector) */}
-    {showInspector && (
-      <div className="w-[260px] flex flex-col shrink-0 overflow-y-auto custom-scrollbar pb-10">
-        <div className="flex items-center gap-2 text-white text-base font-medium mb-6">
-          <SlidersHorizontal className="w-4 h-4" /> 检查器
-        </div>
-
-        {/* 属性块 */}
-        <div className="mb-8">
-          <h3 className="text-[9px] font-semibold text-[#899298] uppercase tracking-wider mb-3">属性</h3>
-          <div className="space-y-3">
-            <div className="flex justify-between items-center text-xs border-b border-white/5 pb-2.5">
-              <span className="text-[#899298]">状态</span>
-              <span className="text-white">进行中</span>
-            </div>
-            <div className="flex justify-between items-center text-xs border-b border-white/5 pb-2.5">
-              <span className="text-[#899298]">文件夹</span>
-              <span className="text-[#86d7ff] flex items-center gap-1.5 cursor-pointer hover:underline">
-                <FolderOpen className="w-3 h-3" /> /理论
-              </span>
-            </div>
-            <div className="flex flex-col gap-2.5 text-xs border-b border-white/5 pb-3">
-              <span className="text-[#899298]">标签</span>
-              <div className="flex flex-wrap gap-2">
-                <span className="px-2 py-0.5 rounded-full bg-white/5 text-[#899298] text-[10px] border border-white/5 hover:text-white cursor-pointer transition-colors">#spatial</span>
-                <span className="px-2 py-0.5 rounded-full bg-white/5 text-[#899298] text-[10px] border border-white/5 hover:text-white cursor-pointer transition-colors">#UI</span>
-                <button className="px-2 py-0.5 rounded-full bg-transparent text-[#899298] text-[10px] border border-dashed border-white/20 hover:text-white transition-colors flex items-center gap-1">
-                  <Plus className="w-3 h-3" /> 添加
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* 结构洞察块 */}
-        <div className="mb-8">
-          <h3 className="text-[9px] font-semibold text-[#899298] uppercase tracking-wider mb-3 flex items-center gap-1.5">
-            <Sparkles className="w-3 h-3" /> 结构洞察
-          </h3>
-          <GlassCard className="p-3 bg-white/[0.02]">
-            <p className="text-[#899298] text-[11px] leading-relaxed mb-3">
-              您在第一段中提到了“肌肉记忆”，但尚未扩展说明空间 UI 的物理人体工程学。
-            </p>
-            <button className="w-full py-1.5 rounded-lg bg-white/5 border border-white/10 text-[11px] text-white hover:bg-white/10 transition-colors">
-              生成大纲部分
-            </button>
-          </GlassCard>
-        </div>
-
-        {/* 相关节点块 */}
-        <div>
-          <h3 className="text-[9px] font-semibold text-[#899298] uppercase tracking-wider mb-3">相关节点</h3>
-          <div className="space-y-3">
-            <div className="flex items-center gap-2.5 cursor-pointer group">
-              <div className="w-6 h-6 rounded-full bg-[#86d7ff]/10 text-[#86d7ff] flex items-center justify-center group-hover:bg-[#86d7ff]/20 transition-colors">
-                <FileText className="w-3 h-3" />
-              </div>
-              <span className="text-xs text-[#e0e3e6] group-hover:text-white transition-colors">毛玻璃原理</span>
-            </div>
-            <div className="flex items-center gap-2.5 cursor-pointer group">
-              <div className="w-6 h-6 rounded-full bg-[#9cf4d4]/10 text-[#9cf4d4] flex items-center justify-center group-hover:bg-[#9cf4d4]/20 transition-colors">
-                <Activity className="w-3 h-3" />
-              </div>
-              <span className="text-xs text-[#e0e3e6] group-hover:text-white transition-colors">CRDT 网络图谱</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    )}
-  </div>
-);
+// 4. 编辑器视图 (Editor View) — 已替换为 DraftEditorView 组件
+// 旧 mock EditorView 已移除，真实 Draft 编辑功能见 features/editor/DraftEditorView.tsx
 
 // 5. 回顾视图 (Review View) - 高密度聚合仪表盘
 // 此处为Mock功能，等待后端接入 — 所有统计数据、周总结、复盘内容均为Mock数据
@@ -1666,6 +1491,18 @@ export default function WorkspacePage() {
   const [showSourcePacket, setShowSourcePacket] = useState(true);
   const [showInspector, setShowInspector] = useState(true);
   const [showOptionsDropdown, setShowOptionsDropdown] = useState(false);
+  const [userId, setUserId] = useState('_legacy');
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    const user = getCurrentUser()
+    if (user) setUserId(user.id)
+  }, [])
+
+  const showToast = useCallback((msg: string) => {
+    setToastMsg(msg)
+    setTimeout(() => setToastMsg(null), 3000)
+  }, [])
 
   // 聚焦搜索相关状态
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -1879,7 +1716,7 @@ export default function WorkspacePage() {
           {activeTab === 'toolbox' && <ToolboxView />}
           {activeTab === 'mind' && <MindView />}
           {activeTab === 'dock' && <DockView setActiveTab={setActiveTab} />}
-          {activeTab === 'editor' && <EditorView showSourcePacket={showSourcePacket} showInspector={showInspector} />}
+          {activeTab === 'editor' && <DraftEditorView userId={userId} showSourcePacket={showSourcePacket} showInspector={showInspector} onToggleSourcePacket={() => setShowSourcePacket(v => !v)} onToggleInspector={() => setShowInspector(v => !v)} onToast={showToast} />}
           {activeTab === 'review' && <ReviewView />}
           {activeTab === 'settings' && <SettingsView />}
         </main>
@@ -1998,6 +1835,15 @@ export default function WorkspacePage() {
           background: rgba(134, 215, 255, 0.3);
         }
       `}} />
+
+      {/* Toast 通知 */}
+      {toastMsg && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <div className="px-4 py-2.5 bg-[#1c2023]/90 backdrop-blur-[20px] border border-white/10 rounded-xl shadow-2xl text-sm text-white">
+            {toastMsg}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

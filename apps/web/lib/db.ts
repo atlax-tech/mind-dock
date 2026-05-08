@@ -297,12 +297,15 @@ export interface PersistedRecentDocument extends RecentDocumentRecord {
   id: string
 }
 
+export type DraftStatus = 'active' | 'published' | 'discarded'
+
 export interface EditorDraftRecord {
   id?: number
   userId: string
   draftKey: number
   title: string
   content: string
+  status: DraftStatus
   createdAt: Date
   updatedAt: Date
 }
@@ -626,6 +629,32 @@ db.version(18).stores({
     delete event.targetId
     delete event.fromContext
     delete event.toContext
+  })
+})
+
+db.version(19).stores({
+  dockItems: '++id, userId, rawText, topic, sourceType, status, createdAt',
+  tags: 'id, userId, name, [userId+name]',
+  entries: '++id, userId, sourceDockItemId, type, archivedAt',
+  chatSessions: '++id, userId, status, pinned, dockItemId, createdAt, updatedAt',
+  widgets: '++id, userId, widgetType, active, createdAt, updatedAt',
+  collections: 'id, userId, collectionType, parentId, createdAt, updatedAt',
+  entryTagRelations: 'id, userId, entryId, tagId, [userId+entryId], [userId+tagId], createdAt',
+  entryRelations: 'id, userId, sourceEntryId, targetEntryId, relationType, [userId+sourceEntryId], [userId+targetEntryId], createdAt',
+  knowledgeEvents: 'id, userId, eventType, targetType, createdAt',
+  temporalActivities: 'id, userId, type, occurredAt, dayKey, weekKey, monthKey, [userId+dayKey], [userId+monthKey], createdAt',
+  mindNodes: 'id, userId, nodeType, state, label, [userId+nodeType], [userId+state], createdAt, updatedAt',
+  mindEdges: 'id, userId, sourceNodeId, targetNodeId, edgeType, [userId+sourceNodeId], [userId+targetNodeId], [userId+edgeType], createdAt, updatedAt',
+  workspaceSessions: 'id, userId, createdAt, updatedAt',
+  workspaceOpenTabs: 'id, userId, sessionId, tabType, documentId, isPinned, isActive, sortOrder, [userId+sessionId], [userId+tabType], [userId+documentId], openedAt, updatedAt',
+  recentDocuments: 'id, userId, documentId, [userId+documentId], lastOpenedAt, openCount, createdAt, updatedAt',
+  editorDrafts: '++id, userId, draftKey, status, [userId+status], [userId+draftKey], updatedAt',
+  recommendations: 'id, userId, subjectType, status, [userId+status], [userId+subjectType], createdAt, updatedAt',
+  recommendationEvents: 'id, userId, recommendationId, eventType, [userId+recommendationId], [userId+eventType], createdAt',
+  userBehaviorEvents: 'id, userId, eventType, subjectType, [userId+eventType], [userId+subjectType], createdAt',
+}).upgrade((tx) => {
+  tx.table('editorDrafts').toCollection().modify((draft: Record<string, unknown>) => {
+    if (!draft.status) draft.status = 'active'
   })
 })
 
