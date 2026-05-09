@@ -8,6 +8,7 @@ export interface GraphNodeAttributes {
   label: string
   originalLabel: string
   documentId: number | null
+  sourceType: 'draft' | 'document' | null
   color: string
   baseSize: number
   size: number
@@ -139,6 +140,7 @@ export function snapshotToGraphology(snapshot: MindGraphSnapshot): MindGraphStat
       label: showLabel ? n.label : '',
       originalLabel: n.label,
       documentId: n.documentId,
+      sourceType: (n.metadata?.sourceType as 'draft' | 'document') ?? null,
       color,
       baseSize,
       size: baseSize,

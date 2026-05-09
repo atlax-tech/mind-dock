@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import { Zap, Link as LinkIcon, Check, X, Clock, Edit3, Loader2, Sparkles } from 'lucide-react'
+import { Zap, Check, X, Clock, Edit3, Loader2, Sparkles } from 'lucide-react'
 import { 
   listRecommendationDockQueue, 
   generateRecommendationsForContext, 

@@ -13,7 +13,7 @@ interface MindCanvasStageProps {
   snapshot?: MindGraphSnapshot | null
   interaction: ReturnType<typeof useMindGraphInteraction>
   loading?: boolean
-  onOpenEditor: (id: number) => void
+  onOpenEditor: (id: number, sourceType: 'draft' | 'document') => void
   onSelectNode?: (id: string | null) => void
   onOpenInDock?: (dockItemId: number) => void
   onToast: (msg: string) => void

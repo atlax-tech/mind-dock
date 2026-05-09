@@ -9,7 +9,7 @@ export type RecommendationStatus =
 
 export type RecommendationSubjectType = 'dockItem' | 'entry' | 'document' | 'mindNode'
 
-export type RecommendationCandidateType = 'tag' | 'project' | 'mindNode' | 'entry' | 'document'
+export type RecommendationCandidateType = 'tag' | 'project' | 'mindNode' | 'entry' | 'document' | 'dockItem'
 
 export type BasicCandidateType = 'tag' | 'project' | 'mindNode'
 

@@ -9,6 +9,49 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：MIND-REAL-001 Round 1 (RecommendationCandidateType 补充 dockItem) -->
+<!-- ============================================ -->
+
+## MIND-REAL-001 Round 1 devlog -- RecommendationCandidateType 补充 dockItem
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 03:16 - 03:20 CST
+
+**工时**: 4 分钟
+
+**任务目标**:
+修复已有 build 阻塞问题：repository.ts 中 `resolveRecommendationCandidate` 函数使用了 `'dockItem'` case，但 `RecommendationCandidateType` 类型定义中未包含 `'dockItem'`，导致 typecheck/build 失败。
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `packages/domain/src/services/IntelligenceSpine.ts` | -1/+1 | `RecommendationCandidateType` 添加 `'dockItem'` |
+| `apps/web/lib/recommendation-i18n.ts` | +1 | `CANDIDATE_TYPE_LABELS` 添加 `dockItem: '停靠项'` |
+
+**遇到的问题及解决方式**:
+
+1. **问题**: `repository.ts:280` 的 `case 'dockItem'` 不被 `RecommendationCandidateType` 类型接受，导致 typecheck 和 build 均失败
+   - **解决**: 在 domain 层 `RecommendationCandidateType` 联合类型中补充 `'dockItem'`，并在前端 i18n 映射中补充对应标签
+
+**自动验证结果**:
+
+- `pnpm typecheck`: ✅ PASS
+- `pnpm build:web`: ✅ PASS
+
+**手工验证步骤说明**:
+
+1. 确认 recommendation 候选类型包含 dockItem 时不再报类型错误
+2. 确认前端 UI 中 dockItem 类型候选显示为"停靠项"
+
+**当前风险及影响范围**:
+
+- 无新增风险。此修改仅补全已有代码路径的类型定义，不影响运行时行为。
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：Phase 3.1.5 Round 31 (FE-REAL-004 Backend) -->
 <!-- ============================================ -->
 

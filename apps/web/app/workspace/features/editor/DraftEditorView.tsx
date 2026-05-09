@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import {
   PenTool,
   Plus,
@@ -23,6 +23,7 @@ import {
 import { useDrafts } from './useDrafts'
 import { useEditorDraft } from './useEditorDraft'
 import type { StoredDraft } from '@/lib/repository'
+import { entriesTable } from '@/lib/db'
 
 interface DraftEditorViewProps {
   userId: string
@@ -31,6 +32,8 @@ interface DraftEditorViewProps {
   onToggleSourcePacket: () => void
   onToggleInspector: () => void
   onToast?: (msg: string) => void
+  initialDraftId?: number | null
+  initialEntryId?: number | null
 }
 
 export default function DraftEditorView({
@@ -40,6 +43,8 @@ export default function DraftEditorView({
   onToggleSourcePacket,
   onToggleInspector,
   onToast,
+  initialDraftId,
+  initialEntryId,
 }: DraftEditorViewProps) {
   const {
     drafts,
@@ -82,6 +87,27 @@ export default function DraftEditorView({
     setActiveDraftId(draft.id)
     resetForDraft(draft)
   }, [resetForDraft])
+
+  useEffect(() => {
+    if (initialDraftId != null && initialDraftId !== activeDraftId) {
+      setActiveDraftId(initialDraftId)
+    }
+  }, [initialDraftId, activeDraftId])
+
+  useEffect(() => {
+    if (initialEntryId == null) return
+    let cancelled = false
+    ;(async () => {
+      const entry = await entriesTable.get(initialEntryId)
+      if (cancelled || !entry) return
+      const draft = await handleCreateDraft(entry.title || 'Untitled', entry.content || '')
+      if (cancelled || !draft) return
+      setActiveDraftId(draft.id)
+      resetForDraft(draft)
+      onToast?.('已从归档文档创建草稿')
+    })()
+    return () => { cancelled = true }
+  }, [initialEntryId, handleCreateDraft, resetForDraft, onToast])
 
   const onPublish = useCallback(async () => {
     if (!activeDraftId) return

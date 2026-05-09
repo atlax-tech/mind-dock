@@ -434,7 +434,7 @@ const ToolboxView = () => {
 // 使用 MindCanvasStage + MindGraphView 渲染中心图谱
 // ==========================================
 
-const MindView = ({ userId, onToast, onSelectionChange }: { userId: string; onToast: (msg: string) => void, onSelectionChange: (selected: boolean) => void }) => {
+const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId: string; onToast: (msg: string) => void, onSelectionChange: (selected: boolean) => void, onOpenEditor?: (documentId: number, sourceType: 'draft' | 'document') => void }) => {
   const { nodes: mindNodes, edges: mindEdges, loading, onNodeDragEnd, refresh: refreshMindGraph } = useMindGraph(userId);
   const interaction = useMindGraphInteraction();
   const { state: ixState, actions: ixActions } = interaction;
@@ -607,7 +607,9 @@ const MindView = ({ userId, onToast, onSelectionChange }: { userId: string; onTo
           snapshot={snapshot}
           interaction={interaction}
           loading={loading}
-          onOpenEditor={() => {}}
+          onOpenEditor={(documentId: number, sourceType: 'draft' | 'document') => {
+            onOpenEditor?.(documentId, sourceType)
+          }}
           onSelectNode={(id) => {
             setSelectedNodeId(id);
             if (id) setActiveThought(null);
@@ -678,7 +680,7 @@ const MindView = ({ userId, onToast, onSelectionChange }: { userId: string; onTo
 
               {/* Bottom Actions */}
               <div className="p-5 border-t border-white/[0.07] space-y-2">
-                <button className="w-full h-[36px] rounded-lg bg-white text-[#0b0f11] text-[12px] font-semibold hover:bg-gray-200 transition-colors flex items-center justify-center gap-2">
+                <button onClick={() => { if (selectedNode?.documentId != null) { const st = (selectedNode.metadata?.sourceType as 'draft' | 'document') ?? 'draft'; onOpenEditor?.(selectedNode.documentId, st) } }} className="w-full h-[36px] rounded-lg bg-white text-[#0b0f11] text-[12px] font-semibold hover:bg-gray-200 transition-colors flex items-center justify-center gap-2">
                   <PenTool className="w-4 h-4" /> Open in Editor
                 </button>
                 <button onClick={() => setSelectedNodeId(null)} className="w-full h-[32px] rounded-lg bg-white/5 text-[#8d989f] text-[11px] font-medium hover:bg-white/10 transition-colors">
@@ -693,9 +695,9 @@ const MindView = ({ userId, onToast, onSelectionChange }: { userId: string; onTo
                 <Wand2 className="w-3.5 h-3.5" /> Neural Distillation
               </div>
 
-              <h3 className="text-[16px] font-semibold text-white leading-tight mb-2.5">{activeThought!.content.slice(0, 60)}</h3>
+              <h3 className="text-[16px] font-semibold text-white leading-tight mb-2.5">{activeThought?.content.slice(0, 60)}</h3>
               <div className="flex gap-2 mb-6">
-                <span className="px-2 py-0.5 rounded bg-white/5 border border-white/[0.07] text-[10px] text-[#8d989f]">{activeThought!.sourceType}</span>
+                <span className="px-2 py-0.5 rounded bg-white/5 border border-white/[0.07] text-[10px] text-[#8d989f]">{activeThought?.sourceType}</span>
               </div>
 
               <div className="bg-[#c8a0f0]/[0.05] border border-[#c8a0f0]/20 rounded-[12px] p-4 mb-4">
@@ -1688,6 +1690,8 @@ export default function WorkspacePage() {
   const [userId, setUserId] = useState('_legacy');
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [isNodeSelected, setIsNodeSelected] = useState(false);
+  const [pendingOpenDraftId, setPendingOpenDraftId] = useState<number | null>(null);
+  const [pendingOpenEntryId, setPendingOpenEntryId] = useState<number | null>(null);
 
   useEffect(() => {
     // Reset selection state when switching tabs
@@ -1935,9 +1939,9 @@ export default function WorkspacePage() {
           )}
           {activeTab === 'briefing' && <DailyBriefingView brief={dailyBriefHook.data} briefLoading={dailyBriefHook.loading} />}
           {activeTab === 'toolbox' && <ToolboxView />}
-          {activeTab === 'mind' && <MindView userId={userId} onToast={showToast} onSelectionChange={setIsNodeSelected} />}
+          {activeTab === 'mind' && <MindView userId={userId} onToast={showToast} onSelectionChange={setIsNodeSelected} onOpenEditor={(documentId, sourceType) => { if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} />}
           {activeTab === 'dock' && <DockView setActiveTab={setActiveTab} />}
-          {activeTab === 'editor' && <DraftEditorView userId={userId} showSourcePacket={showSourcePacket} showInspector={showInspector} onToggleSourcePacket={() => setShowSourcePacket(v => !v)} onToggleInspector={() => setShowInspector(v => !v)} onToast={showToast} />}
+          {activeTab === 'editor' && <DraftEditorView userId={userId} showSourcePacket={showSourcePacket} showInspector={showInspector} onToggleSourcePacket={() => setShowSourcePacket(v => !v)} onToggleInspector={() => setShowInspector(v => !v)} onToast={showToast} initialDraftId={pendingOpenDraftId} initialEntryId={pendingOpenEntryId} />}
           {activeTab === 'review' && <ReviewView />}
           {activeTab === 'settings' && <SettingsView />}
         </main>

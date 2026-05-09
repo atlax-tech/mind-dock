@@ -9,6 +9,100 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：MIND-REAL-001 Round 1 (Mind 分支基线稳定：清除 Mock Edge + 节点打开入口) -->
+<!-- ============================================ -->
+
+## MIND-REAL-001 Round 1 devlog -- Mind 分支基线稳定：清除 Mock Edge + 节点打开入口
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 03:00 - 03:30 CST
+
+**工时**: 30 分钟
+
+**任务目标**:
+1. 清除 MindGraphView 中的 Mock/Demo Edge 自动生成逻辑，图谱只渲染真实 mind_edges 数据
+2. 打通节点打开入口 onOpenEditor，点击 document 类型节点可跳转 Editor 并锁定对应 documentId
+3. 区分 draft 来源和 archived entry 来源，两种文档均能被真实打开
+4. 保持当前 Mind View 设计不变
+5. 补充最小测试覆盖
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/app/workspace/features/mind/MindGraphView.tsx` | -23/+1 | 删除 mock edge 自动生成逻辑，直接使用 originalSnapshot |
+| `apps/web/app/workspace/features/mind/MindGraphView.tsx` | +10 | MindNodeActionBar onOpen 回调查找选中节点 documentId + sourceType 并调用 onOpenEditor |
+| `apps/web/app/workspace/features/mind/MindGraphView.tsx` | -1/+1 | onOpenEditor 签名增加 sourceType 参数 |
+| `apps/web/app/workspace/features/mind/MindCanvasStage.tsx` | -1/+1 | onOpenEditor 签名增加 sourceType 参数 |
+| `apps/web/app/workspace/features/mind/MindGraphSigma.tsx` | -1/+1 | onOpenEditor 签名增加 sourceType 参数 |
+| `apps/web/app/workspace/features/mind/MindGraphSigma.tsx` | +3 | handleDoubleClickNode 传递 sourceType |
+| `apps/web/app/workspace/features/mind/mindGraphAdapter.ts` | +2 | MindNodeGraphAttrs 增加 sourceType 字段，addNode 时从 metadata 提取 |
+| `apps/web/app/workspace/page.tsx` | +2 | 添加 pendingOpenDraftId + pendingOpenEntryId 状态 |
+| `apps/web/app/workspace/page.tsx` | +1 | MindView props 增加 onOpenEditor 回调（含 sourceType） |
+| `apps/web/app/workspace/page.tsx` | +3 | MindCanvasStage onOpenEditor 传递 sourceType |
+| `apps/web/app/workspace/page.tsx` | +1 | 右侧面板 "Open in Editor" 按钮传递 sourceType |
+| `apps/web/app/workspace/page.tsx` | +1 | MindView 调用处传入 onOpenEditor 回调（区分 draft/entry） |
+| `apps/web/app/workspace/page.tsx` | +1 | DraftEditorView 传入 initialEntryId={pendingOpenEntryId} |
+| `apps/web/app/workspace/page.tsx` | -2/+2 | 修复已有 non-null assertion lint 错误 |
+| `apps/web/app/workspace/features/editor/DraftEditorView.tsx` | +2 | Props 接口添加 initialDraftId + initialEntryId |
+| `apps/web/app/workspace/features/editor/DraftEditorView.tsx` | +1 | 解构添加 initialEntryId |
+| `apps/web/app/workspace/features/editor/DraftEditorView.tsx` | +1 | import 添加 useEffect |
+| `apps/web/app/workspace/features/editor/DraftEditorView.tsx` | +2 | import 添加 createDraft + entriesTable |
+| `apps/web/app/workspace/features/editor/DraftEditorView.tsx` | +14 | useEffect 监听 initialDraftId（含 activeDraftId 依赖修复）+ useEffect 监听 initialEntryId（从 entry 创建 draft 并打开） |
+| `apps/web/app/workspace/features/mind/MindRecommendationInspector.tsx` | -1/+1 | 修复已有 unused import |
+| `apps/web/app/workspace/scratch_check_recs.ts` | 删除 | 移除导致 build 失败的 scratch 脚本 |
+| `packages/domain/src/services/IntelligenceSpine.ts` | -1/+1 | RecommendationCandidateType 添加 'dockItem'（修复已有 build 阻塞） |
+| `apps/web/lib/recommendation-i18n.ts` | +1 | CANDIDATE_TYPE_LABELS 添加 dockItem 条目 |
+| `apps/web/tests/mind-baseline.test.ts` | 新增 132 行 | 新增基线测试：无 mock edge、保留真实 edge、onOpenEditor 桥接 |
+
+**遇到的问题及解决方式**:
+
+1. **问题**: MindGraphView 中 useMemo 自动生成 mock edge，当真实 edge 为空时伪造连线
+   - **解决**: 删除整个 useMemo 逻辑，直接使用 `const snapshot = originalSnapshot`
+
+2. **问题**: page.tsx 第610行 `onOpenEditor={() => {}}` 空实现，双击节点/点击按钮无任何效果
+   - **解决**: 实现完整回调链路：MindView 接收 onOpenEditor → MindCanvasStage 透传 → MindGraphView/MindGraphSigma 调用 → page.tsx 区分 draft/entry 设置 pendingOpenDraftId 或 pendingOpenEntryId + 切换 tab → DraftEditorView 通过 initialDraftId 或 initialEntryId prop 打开对应文档
+
+3. **问题**: documentId 不能全部当 draftId——MindNode.documentId 可能指向 draft 表或 entry 表
+   - **解决**: 从 MindNode.metadata.sourceType 区分来源（'draft' | 'document'），onOpenEditor 签名增加 sourceType 参数；DraftEditorView 新增 initialEntryId prop，当来源为 entry 时从 entriesTable 读取内容并创建新 draft 打开
+
+4. **问题**: DraftEditorView useEffect exhaustive-deps warning（initialDraftId effect 缺少 activeDraftId 依赖）
+   - **解决**: 补充 activeDraftId 到依赖数组
+
+5. **问题**: 已有的 lint/build 错误阻塞验证（scratch_check_recs.ts、non-null assertion、unused import、RecommendationCandidateType 缺少 dockItem）
+   - **解决**: 逐一修复已有问题，确保 lint 0 errors、typecheck PASS、build PASS
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ PASS，0 errors / 8 warnings（均为已有）
+- `pnpm typecheck`: ✅ PASS
+- `pnpm test`: ✅ domain 312 passed，web 602 passed（含新增 7 个 mind-baseline 测试）
+- `pnpm build:web`: ✅ PASS
+
+**手工验证步骤说明**:
+
+1. 打开应用，切换到 Mind 视图
+2. 确认：当没有真实 edge 时，图谱只显示节点不显示任何连线（无 mock edge）
+3. 确认：当有真实 edge 时，图谱正常显示连线
+4. 选中一个 document 类型节点（sourceType='draft'），点击右侧面板 "Open in Editor" 按钮
+5. 确认：自动切换到 Editor 视图，且打开对应 draftId 的草稿
+6. 选中一个 document 类型节点（sourceType='document'，已归档文档），点击 "Open in Editor" 按钮
+7. 确认：自动切换到 Editor 视图，从 entry 创建新 draft 并打开，toast 提示"已从归档文档创建草稿"
+8. 选中一个非 document 类型节点（如 fragment/tip），点击 "Open in Dock" 按钮
+9. 确认：显示 toast 提示"此节点暂无关联文档"，而非空回调
+10. 双击一个有 documentId 的节点
+11. 确认：自动跳转到 Editor 并打开对应文档
+
+**当前风险及影响范围**:
+
+1. **Entry → Draft 创建是单向的**: 从 entry 创建的新 draft 是 entry 内容的副本，编辑 draft 不会更新原 entry。**影响范围**: 用户可能期望编辑已归档文档时直接修改原文档。**后续需补充**: 支持 entry 的直接编辑或双向同步。
+2. **pendingOpenDraftId / pendingOpenEntryId 状态不会自动清除**: 一旦从 Mind 跳转到 Editor，状态会一直保持。**影响范围**: 低风险，useEffect 只在值变化时触发，且 MindView 每次跳转都会设置新值。
+3. **MindGraphSigma 双击节点逻辑**: 当前双击节点只在 documentId != null 时触发 onOpenEditor，非 document 节点双击无效果。这是预期行为，但用户可能期望双击任何节点都有响应。**影响范围**: 低风险，符合任务要求。
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：Phase 3.1.5 Round 36 (画布节点不显示 - SVG 元素在 HTML 上下文渲染) -->
 <!-- ============================================ -->
 

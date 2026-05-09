@@ -36,7 +36,7 @@ interface MindGraphSigmaProps {
   snapshot: MindGraphSnapshot
   ixState: MindInteractionState
   ixActions: MindInteractionActions
-  onOpenEditor: (documentId: number) => void
+  onOpenEditor: (documentId: number, sourceType: 'draft' | 'document') => void
   onNodeCountChange: (n: number) => void
   onEdgeCountChange: (n: number) => void
   onLayoutRunningChange?: (r: boolean) => void
@@ -560,7 +560,10 @@ function MindGraphInner({
 
     const handleDoubleClickNode = (event: { node: string }) => {
       const attrs = graph.getNodeAttributes(event.node)
-      if (attrs.documentId != null) onOpenEditor(attrs.documentId)
+      if (attrs.documentId != null) {
+        const sourceType = attrs.sourceType ?? 'draft'
+        onOpenEditor(attrs.documentId, sourceType)
+      }
     }
 
     const handleClickStage = () => {

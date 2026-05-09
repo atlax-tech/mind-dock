@@ -74,6 +74,7 @@ export const CANDIDATE_TYPE_LABELS: Record<RecommendationCandidateType, string> 
   mindNode: '知识节点',
   entry: '条目',
   document: '文档',
+  dockItem: '停靠项',
 }
 
 export const STATUS_LABELS: Record<RecommendationStatus, { label: string; color: string }> = {

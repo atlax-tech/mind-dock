@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useRef, useCallback } from 'react'
+import { useRef, useCallback } from 'react'
 import { Plus, Minus, Crosshair, ChevronRight, ChevronDown, Brain, Filter } from 'lucide-react'
 import type { MindGraphSnapshot } from './types'
 import { BG_COLOR } from './mindGraphStyle'
@@ -13,7 +13,7 @@ import MindNodeActionBar from './MindNodeActionBar'
 interface MindGraphViewProps {
   snapshot: MindGraphSnapshot
   interaction: ReturnType<typeof useMindGraphInteraction>
-  onOpenEditor: (documentId: number) => void
+  onOpenEditor: (documentId: number, sourceType: 'draft' | 'document') => void
   onSelectNode?: (nodeId: string | null) => void
   onToast: (msg: string) => void
   onNodeDragEnd?: (nodeId: string, x: number, y: number) => void
@@ -30,29 +30,7 @@ export default function MindGraphView({
 }: MindGraphViewProps) {
   const { state: ixState, actions: ixActions } = interaction
 
-  // Enriched snapshot for demo/visibility if edges are empty
-  const snapshot = React.useMemo(() => {
-    if (originalSnapshot.edges.length > 0 || originalSnapshot.nodes.length < 2) return originalSnapshot
-    
-    // Auto-link some nodes for demo purposes if no links exist
-    const root = originalSnapshot.nodes.find(n => n.nodeType === 'root')
-    const others = originalSnapshot.nodes.filter(n => n.nodeType !== 'root')
-    
-    if (!root || others.length < 2) return originalSnapshot
-    
-    const mockEdges = others.map((n, i) => ({
-      id: `mock-edge-${i}`,
-      sourceNodeId: root.id,
-      targetNodeId: n.id,
-      edgeType: i % 2 === 0 ? 'confirmed' : 'suggested',
-      strength: 0.8,
-      source: 'system',
-      confidence: 1,
-      reason: 'Auto-linked for demo'
-    }))
-    
-    return { ...originalSnapshot, edges: mockEdges }
-  }, [originalSnapshot])
+  const snapshot = originalSnapshot
 
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -167,7 +145,17 @@ export default function MindGraphView({
           selectedNodeId={ixState.selectedNodeId}
           onConnect={() => _onToast('Connecting...')}
           onMove={() => _onToast('Moving to cluster...')}
-          onOpen={() => _onToast('Opening in Dock...')}
+          onOpen={() => {
+            if (ixState.selectedNodeId) {
+              const node = snapshot.nodes.find(n => n.id === ixState.selectedNodeId)
+              if (node?.documentId != null) {
+                const sourceType = (node.metadata?.sourceType as 'draft' | 'document') ?? 'draft'
+                _onOpenEditor(node.documentId, sourceType)
+              } else {
+                _onToast('此节点暂无关联文档')
+              }
+            }
+          }}
           onArchive={() => _onToast('Archiving...')}
           onClose={() => handleSelectNode(null)}
         />
