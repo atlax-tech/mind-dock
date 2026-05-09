@@ -14,6 +14,7 @@ import {
   listMindEdgesByTargetNode,
   deleteMindNode,
   deleteMindEdge,
+  updateMindNodePosition,
 } from '../lib/repository'
 
 const USER = 'test-user'
@@ -103,6 +104,40 @@ describe('Mind Graph CRUD', () => {
       const node = await upsertMindNode({ userId: USER, nodeType: 'tag', label: 'test' })
       const fetched = await getMindNode('other-user', node.id)
       expect(fetched).toBeNull()
+    })
+
+    it('updates node position and persists it', async () => {
+      const node = await upsertMindNode({ userId: USER, nodeType: 'project', label: 'Positioned' })
+      expect(node.positionX).toBeNull()
+      expect(node.positionY).toBeNull()
+
+      const updated = await updateMindNodePosition(USER, node.id, 100.5, 200.3)
+      expect(updated).toBeTruthy()
+      if (!updated) return
+      expect(updated.positionX).toBe(100.5)
+      expect(updated.positionY).toBe(200.3)
+
+      const refetched = await getMindNode(USER, node.id)
+      expect(refetched).toBeTruthy()
+      if (!refetched) return
+      expect(refetched.positionX).toBe(100.5)
+      expect(refetched.positionY).toBe(200.3)
+    })
+
+    it('returns null when updating position for wrong user', async () => {
+      const node = await upsertMindNode({ userId: USER, nodeType: 'tag', label: 'test' })
+      const result = await updateMindNodePosition('other-user', node.id, 10, 20)
+      expect(result).toBeNull()
+    })
+
+    it('returns null when updating position for non-existent node', async () => {
+      const result = await updateMindNodePosition(USER, 'nonexistent', 10, 20)
+      expect(result).toBeNull()
+    })
+
+    it('returns empty list when no nodes exist', async () => {
+      const nodes = await listMindNodes(USER)
+      expect(nodes).toHaveLength(0)
     })
   })
 

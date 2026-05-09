@@ -9,6 +9,42 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：Phase 3.1.5 Round 31 (FE-REAL-004 Backend) -->
+<!-- ============================================ -->
+
+## Phase 3.1.5 Round 31 devlog -- FE-REAL-004 Mind Repository 扩展 + Transaction 修复
+
+**时间戳**: 2026-05-09
+
+**任务起止时间**: 06:25 - 06:45 CST
+
+**工时**: 20 分钟
+
+**任务目标**:
+1. 新增 updateMindNodePosition 函数支持节点位置持久化。
+2. 将 convertTipToDraft() 改为 Dexie transaction 确保数据完整性。
+
+**变更摘要**:
+
+**Repository 扩展** (`lib/repository.ts`):
+- 新增 `updateMindNodePosition(userId, id, positionX, positionY)`: 验证 userId 归属 → 更新 positionX/positionY/updatedAt → 返回 PersistedMindNode
+- 修改 `convertTipToDraft()`: 从两次独立操作改为 `db.transaction('rw', [tipsTable, editorDraftsTable], ...)` 包裹的原子事务。Draft 创建（add + update draftKey）和 Tip 状态更新在同一事务中完成，任一步骤失败则全部回滚。
+
+**改动文件名及行数**:
+1. `lib/repository.ts` (+38 行 updateMindNodePosition, +20 行 convertTipToDraft transaction)
+
+**遇到的问题及解决方式**:
+1. 原 convertTipToDraft 调用 createDraft() 函数，但 createDraft 本身有两次表操作 → 在 transaction 内直接操作 editorDraftsTable，避免嵌套非事务操作
+
+**自动验证结果**:
+- `pnpm test`: ✅ 595 tests passed (含 tip-repository 和 mind-events transaction 测试)
+
+**当前风险及影响范围**:
+1. convertTipToDraft transaction 内不再调用 createDraft()，如果 createDraft 未来增加额外逻辑需同步更新 → 影响低，当前逻辑简单
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：Phase 3.1.5 Round 28 (FE-REAL-002 Backend) -->
 <!-- ============================================ -->
 

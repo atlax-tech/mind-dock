@@ -1,13 +1,23 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { getCurrentUser } from '@/lib/auth';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { getCurrentUser, listLocalUsers, registerUser } from '@/lib/auth';
 import DraftEditorView from './features/editor/DraftEditorView';
 import { useTips } from './features/tips/useTips';
 import QuickCapture from './features/tips/QuickCapture';
 import TipsPanel from './features/tips/TipsPanel';
 import { useHomeIntelligence, type HomeIntelligenceData } from './features/home/useHomeIntelligence';
 import { useDailyBrief, type DailyBriefData } from './features/home/useDailyBrief';
+import { useMindGraph } from './features/mind/useMindGraph';
+import { useMindGraphInteraction } from './features/mind/useMindGraphInteraction';
+import { buildSimpleMindGraphSnapshot } from './features/mind/mindSnapshotBuilder';
+import MindCanvasStage from './features/mind/MindCanvasStage';
+import MindRecommendationInspector from './features/mind/MindRecommendationInspector';
+import {
+  listActiveTips,
+  convertTipToMindNode,
+  syncDocumentsToMindNodes,
+} from '@/lib/repository';
 import { emit } from '@/lib/events';
 import {
   Home,
@@ -24,7 +34,6 @@ import {
   FileText,
   CheckCircle2,
   AlertCircle,
-  Plus,
   FolderTree,
   Activity,
   HardDrive,
@@ -57,9 +66,10 @@ import {
   Inbox,
   Clock,
   Filter,
-  MousePointer2,
-  GitCommit,
+  Plus,
   Wand2,
+  Timer,
+  LayoutGrid,
 } from 'lucide-react';
 
 // ==========================================
@@ -420,238 +430,300 @@ const ToolboxView = () => {
 
 
 // ==========================================
-// 2. 思维视图 (Mind View) - 混沌到有序的整理工作台 (全屏平铺版)
-// 此处为Mock功能，等待后端接入 — 所有思绪/节点/连线/推荐均为Mock数据
-// To-do: 后端已支持 listMindNodes/listMindEdges/mindSnapshotBuilder 可对接真实图谱
-// To-do: 后端已支持 MindGraphSigma (Sigma 2D) 和 react-force-graph-3d (3D) 渲染
-// To-do: 后端已支持 listDockItems() 可填充"散落思绪池"未链接内容
-// To-do: 后端已支持 createCaptureToDocumentFlow() 可实现"注入图谱"的完整流程
+// 2. 思维视图 (Mind View) - 专业图谱可视化系统
+// 使用 MindCanvasStage + MindGraphView 渲染中心图谱
 // ==========================================
 
-// Mind 类型定义
-interface MindThought { id: string; title: string; type: string; tag: string; color: string; }
-interface MindNode { id: string; label: string; x: number; y: number; type: 'core' | 'sub'; }
-interface MindEdge { source: string; target: string; }
+const MindView = ({ userId, onToast, onSelectionChange }: { userId: string; onToast: (msg: string) => void, onSelectionChange: (selected: boolean) => void }) => {
+  const { nodes: mindNodes, edges: mindEdges, loading, onNodeDragEnd, refresh: refreshMindGraph } = useMindGraph(userId);
+  const interaction = useMindGraphInteraction();
+  const { state: ixState, actions: ixActions } = interaction;
 
-const MindView = () => {
-  const [activeSpace, setActiveSpace] = useState('Atlax 架构设计');
-  const [activeThought, setActiveThought] = useState<MindThought | null>(null);
+  useEffect(() => {
+    onSelectionChange(!!ixState.selectedNodeId);
+  }, [ixState.selectedNodeId, onSelectionChange]);
+  
+  const [unlinkedThoughts, setUnlinkedThoughts] = useState<StoredTip[]>([]);
+  const [activeThought, setActiveThought] = useState<StoredTip | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
-  // 此处为Mock功能，等待后端接入 — 未链接思绪应从 listDockItems(status=pending) 获取
-  const [unlinkedThoughts, setUnlinkedThoughts] = useState<MindThought[]>([
-    { id: 't1', title: '关于神经深度的灵感', type: 'Audio', tag: '#Design', color: '#c8a0f0' },
-    { id: 't2', title: 'Figma Token API 更新', type: 'Web', tag: '#Tech', color: '#86d7ff' },
-    { id: 't3', title: 'CRDT 算法优化方向', type: 'Note', tag: '#Sync', color: '#9cf4d4' },
-    { id: 't4', title: '周会 Q3 规划备忘', type: 'Meeting', tag: '#Product', color: '#ffb4ab' }
-  ]);
+  useEffect(() => {
+    if (!userId) return;
+    listActiveTips(userId).then(tips => setUnlinkedThoughts(tips)).catch(() => {});
+    syncDocumentsToMindNodes(userId).then((count) => {
+      if (count > 0) {
+        emit({ type: 'mind_node_created', nodeId: `sync-${Date.now()}` });
+      }
+    }).catch(() => {});
+  }, [userId]);
 
-  // 此处为Mock功能，等待后端接入 — 节点应从 listMindNodes() 获取
-  const [nodes, setNodes] = useState<MindNode[]>([
-    { id: 'n1', label: '空间计算 UI 范式', x: 350, y: 150, type: 'core' },
-    { id: 'n2', label: '毛玻璃渲染材质', x: 220, y: 300, type: 'sub' },
-    { id: 'n3', label: '光学深度与 Z 轴', x: 500, y: 280, type: 'sub' },
-    { id: 'n4', label: '本地优先架构', x: 380, y: 450, type: 'core' },
-  ]);
+  // Build snapshot from real data
+  const snapshot = useMemo(() => {
+    if (loading || mindNodes.length === 0) return null;
+    return buildSimpleMindGraphSnapshot(mindNodes, mindEdges);
+  }, [mindNodes, mindEdges, loading]);
 
-  // 此处为Mock功能，等待后端接入 — 连线应从 listMindEdges() 获取
-  const [edges, setEdges] = useState<MindEdge[]>([
-    { source: 'n1', target: 'n2' },
-    { source: 'n1', target: 'n3' },
-    { source: 'n3', target: 'n4' },
-  ]);
-
-  // --- 拖拽交互状态 ---
-  const canvasRef = useRef<HTMLDivElement>(null);
-  const [dragNode, setDragNode] = useState<{ id: string; offsetX: number; offsetY: number } | null>(null);
-  const [drawLink, setDrawLink] = useState<{ sourceId: string; x: number; y: number } | null>(null);
-  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
-
-  const handlePointerMove = (e: React.PointerEvent) => {
-    if (!canvasRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    setMousePos({ x, y });
-    if (dragNode) {
-      setNodes(prev => prev.map(n => n.id === dragNode.id ? { ...n, x: x - dragNode.offsetX, y: y - dragNode.offsetY } : n));
+  // Node color for right panel badges
+  const getNodeColor = useCallback((nodeType: string) => {
+    switch (nodeType) {
+      case 'root': case 'world_tree': return '#c4b5fd';
+      case 'domain': case 'project': return '#8b5cf6';
+      case 'topic': return '#a78bfa';
+      case 'document': return '#bbf7d0';
+      default: return '#9ca3af';
     }
-  };
+  }, []);
 
-  const handlePointerUp = () => { setDragNode(null); setDrawLink(null); };
+  // Get selected node info from snapshot
+  const selectedNode = useMemo(() => {
+    if (!selectedNodeId || !snapshot) return null;
+    const node = snapshot.nodes.find(n => n.id === selectedNodeId);
+    if (!node) return null;
+    const connections = snapshot.edges
+      .filter(e => e.sourceNodeId === selectedNodeId || e.targetNodeId === selectedNodeId)
+      .map(e => {
+        const otherId = e.sourceNodeId === selectedNodeId ? e.targetNodeId : e.sourceNodeId;
+        const otherNode = snapshot.nodes.find(n => n.id === otherId);
+        return { id: otherId, label: otherNode?.label ?? '', type: e.edgeType, nodeType: otherNode?.nodeType ?? '' };
+      });
+    return { ...node, connections };
+  }, [selectedNodeId, snapshot]);
 
-  const startNodeDrag = (e: React.PointerEvent, node: MindNode) => {
-    if (!canvasRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    setDragNode({ id: node.id, offsetX: e.clientX - rect.left - node.x, offsetY: e.clientY - rect.top - node.y });
-    if (activeThought) setActiveThought(null);
-  };
-
-  const startDrawingLink = (e: React.PointerEvent, sourceId: string) => {
-    e.stopPropagation();
-    if (!canvasRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    setDrawLink({ sourceId, x: e.clientX - rect.left, y: e.clientY - rect.top });
-  };
-
-  const dropLinkOnNode = (e: React.PointerEvent, targetId: string) => {
-    e.stopPropagation();
-    if (drawLink && drawLink.sourceId !== targetId) {
-      const exists = edges.find(ed => (ed.source === drawLink.sourceId && ed.target === targetId) || (ed.target === drawLink.sourceId && ed.source === targetId));
-      if (!exists) setEdges([...edges, { source: drawLink.sourceId, target: targetId }]);
-    }
-    setDrawLink(null);
-  };
-
-  // 此处为Mock功能，等待后端接入 — 注入操作应调用 createCaptureToDocumentFlow() + upsertMindNode()
-  const injectThought = () => {
+  const injectThought = useCallback(async () => {
     if (!activeThought) return;
-    const newNodeId = `n_${Date.now()}`;
-    setNodes([...nodes, { id: newNodeId, label: activeThought.title, x: 350, y: 250, type: 'sub' }]);
-    setEdges([...edges, { source: 'n1', target: newNodeId }]);
-    setUnlinkedThoughts(prev => prev.filter(t => t.id !== activeThought.id));
-    setActiveThought(null);
-  };
+    try {
+      const result = await convertTipToMindNode(userId, activeThought.id);
+      if (!result.mindNode || !result.tip) {
+        onToast('注入失败');
+        return;
+      }
+      emit({ type: 'mind_node_created', nodeId: result.mindNode.id });
+      setUnlinkedThoughts(prev => prev.filter(t => t.id !== activeThought.id));
+      setActiveThought(null);
+      onToast('已注入图谱');
+    } catch {
+      onToast('注入失败');
+    }
+  }, [activeThought, userId, onToast]);
+
+  if (loading) {
+    return (
+      <div className="w-full h-full flex items-center justify-center bg-[#0b0f11] animate-in fade-in duration-500">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center animate-pulse">
+            <Brain className="w-5 h-5 text-[#86d7ff]" />
+          </div>
+          <span className="text-xs text-[#899298]">加载思维图谱...</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full h-full flex animate-in fade-in duration-500 bg-[#0b0f11] text-[#e6eaed] overflow-hidden divide-x divide-white/[0.07] border-t border-white/[0.07]">
 
-      {/* Left Pane: 混沌区 (Unlinked / Inbox) */}
-      <div className="w-[240px] bg-[#0d1215] flex flex-col shrink-0 overflow-hidden">
-        <div className="px-4 py-5 border-b border-white/[0.07] shrink-0">
-          <div className="text-[10px] font-semibold text-[#8d989f] uppercase tracking-wider flex items-center gap-1.5 mb-1.5"><Inbox className="w-3.5 h-3.5" /> Inbox / Unlinked</div>
-          <h2 className="text-[18px] font-semibold text-white leading-tight">散落思绪池</h2>
-          <p className="text-[11px] text-[#8d989f] mt-1">{unlinkedThoughts.length} 个对象等待归入图谱</p>
-        </div>
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
-          {unlinkedThoughts.map(thought => {
-            const isSelected = activeThought?.id === thought.id;
-            return (
-              <div key={thought.id} onClick={() => setActiveThought(thought)}
-                className={`p-3 rounded-[8px] border cursor-pointer transition-all ${isSelected ? 'bg-[#86d7ff]/[0.08] border-[#86d7ff]/30 shadow-[inset_0_1px_1px_rgba(134,215,255,0.1)]' : 'bg-transparent border-transparent hover:bg-white/[0.04]'}`}>
-                <div className="flex items-center gap-2 mb-1.5">
-                  <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: thought.color }}></div>
-                  <span className="text-[9px] font-semibold text-[#8d989f] uppercase tracking-wider">{thought.type}</span>
+      {/* Left Pane: SCOPE / QUEUE */}
+      <div className="w-[260px] bg-[#0d1215] flex flex-col shrink-0 overflow-hidden">
+        {/* Upper Section: SCOPE */}
+        <div className="p-4 border-b border-white/[0.07] shrink-0">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex flex-col">
+              <div className="text-[10px] font-bold text-[#8d989f] uppercase tracking-widest">Scope / Queue</div>
+              <h2 className="text-[16px] font-bold text-white leading-tight">Atlax 产品设计</h2>
+            </div>
+            <button className="flex items-center gap-1.5 px-2 py-1 rounded bg-white/5 border border-white/10 text-[10px] text-[#8d989f]">
+              Scope <ChevronDown size={12} />
+            </button>
+          </div>
+
+          <div className="space-y-1">
+            {[
+              { id: 'focusMap', label: 'Focus Map', icon: <Sparkles size={14} />, count: mindNodes.length },
+              { id: 'clusterMap', label: 'Cluster Map', icon: <LayoutGrid size={14} />, count: 8 },
+              { id: 'linkReview', label: 'Link Review', icon: <Network size={14} />, count: 12 },
+              { id: 'driftInbox', label: 'Drift Inbox', icon: <AlertCircle size={14} />, count: 5 },
+              { id: 'timelineSnapshot', label: 'Timeline Snapshot', icon: <Timer size={14} />, count: 9 },
+            ].map(scope => {
+              const isSelected = ixState.viewScope === scope.id;
+              return (
+                <div 
+                  key={scope.id}
+                  onClick={() => ixActions.setViewScope(scope.id as any)}
+                  className={`flex items-center justify-between px-3 h-9 rounded-lg cursor-pointer transition-all ${
+                    isSelected ? 'bg-[#86d7ff]/10 text-[#86d7ff] border border-[#86d7ff]/20' : 'text-[#8d989f] hover:bg-white/5 border border-transparent'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className={isSelected ? 'text-[#86d7ff]' : 'text-[#8d989f]'}>{scope.icon}</div>
+                    <span className="text-[12px] font-medium">{scope.label}</span>
+                  </div>
+                  <span className="text-[10px] font-bold opacity-60">{scope.count}</span>
                 </div>
-                <h4 className={`text-[12px] font-medium leading-tight mb-2 truncate ${isSelected ? 'text-[#86d7ff]' : 'text-[#e6eaed]'}`}>{thought.title}</h4>
-                <div className="flex items-center justify-between">
-                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 border border-white/[0.07] text-[#8d989f]">{thought.tag}</span>
-                  <span className="text-[9px] text-[#8d989f]">Just now</span>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Lower Section: QUEUE (Inbox) */}
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          <div className="px-4 py-3 flex items-center justify-between shrink-0">
+            <span className="text-[10px] font-bold text-[#4a5568] uppercase tracking-widest">待整理队列</span>
+            <span className="text-[10px] text-[#4a5568]">{unlinkedThoughts.length} items</span>
+          </div>
+          
+          <div className="flex-1 overflow-y-auto custom-scrollbar px-2 pb-4 space-y-1.5">
+            {unlinkedThoughts.map(thought => {
+              const isSelected = activeThought?.id === thought.id;
+              const colorMap: Record<string, string> = { text: '#86d7ff', manual: '#9cf4d4', 'quick-capture': '#c8a0f0' };
+              const thoughtColor = colorMap[thought.sourceType] || '#86d7ff';
+              return (
+                <div key={thought.id} onClick={() => {
+                  setActiveThought(thought);
+                  setSelectedNodeId(null);
+                }}
+                  className={`p-3 rounded-xl border cursor-pointer transition-all group ${isSelected ? 'bg-[#86d7ff]/10 border-[#86d7ff]/30 shadow-[inset_0_1px_1px_rgba(134,215,255,0.1)]' : 'bg-white/[0.02] border-white/5 hover:bg-white/5 hover:border-white/10'}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: thoughtColor }}></div>
+                      <span className="text-[10px] font-bold text-white/40 uppercase tracking-tight">{thought.sourceType} · Just now</span>
+                    </div>
+                    <div className="w-6 h-6 rounded flex items-center justify-center bg-white/5 border border-white/10 group-hover:bg-[#86d7ff]/20 group-hover:border-[#86d7ff]/30 transition-all">
+                      <span className="text-[10px] font-bold text-[#8d989f] group-hover:text-[#86d7ff]">+ 1</span>
+                    </div>
+                  </div>
+                  <h4 className={`text-[12px] font-medium leading-tight line-clamp-2 ${isSelected ? 'text-[#86d7ff]' : 'text-white/80'}`}>{thought.content}</h4>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Center Pane: 专业图谱画布 (Mind Canvas) — 使用 MindCanvasStage */}
+      <div className="flex-1 flex flex-col min-w-0 bg-[#0b0f11] relative">
+        <MindCanvasStage
+          nodes={mindNodes}
+          edges={mindEdges}
+          snapshot={snapshot}
+          interaction={interaction}
+          loading={loading}
+          onOpenEditor={() => {}}
+          onSelectNode={(id) => {
+            setSelectedNodeId(id);
+            if (id) setActiveThought(null);
+          }}
+          onToast={onToast}
+          onNodeDragEnd={onNodeDragEnd}
+          activeModule="mind"
+        />
+      </div>
+
+      {/* Right Pane: 节点详情面板 (图五) 或 AI 蒸馏面板 */}
+      {(selectedNode || activeThought) && (
+        <div className="w-[300px] bg-[#0d1215] flex flex-col shrink-0 relative overflow-hidden border-l border-white/[0.07] animate-in slide-in-from-right duration-300">
+          <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-[#86d7ff] to-[#c8a0f0]"></div>
+
+          {selectedNode ? (
+            /* 点击后的详情面板 (图五) */
+            <div className="flex flex-col h-full">
+              {/* Header */}
+              <div className="p-5 border-b border-white/[0.07]">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-[10px] font-semibold text-[#8d989f] uppercase tracking-wider flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5" /> Node Details
+                  </div>
+                  <button onClick={() => setSelectedNodeId(null)} className="w-6 h-6 rounded-full bg-white/5 flex items-center justify-center hover:bg-white/10 transition-colors">
+                    <X className="w-3.5 h-3.5 text-[#8d989f]" />
+                  </button>
+                </div>
+                <h3 className="text-[16px] font-semibold text-white leading-tight mb-2">{selectedNode.label}</h3>
+                <div className="flex gap-2">
+                  <span className="px-2 py-0.5 rounded bg-gradient-to-r from-[#c8a0f0]/20 to-[#86d7ff]/20 text-[#c8a0f0] border border-[#c8a0f0]/30 text-[10px] font-medium capitalize">
+                    {selectedNode.nodeType.replace('_', ' / ')}
+                  </span>
                 </div>
               </div>
-            );
-          })}
-          {unlinkedThoughts.length === 0 && (
-            <div className="text-[11px] text-[#8d989f] text-center mt-10">收件箱已清空，所有思绪已归档。</div>
+
+              {/* Connected Nodes 列表 */}
+              <div className="flex-1 overflow-y-auto custom-scrollbar p-5">
+                <h4 className="text-[10px] font-semibold text-[#8d989f] uppercase tracking-wider mb-3">Connected Nodes</h4>
+                {selectedNode.connections.length > 0 ? (
+                  <div className="space-y-2">
+                    {selectedNode.connections.map(conn => (
+                      <div key={conn.id} className="group flex items-center gap-3 p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.05] hover:bg-white/[0.06] hover:border-white/10 transition-all">
+                        <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: getNodeColor(conn.nodeType) }}></div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[12px] text-white font-medium truncate">{conn.label}</div>
+                          <div className="text-[9px] text-[#6b7280] capitalize">{conn.type.replace('_', '-')}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-[#8d989f] text-center py-8 bg-white/[0.02] rounded-lg border border-dashed border-white/10">
+                    此节点暂无连接
+                  </div>
+                )}
+              </div>
+
+              {/* Recommendation Inspector Section */}
+              <div className="border-t border-white/[0.07] pt-6 pb-6">
+                <MindRecommendationInspector 
+                  userId={userId}
+                  nodeId={selectedNode.id}
+                  onToast={onToast}
+                  onRefreshGraph={refreshMindGraph}
+                />
+              </div>
+
+              {/* Bottom Actions */}
+              <div className="p-5 border-t border-white/[0.07] space-y-2">
+                <button className="w-full h-[36px] rounded-lg bg-white text-[#0b0f11] text-[12px] font-semibold hover:bg-gray-200 transition-colors flex items-center justify-center gap-2">
+                  <PenTool className="w-4 h-4" /> Open in Editor
+                </button>
+                <button onClick={() => setSelectedNodeId(null)} className="w-full h-[32px] rounded-lg bg-white/5 text-[#8d989f] text-[11px] font-medium hover:bg-white/10 transition-colors">
+                  Close Details
+                </button>
+              </div>
+            </div>
+          ) : (
+            /* AI 蒸馏面板 */
+            <div className="flex flex-col h-full p-5 overflow-y-auto custom-scrollbar">
+              <div className="text-[10px] font-semibold text-[#8d989f] uppercase tracking-wider flex items-center gap-1.5 mb-5 mt-1">
+                <Wand2 className="w-3.5 h-3.5" /> Neural Distillation
+              </div>
+
+              <h3 className="text-[16px] font-semibold text-white leading-tight mb-2.5">{activeThought!.content.slice(0, 60)}</h3>
+              <div className="flex gap-2 mb-6">
+                <span className="px-2 py-0.5 rounded bg-white/5 border border-white/[0.07] text-[10px] text-[#8d989f]">{activeThought!.sourceType}</span>
+              </div>
+
+              <div className="bg-[#c8a0f0]/[0.05] border border-[#c8a0f0]/20 rounded-[12px] p-4 mb-4">
+                <h4 className="text-[10px] font-bold text-[#c8a0f0] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <Bot className="w-3.5 h-3.5" /> 知识库映射分析
+                </h4>
+                <p className="text-[11px] text-[#e0e3e6] leading-relaxed mb-4">
+                  基于内容语义，此对象高度契合当前图谱。AI 推荐将其作为子节点挂载。
+                </p>
+                <button onClick={injectThought}
+                  className="w-full h-[32px] rounded-[8px] bg-gradient-to-r from-[#86d7ff]/20 to-[#c8a0f0]/20 border border-[#c8a0f0]/30 text-white text-[12px] font-medium hover:from-[#86d7ff]/30 hover:to-[#c8a0f0]/30 transition-all flex items-center justify-center gap-1.5 shadow-[0_0_15px_rgba(200,160,240,0.15)]">
+                  <Plus className="w-3.5 h-3.5" /> 接受并注入图谱 (Inject)
+                </button>
+              </div>
+
+              <div className="text-[11px] text-[#8d989f] leading-relaxed bg-[#151a1e] p-3 rounded-lg border border-white/5">
+                提示：您也可以点击此面板外的空白处取消选中，或在左侧列表选取其他思绪。注入后将自动生成对应的结构化文档草稿。
+              </div>
+            </div>
           )}
         </div>
-      </div>
-
-      {/* Center Pane: 交互式图谱 (Mind Canvas) */}
-      <div className="flex-1 flex flex-col min-w-0 bg-[#0b0f11] relative">
-        {/* Top View Switcher */}
-        <div className="h-[48px] border-b border-white/[0.07] px-4 flex items-center justify-between bg-[#0d1215] z-10 shrink-0">
-          <div className="flex items-center gap-3">
-            <Network className="w-4 h-4 text-[#86d7ff]" />
-            {/* 此处为Mock功能，等待后端接入 — Space列表应从 listCollections() 获取 */}
-            <div className="flex bg-black/20 p-0.5 rounded-lg border border-white/[0.07]">
-              {(['Atlax 架构设计', 'Q3 用户研究', '全局图谱'] as const).map(space => (
-                <button key={space} onClick={() => setActiveSpace(space)}
-                  className={`px-3 py-1.5 rounded-[6px] text-[11px] font-medium transition-all ${activeSpace === space ? 'bg-white/10 text-white shadow-sm' : 'text-[#8d989f] hover:text-white hover:bg-white/5'}`}>
-                  {space}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="flex items-center gap-4">
-            <span className="text-[10px] text-[#8d989f] flex items-center gap-1.5"><MousePointer2 className="w-3 h-3" /> 拖动节点可调整</span>
-            <span className="text-[10px] text-[#8d989f] flex items-center gap-1.5"><GitCommit className="w-3 h-3" /> 拖动右侧锚点连线</span>
-          </div>
-        </div>
-
-        {/* Canvas Area */}
-        <div ref={canvasRef} className="flex-1 relative overflow-hidden"
-          onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerLeave={handlePointerUp}
-          style={{ backgroundImage: 'radial-gradient(circle at 50% 50%, rgba(255,255,255,0.03) 1px, transparent 1px)', backgroundSize: '24px 24px' }}>
-          {/* SVG 连线层 */}
-          <svg className="absolute inset-0 w-full h-full pointer-events-none z-0">
-            {edges.map((edge, idx) => {
-              const src = nodes.find(n => n.id === edge.source);
-              const tgt = nodes.find(n => n.id === edge.target);
-              if (!src || !tgt) return null;
-              return <line key={idx} x1={src.x} y1={src.y} x2={tgt.x} y2={tgt.y} stroke="rgba(255,255,255,0.15)" strokeWidth="1.5" />;
-            })}
-            {drawLink && (
-              <line x1={nodes.find(n => n.id === drawLink.sourceId)?.x || drawLink.x} y1={nodes.find(n => n.id === drawLink.sourceId)?.y || drawLink.y}
-                x2={mousePos.x} y2={mousePos.y} stroke="#86d7ff" strokeWidth="2" strokeDasharray="4 4" />
-            )}
-          </svg>
-
-          {/* DOM 节点层 */}
-          {nodes.map(node => (
-            <div key={node.id} onPointerDown={(e) => startNodeDrag(e, node)} onPointerUp={(e) => dropLinkOnNode(e, node.id)}
-              className={`absolute flex items-center gap-2 px-3 py-1.5 rounded-full cursor-grab active:cursor-grabbing backdrop-blur-md border border-white/10 shadow-lg z-10 transition-shadow select-none ${node.type === 'core' ? 'bg-[#86d7ff]/10 border-[#86d7ff]/30 text-white shadow-[0_0_15px_rgba(134,215,255,0.1)]' : 'bg-[#1c2023]/80 text-[#e6eaed] hover:border-white/20'}`}
-              style={{ left: node.x, top: node.y, transform: 'translate(-50%, -50%)' }}>
-              {node.type === 'core' ? <Brain className="w-3.5 h-3.5 text-[#86d7ff]" /> : <FileText className="w-3 h-3 text-[#899298]" />}
-              <span className="text-[12px] font-medium whitespace-nowrap">{node.label}</span>
-              {/* 连线锚点 */}
-              <div onPointerDown={(e) => startDrawingLink(e, node.id)}
-                className="absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-[#1c2023] border border-white/20 flex items-center justify-center cursor-crosshair hover:bg-[#86d7ff] hover:border-[#86d7ff] transition-colors group/handle z-20">
-                <div className="w-1.5 h-1.5 rounded-full bg-[#86d7ff] group-hover/handle:bg-[#0b0f11]"></div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Right Pane: 蒸馏与 AI 推荐 (Distillation) */}
-      <div className="w-[300px] bg-[#0d1215] flex flex-col shrink-0 p-5 relative overflow-y-auto custom-scrollbar">
-        <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-[#86d7ff] to-[#c8a0f0]"></div>
-        <div className="text-[10px] font-semibold text-[#8d989f] uppercase tracking-wider flex items-center gap-1.5 mb-5 mt-1"><Wand2 className="w-3.5 h-3.5" /> Neural Distillation</div>
-
-        {activeThought ? (
-          <div className="animate-in fade-in slide-in-from-right-4 duration-300">
-            <h3 className="text-[16px] font-semibold text-white leading-tight mb-2.5">{activeThought.title}</h3>
-            <div className="flex gap-2 mb-6">
-              <span className="px-2 py-0.5 rounded bg-white/5 border border-white/[0.07] text-[10px] text-[#8d989f]">{activeThought.type}</span>
-              <span className="px-2 py-0.5 rounded bg-white/5 border border-white/[0.07] text-[10px] text-[#8d989f]">{activeThought.tag}</span>
-            </div>
-            {/* 此处为Mock功能，等待后端接入 — AI推荐应从 generateBasicCandidates()/IntelligenceSpine 获取 */}
-            <div className="bg-[#c8a0f0]/[0.05] border border-[#c8a0f0]/20 rounded-[12px] p-4 mb-4">
-              <h4 className="text-[10px] font-bold text-[#c8a0f0] uppercase tracking-wider mb-2 flex items-center gap-1.5"><Bot className="w-3.5 h-3.5" /> 知识库映射分析</h4>
-              <p className="text-[11px] text-[#e0e3e6] leading-relaxed mb-4">
-                基于内容语义，此对象高度契合当前图谱。AI 推荐将其作为子节点挂载。
-              </p>
-              <div className="bg-black/30 border border-white/5 rounded-[8px] p-3 mb-4">
-                <div className="text-[10px] text-[#8d989f] mb-1.5">推荐连线至 (Target Node):</div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[12px] text-white font-medium flex items-center gap-1.5"><Brain className="w-3 h-3 text-[#86d7ff]" /> 空间计算 UI 范式</span>
-                  <span className="text-[10px] text-[#9cf4d4] font-mono bg-[#9cf4d4]/10 px-1.5 py-0.5 rounded border border-[#9cf4d4]/20">94% Match</span>
-                </div>
-              </div>
-              <button onClick={injectThought}
-                className="w-full h-[32px] rounded-[8px] bg-gradient-to-r from-[#86d7ff]/20 to-[#c8a0f0]/20 border border-[#c8a0f0]/30 text-white text-[12px] font-medium hover:from-[#86d7ff]/30 hover:to-[#c8a0f0]/30 transition-all flex items-center justify-center gap-1.5 shadow-[0_0_15px_rgba(200,160,240,0.15)]">
-                <Plus className="w-3.5 h-3.5" /> 接受并注入图谱 (Inject)
-              </button>
-            </div>
-            <div className="text-[11px] text-[#8d989f] leading-relaxed bg-[#151a1e] p-3 rounded-lg border border-white/5">
-              提示：您也可以点击此面板外的空白处取消选中，或在左侧列表选取其他思绪。注入后将自动生成对应的结构化文档草稿。
-            </div>
-          </div>
-        ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-center opacity-50 px-2">
-            <div className="w-12 h-12 rounded-[12px] bg-white/[0.05] border border-white/[0.1] flex items-center justify-center mb-4">
-              <Network className="w-5 h-5 text-[#8d989f]" />
-            </div>
-            <p className="text-[13px] font-medium text-white mb-1.5">等待分析流</p>
-            <p className="text-[11px] text-[#8d989f] leading-relaxed">
-              请在左侧&ldquo;散落思绪池&rdquo;选择一个对象，引擎将自动为您寻找最佳连线位置。
-            </p>
-          </div>
-        )}
-      </div>
+      )}
     </div>
   );
 };
+
+
+
 
 // ==========================================
 // 停靠区子视图 (Dock Sub-views)
@@ -1615,10 +1687,29 @@ export default function WorkspacePage() {
   const [showOptionsDropdown, setShowOptionsDropdown] = useState(false);
   const [userId, setUserId] = useState('_legacy');
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [isNodeSelected, setIsNodeSelected] = useState(false);
 
   useEffect(() => {
-    const user = getCurrentUser()
-    if (user) setUserId(user.id)
+    // Reset selection state when switching tabs
+    setIsNodeSelected(false);
+  }, [activeTab]);
+
+  useEffect(() => {
+    let resolvedUser = getCurrentUser()
+
+    if (!resolvedUser) {
+      const existingUsers = listLocalUsers()
+      if (existingUsers.length > 0) {
+        resolvedUser = existingUsers[0]
+        localStorage.setItem('atlax_current_user', JSON.stringify(resolvedUser))
+      } else {
+        resolvedUser = registerUser('Atlax User')
+      }
+    }
+
+    if (resolvedUser) {
+      setUserId(resolvedUser.id)
+    }
   }, [])
 
   const showToast = useCallback((msg: string) => {
@@ -1844,7 +1935,7 @@ export default function WorkspacePage() {
           )}
           {activeTab === 'briefing' && <DailyBriefingView brief={dailyBriefHook.data} briefLoading={dailyBriefHook.loading} />}
           {activeTab === 'toolbox' && <ToolboxView />}
-          {activeTab === 'mind' && <MindView />}
+          {activeTab === 'mind' && <MindView userId={userId} onToast={showToast} onSelectionChange={setIsNodeSelected} />}
           {activeTab === 'dock' && <DockView setActiveTab={setActiveTab} />}
           {activeTab === 'editor' && <DraftEditorView userId={userId} showSourcePacket={showSourcePacket} showInspector={showInspector} onToggleSourcePacket={() => setShowSourcePacket(v => !v)} onToggleInspector={() => setShowInspector(v => !v)} onToast={showToast} />}
           {activeTab === 'review' && <ReviewView />}
@@ -1968,15 +2059,17 @@ export default function WorkspacePage() {
 
       {/* Toast 通知 */}
 
-      <QuickCapture
-        onSubmit={async (text: string) => {
-          const tip = await tipsHook.createTip(text, 'quick-capture')
-          if (tip) {
-            emit({ type: 'tip_created', tipId: tip.id })
-            showToast('Tip 已创建')
-          }
-        }}
-      />
+      {!isNodeSelected && (
+        <QuickCapture
+          onSubmit={async (text: string) => {
+            const tip = await tipsHook.createTip(text, 'quick-capture')
+            if (tip) {
+              emit({ type: 'tip_created', tipId: tip.id })
+              showToast('Tip 已创建')
+            }
+          }}
+        />
+      )}
 
       {toastMsg && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] animate-in fade-in slide-in-from-bottom-4 duration-300">

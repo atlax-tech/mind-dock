@@ -11,6 +11,12 @@ export type AppEvent =
   | { type: 'draft_created'; draftId: number }
   | { type: 'draft_updated'; draftId: number }
   | { type: 'draft_deleted'; draftId: number }
+  | { type: 'mind_node_created'; nodeId: string }
+  | { type: 'mind_node_updated'; nodeId: string }
+  | { type: 'mind_node_deleted'; nodeId: string }
+  | { type: 'mind_edge_created'; edgeId: string }
+  | { type: 'mind_edge_updated'; edgeId: string }
+  | { type: 'mind_edge_deleted'; edgeId: string }
 
 export type AppMode = 'classic' | 'chat'
 

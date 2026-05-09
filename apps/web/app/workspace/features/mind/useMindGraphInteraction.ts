@@ -33,23 +33,33 @@ export const DEFAULT_FILTER_STATE: MindFilterState = {
 export interface MindInteractionState {
   hoveredNodeId: string | null
   focusedNodeId: string | null
+  selectedNodeId: string | null
   filterState: MindFilterState
   filterOpen: boolean
   layoutPhase: 'idle' | 'forceatlas2' | 'noverlap' | 'done'
   layoutIterations: number
   layoutMaxIterations: number
   relayoutCounter: number
+  layoutMode: 'force' | 'radial' | 'orbit'
+  scope: 'global' | 'currentChain'
+  chainRootId: string | null
+  viewScope: 'focusMap' | 'clusterMap' | 'linkReview' | 'driftInbox' | 'timelineSnapshot'
 }
 
 export interface MindInteractionActions {
   setHoveredNode: (nodeId: string | null) => void
   setFocusedNode: (nodeId: string | null) => void
+  setSelectedNode: (nodeId: string | null) => void
   clearFocus: () => void
   toggleFilterPanel: () => void
   updateFilter: (patch: Partial<MindFilterState>) => void
   resetFilters: () => void
   setLayoutProgress: (phase: MindInteractionState['layoutPhase'], iterations: number, maxIterations: number) => void
   triggerRelayout: () => void
+  setLayoutMode: (mode: 'force' | 'radial' | 'orbit') => void
+  setScope: (scope: 'global' | 'currentChain') => void
+  setChainRoot: (nodeId: string | null) => void
+  setViewScope: (viewScope: MindInteractionState['viewScope']) => void
 }
 
 export function useMindGraphInteraction(): {
@@ -58,6 +68,7 @@ export function useMindGraphInteraction(): {
 } {
   const [hoveredNodeId, setHoveredNode] = useState<string | null>(null)
   const [focusedNodeId, setFocusedNode] = useState<string | null>(null)
+  const [selectedNodeId, setSelectedNode] = useState<string | null>(null)
   const [filterState, setFilterState] = useState<MindFilterState>(() => {
     const fs = { ...DEFAULT_FILTER_STATE }
     fs.nodeTypes = new Set(DEFAULT_FILTER_STATE.nodeTypes)
@@ -69,6 +80,10 @@ export function useMindGraphInteraction(): {
   const [layoutIterations, setLayoutIterations] = useState(0)
   const [layoutMaxIterations, setLayoutMaxIterations] = useState(0)
   const [relayoutCounter, setRelayoutCounter] = useState(0)
+  const [layoutMode, setLayoutMode] = useState<'force' | 'radial' | 'orbit'>('force')
+  const [scope, setScope] = useState<'global' | 'currentChain'>('global')
+  const [chainRootId, setChainRoot] = useState<string | null>(null)
+  const [viewScope, setViewScope] = useState<MindInteractionState['viewScope']>('focusMap')
 
   const clearFocus = useCallback(() => {
     setFocusedNode(null)
@@ -115,27 +130,41 @@ export function useMindGraphInteraction(): {
     setRelayoutCounter(c => c + 1)
   }, [])
 
+  const handleSetLayoutMode = useCallback((mode: 'force' | 'radial' | 'orbit') => {
+    setLayoutMode(mode)
+  }, [])
+
   const state: MindInteractionState = useMemo(() => ({
     hoveredNodeId,
     focusedNodeId,
+    selectedNodeId,
     filterState,
     filterOpen,
     layoutPhase,
     layoutIterations,
     layoutMaxIterations,
     relayoutCounter,
-  }), [hoveredNodeId, focusedNodeId, filterState, filterOpen, layoutPhase, layoutIterations, layoutMaxIterations, relayoutCounter])
+    layoutMode,
+    scope,
+    chainRootId,
+    viewScope,
+  }), [hoveredNodeId, focusedNodeId, selectedNodeId, filterState, filterOpen, layoutPhase, layoutIterations, layoutMaxIterations, relayoutCounter, layoutMode, scope, chainRootId, viewScope])
 
   const actions: MindInteractionActions = useMemo(() => ({
     setHoveredNode,
     setFocusedNode,
+    setSelectedNode,
     clearFocus,
     toggleFilterPanel,
     updateFilter,
     resetFilters,
     setLayoutProgress,
     triggerRelayout,
-  }), [clearFocus, toggleFilterPanel, updateFilter, resetFilters, setLayoutProgress, triggerRelayout])
+    setLayoutMode: handleSetLayoutMode,
+    setScope,
+    setChainRoot,
+    setViewScope,
+  }), [clearFocus, toggleFilterPanel, updateFilter, resetFilters, setLayoutProgress, triggerRelayout, handleSetLayoutMode])
 
   return { state, actions }
 }

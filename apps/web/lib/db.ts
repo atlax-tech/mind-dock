@@ -298,7 +298,7 @@ export interface PersistedRecentDocument extends RecentDocumentRecord {
 }
 
 export type TipSourceType = 'text' | 'manual' | 'quick-capture'
-export type TipStatus = 'active' | 'converted' | 'discarded'
+export type TipStatus = 'active' | 'converted' | 'discarded' | 'linked'
 
 export interface TipRecord {
   id?: number

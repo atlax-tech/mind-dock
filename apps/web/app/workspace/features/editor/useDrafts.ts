@@ -11,6 +11,7 @@ import {
   type StoredDraft,
 } from '@/lib/repository'
 import { emit } from '@/lib/events'
+import { makeMindNodeId } from '@atlax/domain'
 
 export function useDrafts(userId: string) {
   const [drafts, setDrafts] = useState<StoredDraft[]>([])
@@ -60,6 +61,8 @@ export function useDrafts(userId: string) {
       setDrafts((prev) => prev.filter((d) => d.id !== draftId))
       emit({ type: 'draft_updated', draftId })
       emit({ type: 'archive_completed', dockItemId: 0, sourceType: 'text' })
+      const nodeId = makeMindNodeId(userId, 'document', result.draft.title || 'Untitled')
+      emit({ type: 'mind_node_created', nodeId })
     }
     return {
       draft: result.draft,

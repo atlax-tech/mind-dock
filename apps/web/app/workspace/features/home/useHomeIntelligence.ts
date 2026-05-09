@@ -15,7 +15,7 @@ import {
 } from '@/lib/repository'
 import { subscribe } from '@/lib/events'
 
-const REFRESH_EVENTS = ['tip_created', 'tip_converted', 'tip_discarded', 'draft_created', 'draft_updated', 'draft_deleted', 'archive_completed'] as const
+const REFRESH_EVENTS = ['tip_created', 'tip_converted', 'tip_discarded', 'draft_created', 'draft_updated', 'draft_deleted', 'archive_completed', 'mind_node_created', 'mind_node_updated', 'mind_node_deleted', 'mind_edge_created', 'mind_edge_updated', 'mind_edge_deleted'] as const
 
 export interface HomeIntelligenceData {
   activeDraftCount: number

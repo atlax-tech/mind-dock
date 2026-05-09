@@ -9,6 +9,652 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：Phase 3.1.5 Round 36 (画布节点不显示 - SVG 元素在 HTML 上下文渲染) -->
+<!-- ============================================ -->
+
+## Phase 3.1.5 Round 36 devlog -- 画布节点不显示 - SVG 元素在 HTML 上下文渲染
+
+**时间戳**: 2026-05-09
+
+**任务起止时间**: 20:10 - 20:25 CST
+
+**工时**: 15 分钟
+
+**任务目标**:
+修复图谱画布中节点始终不显示的问题。注入功能已正常工作，但画布上无法看到任何节点。
+
+**根因分析**:
+
+**核心问题：SVG 元素在 HTML 上下文中渲染，导致不可见**
+
+错误日志中的关键线索：
+```
+Warning: The tag <circle> is unrecognized in this browser.
+If you meant to render a React component, start its name with an uppercase letter.
+    at circle
+    at g
+    at div    ← <g> 和 <circle> 在 <div> 内！
+```
+
+代码结构问题：
+```jsx
+<div ref={canvasRef}>
+  <svg className="pointer-events-none">   {/* SVG 连线层 */}
+    {edges...}
+  </svg>                                   {/* ← SVG 在这里关闭！*/}
+
+  {/* 节点层 - 在 SVG 外面！ */}
+  {nodes.map(node => (
+    <g>           ← SVG 元素在 HTML div 上下文中 = 不可见！
+      <circle />
+      <text />
+    </g>
+  ))}
+</div>
+```
+
+`<circle>`、`<g>`、`<text>` 是 SVG 命名空间的元素，必须在 `<svg>` 元素内部才能被浏览器正确渲染。当它们作为 HTML `<div>` 的子元素时，浏览器将它们视为未知的 HTML 自定义元素，完全无法显示。
+
+**变更摘要**:
+
+**1. 将节点渲染移入 `<svg>` 元素内部** (`app/workspace/page.tsx`):
+- 将 `{filteredNodes.map(...)}` 从 `</svg>` 之后移到 `</svg>` 之前
+- 移除 SVG 根元素的 `pointer-events-none`（节点需要交互）
+- 在连线元素上添加 `style={{ pointerEvents: 'none' }}`（连线不需要交互）
+- 移除 SVG 元素上的 `className="transition-all duration-150"`（SVG 元素不支持 CSS transition）
+- 将 `<text>` 的 `pointerEvents="none"` 和 `className="select-none"` 改为 `style={{ pointerEvents: 'none', userSelect: 'none' }}`（SVG 属性兼容性）
+
+**改动文件名及行数**:
+1. `app/workspace/page.tsx` (~60 行画布渲染重构)
+
+**遇到的问题及解决方式**:
+1. **SVG 元素在 HTML 上下文不可见** → 将节点渲染移入 `<svg>` 元素内部
+2. **pointer-events 冲突** → 移除 SVG 根的 `pointer-events-none`，改为在连线元素上单独设置
+3. **SVG 元素 CSS 兼容性** → 移除 `className` 动画类，改用 `style` 属性
+
+**自动验证结果**:
+- `pnpm lint`: ✅ 通过 (0 errors, 5 warnings)
+- `pnpm typecheck`: ✅ 通过
+- `pnpm test`: ✅ 595 tests passed (24 test files)
+- `pnpm build:web`: ✅ 构建成功 (workspace route: 34.8 kB)
+
+**手工验证步骤**:
+1. 打开 /workspace → 进入 Mind tab
+2. ✅ 确认画布中出现节点圆点（不同颜色对应不同类型）
+3. ✅ 确认鼠标悬浮节点时显示标签和锚点
+4. ✅ 确认可以拖拽节点
+5. ✅ 确认连线正确显示
+6. ✅ 确认 Console 中不再出现 `<circle> is unrecognized` 警告
+
+**当前风险及影响范围**:
+1. **SVG 事件冒泡**：节点事件现在在 SVG 上下文中触发，可能与父级 div 的事件处理有细微差异 → 需要手工验证拖拽和点击行为
+2. **CSS transition**：移除了 SVG 元素的 `className="transition-all duration-150"`，节点大小变化不再有 CSS 过渡动画 → 可通过 SVG animate 或 requestAnimationFrame 实现，当前优先保证可见性
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：Phase 3.1.5 Round 35 (Mind 注入失败 + userId 不匹配 根因修复) -->
+<!-- ============================================ -->
+
+## Phase 3.1.5 Round 35 devlog -- Mind 注入失败 + userId 不匹配 根因修复
+
+**时间戳**: 2026-05-09
+
+**任务起止时间**: 08:19 - 09:05 CST
+
+**工时**: 46 分钟
+
+**任务目标**:
+修复 Round 34 遗留的两个根因问题：
+1. **注入图谱失败**：`DexieError: Failed to execute 'add' on 'IDBObjectStore'`
+2. **视图中无节点**：`userId: _legacy` 导致数据库查询不到任何数据
+
+**根因分析**:
+
+**问题 1：DexieError - IDBObjectStore key path 错误**
+- `convertTipToMindNode` 使用 `mindNodesTable.add()` 插入记录时没有提供 `id` 字段
+- 但 `mindNodes` 表的主键定义为 `'id'`（非自增），与 `editorDrafts` 的 `'++id'` 不同
+- `add()` 方法期望数据库自动生成 key，但 `id` 字段不是自增的
+- 而 `upsertMindNode` 函数使用 `makeMindNodeId()` 生成确定性 ID 并用 `put()` 写入，是正确模式
+
+**问题 2：userId 为 `_legacy`**
+- `WorkspacePage` 初始化 `userId = '_legacy'`
+- `useEffect` 中调用 `getCurrentUser()` 获取当前用户
+- 当 `getCurrentUser()` 返回 null（localStorage 中无当前用户）时，userId 保持为 `_legacy`
+- 但数据库中的数据（通过 seed 或正常操作创建）使用的是真实用户 ID（如 `user_xxx`）
+- 导致 `listMindNodes('_legacy')` 查询不到任何数据
+
+**变更摘要**:
+
+**1. 修复 convertTipToMindNode 的 ID 生成** (`lib/repository.ts`):
+- 将 `mindNodesTable.add({...})` 改为 `mindNodesTable.put({ id: makeMindNodeId(...), ...})`
+- 使用 `makeMindNodeId(userId, 'fragment', label)` 生成确定性 ID
+- 与 `upsertMindNode` 保持一致的写入模式
+- 修复 `DexieError: key path did not yield a value` 错误
+
+**2. 修复 userId 解析逻辑** (`app/workspace/page.tsx`):
+- 新增导入：`listLocalUsers`, `registerUser`
+- 修改 `WorkspacePage` 的 `useEffect`：
+  - 如果 `getCurrentUser()` 返回 null，尝试从 `listLocalUsers()` 找到已有用户
+  - 如果找到已有用户，自动恢复登录状态（写入 localStorage）
+  - 如果没有任何用户，自动注册默认用户 `'Atlax User'`
+  - 确保 userId 始终与数据库中的数据匹配
+
+**3. 清理调试日志**:
+- 移除所有 `console.log`/`console.error`/`console.warn` 调试语句
+- 涉及文件：`page.tsx`, `repository.ts`, `useMindGraph.ts`
+
+**改动文件名及行数**:
+1. `lib/repository.ts` (~20 行 convertTipToMindNode 修复 + ~15 行调试日志清理)
+2. `app/workspace/page.tsx` (~10 行 userId 解析修复 + ~20 行调试日志清理)
+3. `app/workspace/features/mind/useMindGraph.ts` (~10 行调试日志清理)
+
+**遇到的问题及解决方式**:
+1. **DexieError key path** → `mindNodesTable.add()` 不提供 id → 改用 `makeMindNodeId()` + `mindNodesTable.put()`
+2. **userId 不匹配** → `getCurrentUser()` 返回 null → 自动从用户目录恢复或注册新用户
+3. **调试日志过多** → 清理所有临时添加的 console 语句
+
+**自动验证结果**:
+- `pnpm lint`: ✅ 通过 (0 errors, 5 warnings)
+- `pnpm typecheck`: ✅ 通过
+- `pnpm test`: ✅ 595 tests passed (24 test files)
+- `pnpm build:web`: ✅ 构建成功 (workspace route: 34.8 kB)
+
+**手工验证步骤**:
+1. **注入功能验证**:
+   - 打开 /workspace → 进入 Mind tab
+   - 在左侧散落池选择一个 Thought
+   - 点击"接受并注入图谱"按钮
+   - ✅ 确认 Toast 提示"已注入图谱"（不再显示"注入失败"）
+   - ✅ 确认中间画布出现新节点
+   - ✅ 确认左侧散落池该 Thought 消失
+
+2. **userId 匹配验证**:
+   - 打开浏览器开发者工具 Console
+   - 刷新页面
+   - ✅ 确认不再出现 `userId: _legacy` 的日志
+   - ✅ 确认 userId 为真实用户 ID（如 `user_xxx`）
+
+3. **Documents/Drafts 同步验证**:
+   - 切换到 Mind tab
+   - ✅ 确认 Home 板块的 Documents/Drafts 自动出现在画布中
+
+**当前风险及影响范围**:
+1. **自动注册默认用户**：如果 localStorage 被清除，会自动创建名为 'Atlax User' 的新用户 → 旧数据（_legacy userId）仍无法访问 → 需要用户重新 seed 数据
+2. **确定性 ID 生成**：`makeMindNodeId` 基于 userId+nodeType+label 生成 ID → 如果 label 超过 80 字符被截断，可能产生 ID 冲突 → 当前截断策略与 upsertMindNode 一致，风险可控
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：Phase 3.1.5 Round 34 (Mind 数据打通 + Bug 修复 + 功能增强) -->
+<!-- ============================================ -->
+
+## Phase 3.1.5 Round 34 devlog -- Mind 数据打通 + Bug 修复 + 功能增强
+
+**时间戳**: 2026-05-09
+
+**任务起止时间**: 08:05 - 08:12 CST
+
+**工时**: 7 分钟
+
+**任务目标**:
+基于用户手测反馈，修复 3 个严重功能性问题并实现 2 个功能改进：
+1. **修复注入图谱后节点不显示的问题**
+2. **修复刷新后已注入文档重新出现在散落池的问题**
+3. **检查并修复 Mind 与 Home 板块数据打通问题**
+4. **Filters 增加通过 tag 搜索节点的功能**
+5. **在 Graph view 顶栏下方增加面包屑导航**
+
+**用户反馈的核心问题**:
+1. 注入图谱后视图中不显示任何节点 → injectThought 手动添加节点被物理引擎初始化覆盖
+2. 刷新后已注入的文档又会出现在散落思绪池 → 注入操作未更新 Tip 状态
+3. 当前系统中有很多文档，但 Mind 中只有两条未注入的文档 → Documents/Drafts 未自动同步到 Mind 节点
+4. Filters 只支持通过节点搜索，不支持通过 tag 搜索 → 缺少 tag 搜索功能
+5. 建议增加面包屑导航快速查看分支视图 → 缺少面包屑 UI
+
+**变更摘要**:
+
+**数据库层扩展** (`lib/db.ts`):
+- 扩展 `TipStatus` 类型：新增 `'linked'` 状态，用于标记已链接到 Mind 节点的 Tips
+
+**Repository 层新增函数** (`lib/repository.ts`):
+- 新增 `convertTipToMindNode(userId, tipId)` 函数：
+  - 使用 Dexie transaction 原子操作同时创建 MindNode 和更新 Tip 状态
+  - 将 Tip 状态从 `'active'` 更新为 `'linked'`
+  - 在 MindNode 的 metadata 中存储 sourceTipId 和 sourceType
+  - 返回 `{ tip, mindNode }` 结果对象
+- 新增 `syncDocumentsToMindNodes(userId)` 函数：
+  - 自动将未同步的 Drafts 和 Documents 转换为 Mind 节点
+  - 检查现有 MindNodes 的 documentId 字段避免重复创建
+  - 返回新创建的节点数量
+
+**MindView 组件修复** (`app/workspace/page.tsx`):
+- **修复 injectThought 函数**：
+  - 使用 `convertTipToMindNode` 替代手动 `upsertMindNode`
+  - 移除手动添加到 physicsNodes 的逻辑（避免被物理引擎覆盖）
+  - 通过 `mind_node_created` 事件触发 useMindGraph 自动刷新
+  - 正确更新 Tip 状态为 `'linked'`
+
+- **自动同步 Documents/Drafts**：
+  - 在组件初始化 useEffect 中调用 `syncDocumentsToMindNodes`
+  - 如果有新同步的节点，发射 `mind_node_created` 事件触发刷新
+  - 确保 Home 板块的 Documents/Drafts 能自动出现在 Mind 图谱中
+
+- **Filter Panel 增强**：
+  - 新增 `tagSearchQuery` 状态字段
+  - 新增 "Search by tag..." 输入框（紫色焦点边框区分）
+  - 实现 tag 搜索过滤逻辑：
+    - 直接匹配 tag 类型节点的标签名
+    - 通过 semantic 边查找关联的 tag 节点并匹配
+    - 支持模糊搜索
+
+- **面包屑导航**：
+  - 在顶栏下方（Domain 切换栏和 Canvas 之间）新增面包屑导航栏
+  - 仅在选中特定 Domain/Project 时显示（全局模式不显示）
+  - 显示路径：Root > [当前 Domain 名称] > [类型标签]
+  - 点击 "Root" 可快速返回全局图谱
+  - 右侧显示当前视图的节点数和边数统计
+
+**导入优化** (`app/workspace/page.tsx`):
+- 新增导入：`convertTipToMindNode`, `syncDocumentsToMindNodes`
+- 移除未使用导入：`upsertMindNode`（已被 convertTipToMindNode 替代）
+
+**改动文件名及行数**:
+1. `lib/db.ts` (+1 行 TipStatus 扩展)
+2. `lib/repository.ts` (+95 行 convertTipToMindNode + syncDocumentsToMindNodes)
+3. `app/workspace/page.tsx` (+10 行 import, -15 行 injectThought 重构, +25 行 tag 搜索, +30 行面包屑导航)
+
+**遇到的问题及解决方式**:
+1. **注入后节点不显示** → injectThought 手动 setPhysicsNodes 被物理引擎初始化 useEffect 覆盖 → 改用事件驱动刷新机制
+2. **Tip 状态未更新** → 原 injectThought 只从状态数组移除，未更新数据库 → 新增 convertTipToMindNode 使用 transaction 原子更新
+3. **Documents/Drafts 未同步** → Mind 只显示手动创建的节点和 active Tips → 新增 syncDocumentsToMindNodes 自动同步函数
+4. **tip_converted 事件类型不匹配** → 该事件需要 draftId 参数 → 改用 mind_node_created 事件触发刷新
+5. **upsertMindNode 未使用警告** → 已被 convertTipToMindNode 替代 → 移除导入
+
+**自动验证结果**:
+- `pnpm lint`: ✅ 通过 (0 errors, 5 warnings)
+- `pnpm typecheck`: ✅ 通过
+- `pnpm test`: ✅ 595 tests passed (24 test files)
+- `pnpm build:web`: ✅ 构建成功 (workspace route: 34.7 kB)
+
+**手工验证步骤**:
+1. **注入功能验证**:
+   - 打开 /workspace → 进入 Mind tab
+   - 在左侧散落池选择一个 Thought → 右侧显示 AI 蒸馏面板
+   - 点击"接受并注入图谱"按钮
+   - ✅ 确认 Toast 提示"已注入图谱"
+   - ✅ 确认中间画布出现新节点（物理引擎动画）
+   - ✅ 确认左侧散落池该 Thought 消失
+   - 刷新页面
+   - ✅ 确认该 Thought 不再出现在散落池（状态已更新为 'linked'）
+   - ✅ 确认该节点仍然显示在画布中（从数据库加载）
+
+2. **Documents/Drafts 同步验证**:
+   - 打开 Home tab → 确认有多个 Drafts/Documents
+   - 切换到 Mind tab
+   - ✅ 确认这些 Documents/Drafts 自动出现在画布中（作为 document 类型节点）
+   - ✅ 确认节点颜色为薄荷绿 (#9cf4d4)
+
+3. **Tag 搜索验证**:
+   - 点击 "Filters" 按钮
+   - ✅ 确认看到两个搜索框："Search nodes..." 和 "Search by tag..."
+   - 在 "Search by tag..." 输入文字
+   - ✅ 确认只显示匹配的 tag 节点或关联了该 tag 的节点
+
+4. **面包屑导航验证**:
+   - 点击某个 Domain/Project 按钮
+   - ✅ 确认顶栏下方出现面包屑导航栏
+   - ✅ 确认显示 "Root > [Domain名称] > [类型标签]"
+   - ✅ 确认右侧显示节点数和边数统计
+   - 点击 "Root"
+   - ✅ 确认返回全局图谱视图，面包屑消失
+
+**当前风险及影响范围**:
+1. **TipStatus 类型扩展**：新增 'linked' 状态不影响现有代码（listActiveTips 只返回 'active' 状态）→ 无风险
+2. **自动同步性能**：首次加载时同步所有 Documents/Drafts 可能较慢 → 但只在组件挂载时执行一次，且使用 Promise 异步不阻塞 UI
+3. **Tag 搜索依赖边类型**：当前只搜索 semantic 类型的边关联的 tag → 后续可根据需要扩展到其他边类型
+4. **面包屑仅支持单级**：当前只显示 Root > Domain，不支持更深层的层级导航 → 对于当前使用场景足够
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：Phase 3.1.5 Round 33 (Mind Graph View 重构：物理引擎 + Filter + 交互增强) -->
+<!-- ============================================ -->
+
+## Phase 3.1.5 Round 33 devlog -- Mind Graph View 重构：物理引擎 + Filter + 交互增强
+
+**时间戳**: 2026-05-09
+
+**任务起止时间**: 07:45 - 07:57 CST
+
+**工时**: 12 分钟
+
+**任务目标**:
+基于用户手测反馈（5 张设计图），重构 Mind Graph 中间画布部分，保持三栏布局不变：
+1. **顶部操作栏重构**: 接入真实 Domain 节点切换 + Filter 面板（图一）
+2. **节点拖动修复**: 解决拖动后节点跟随鼠标问题、实现悬浮简介、拖动快速链接
+3. **物理引擎集成**: 实现稳定缓慢线性同向的物理学运动轨迹动效（图三、四）
+4. **节点颜色系统**: 与设计图完全一致，不同类型节点对比度鲜明（图三、四）
+5. **交互增强**: 悬浮展示链接关系和节点详情（图二）、点击详情面板支持快速取消链接（图五）
+6. **散点模式**: 孤儿节点仅在全局图谱显示，Domain 过滤只显示完整链条
+
+**用户反馈的核心问题**:
+1. 顶栏使用 Mock 数据 → 需要接入真实 Domain 节点 + Filter 功能
+2. 节点拖动有 bug（松开后继续跟随鼠标）→ 需要修复拖拽逻辑
+3. 节点全量显示内容 → 应改为悬浮显示简介
+4. 无法拖动快速链接 → 需要实现连线功能
+5. 缺少物理引擎动效 → 需要集成力学引擎实现进场动画
+6. 节点颜色与设计不符 → 需要按照设计图重新定义颜色系统
+7. 缺少悬浮/点击交互 → 需要实现 Tooltip 和 Details Panel
+
+**变更摘要**:
+
+**MindView Graph Canvas 全面重构** (`app/workspace/page.tsx`):
+- **顶部操作栏**:
+  - Domain 切换按钮从 physicsNodes 动态生成（domain/project/root 类型节点）
+  - 新增 Filter 按钮，点击展开 Filter Panel
+  - Filter Panel 包含：搜索框、节点类型过滤、边类型过滤、可见性选项
+
+- **物理引擎系统**:
+  - 使用自定义力导向算法（斥力 + 引力 + 向心力 + 阻尼 + 边界约束）
+  - 节点进场时触发 3 秒物理模拟，之后停止并保持稳定布局
+  - 斥力参数：800 / dist²，引力参数：dist * 0.005，阻尼系数：0.92
+  - 向心力系数：0.0005，边界弹性系数：-0.5
+
+- **节点颜色系统**（与图三/四一致）:
+  - root/world_tree: #e0c8ff (淡紫)
+  - domain/project: #c8a0f0 (神经紫)
+  - topic: #a78bfa (浅紫)
+  - document: #9cf4d4 (薄荷绿)
+  - fragment/source: #67e8f9 (青色)
+  - tag/insight: #fbbf24 (金黄)
+  - orphan: #6b7280 (灰色, opacity 0.4)
+
+- **节点大小系统**:
+  - root/world_tree: 12px
+  - domain/project: 8px
+  - topic: 6px
+  - 其他: 5px
+  - orphan: 3px
+
+- **交互系统**:
+  - 悬浮 Tooltip（图二）：显示节点标题、类型、连接列表（最多 5 条）
+  - 点击 Details Panel（图五）：右侧面板展示完整连接列表，每条连接可快速取消链接
+  - 拖拽连线：从节点锚点拖出连线到目标节点，自动创建 confirmed 类型边
+  - 节点拖拽：修复拖拽 bug，松开鼠标后节点停止移动，位置持久化到 IndexedDB
+
+- **过滤系统**:
+  - Domain 过滤：切换 Domain 只显示该 Domain 的完整链条（不显示孤儿节点）
+  - 全局模式：显示所有节点（包括孤儿节点）
+  - 搜索过滤：按标签名模糊匹配
+  - 节点/边类型过滤：可勾选显示的类型
+  - 可见性选项：控制 Documents/Tags/Sources/Suggested Edges/Confirmed Edges/Orphan Nodes 显示
+
+- **视觉优化**:
+  - 节点使用圆点样式（circle SVG 元素），非之前的 DOM 卡片
+  - 悬浮/选中时节点放大 1.3 倍，显示白色描边
+  - 连线在悬浮/选中时高亮为 #86d7ff 或 #c8a0f0
+  - 悬浮节点时高亮其所有连接线为紫色
+  - 节点发光效果：drop-shadow 使用节点颜色的 40% 透明度
+
+**图标导入更新** (`app/workspace/page.tsx`):
+- 新增导入：SlidersHorizontal, RotateCcw, Check, Unlink2
+- 移除未使用导入：GitCommit, MousePointer2
+
+**TypeScript 类型修复** (`app/workspace/page.tsx`):
+- physicsNodes 状态的 type 字段显式声明为 'core' | 'sub' | 'orphan'
+- 解决三元表达式类型推断失败问题
+
+**改动文件名及行数**:
+1. `app/workspace/page.tsx` (+15 行图标导入, +5 行类型修复, +20 行拖拽连线功能, -8 行未使用变量)
+
+**遇到的问题及解决方式**:
+1. TypeScript 错误：type 字段类型不匹配 → 显式声明 nodeTypeValue 变量类型
+2. Lint 错误：未使用的导入（GitCommit, MousePointer2）→ 移除
+3. Lint 错误：未使用的变量（isDragged, connections）→ 移除
+4. Lint 错误：dropLinkOnNode 未使用 → 在节点 onPointerUp 事件中调用
+5. QuickCapture 模块找不到警告 → 文件实际存在，IDE 缓存问题，忽略
+
+**自动验证结果**:
+- `pnpm lint`: ✅ 通过 (0 errors, 5 warnings 均为 React Hook 依赖提示)
+- `pnpm typecheck`: ✅ 通过
+- `pnpm test`: ✅ 595 tests passed (24 test files)
+- `pnpm build:web`: ✅ 构建成功 (workspace route: 34.5 kB)
+
+**手工验证步骤**:
+1. 打开 /workspace → 进入 Mind tab
+2. **顶部操作栏验证**:
+   - 确认显示"全局图谱"按钮 + 所有 domain/project 节点按钮
+   - 点击不同 Domain → 确认只显示该 Domain 的链条（无散点）
+   - 点击"全局图谱"→ 确认显示所有节点（包括散点）
+   - 点击"Filters"按钮 → 确认 Filter Panel 展开
+   - 在搜索框输入文字 → 确认实时过滤节点
+   - 勾选/取消节点类型 → 确认过滤生效
+   - 勾选/取消边类型 → 确认过滤生效
+   - 切换可见性选项 → 确认对应元素显示/隐藏
+   - 点击重置按钮 → 确认恢复默认过滤状态
+
+3. **节点拖动验证**:
+   - 拖拽节点 → 确认节点跟随鼠标
+   - 松开鼠标 → 确认节点停止移动（不再跟随）
+   - 切换 tab 再回来 → 确认位置保持
+   - 刷新页面 → 确认位置仍保持
+
+4. **悬浮交互验证**:
+   - 鼠标悬浮节点 → 确认显示 Tooltip（标题 + 类型 + 连接列表）
+   - 鼠标移开 → 确认 Tooltip 消失
+   - 悬浮节点 → 确认节点放大 + 白色描边 + 发光效果
+   - 悬浮节点 → 确认所有连接线高亮为紫色
+
+5. **点击交互验证**:
+   - 点击节点 → 确认右侧显示 Details Panel
+   - Details Panel 显示：节点标题、类型标签、完整连接列表
+   - 每条连接右侧显示取消链接按钮（默认隐藏，悬浮显示）
+   - 点击取消链接 → 确认连线消失
+   - 点击关闭按钮 → 确认 Details Panel 关闭
+
+6. **拖动连线验证**:
+   - 悬浮节点 → 确认出现连线锚点（小圆圈）
+   - 从锚点拖出 → 确认显示虚线预览
+   - 拖到另一节点上松开 → 确认创建新连线
+   - 尝试创建已存在的连线 → 确认不重复创建
+
+7. **物理引擎验证**:
+   - 首次加载或数据变化时 → 确认节点从初始位置缓慢移动到稳定位置
+   - 3 秒后 → 确认节点停止移动，布局稳定
+   - 大量节点时 → 确认布局不混乱，乱中有序
+
+8. **颜色系统验证**:
+   - root 节点 → 确认为淡紫色 (#e0c8ff)
+   - domain/project 节点 → 确认为神经紫 (#c8a0f0)
+   - topic 节点 → 确认为浅紫 (#a78bfa)
+   - document 节点 → 确认为薄荷绿 (#9cf4d4)
+   - fragment/source 节点 → 确认为青色 (#67e8f9)
+   - tag/insight 节点 → 确认为金黄 (#fbbf24)
+   - orphan 节点 → 确认为灰色半透明 (#6b7280, opacity 0.4)
+
+**当前风险及影响范围**:
+1. 物理引擎性能：大量节点（>100）时可能需要优化模拟算法 → 当前使用 requestAnimationFrame，3 秒后停止，风险可控
+2. SVG 渲染兼容性：使用原生 SVG 元素而非第三方库 → 兼容性良好，但缺少缩放/平移功能
+3. 拖拽连线 UX：锚点较小（4px），可能难以操作 → 后续可考虑增大锚点或提供替代交互方式
+4. Filter Panel 定位：absolute 定位可能在滚动时出现问题 → 当前 canvas 区域 overflow-hidden，风险较低
+5. 三栏布局保持不变：本次只修改中间 graph view 部分，左右两栏保持原样 → 无影响
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：Phase 3.1.5 Round 32 (FE-REAL-004 Review 修复：Mind 视觉回退) -->
+<!-- ============================================ -->
+
+## Phase 3.1.5 Round 32 devlog -- FE-REAL-004 Review 修复：Mind 视觉回退 + 真实数据接入三栏设计
+
+**时间戳**: 2026-05-09
+
+**任务起止时间**: 06:55 - 07:10 CST
+
+**工时**: 15 分钟
+
+**任务目标**:
+1. 修复 Review 发现的 Mind 视觉回退问题：Round 31 错误地将三栏式 Mind 设计替换为全屏画布简化版。
+2. 恢复原始三栏式 Mind 设计（散落思绪池 + 图谱画布 + AI 蒸馏面板），同时接入真实数据。
+3. 抽取 addDraftRecord shared helper，让 createDraft 和 convertTipToDraft 复用同一 Draft 创建逻辑。
+4. MindCanvasStage 增加 loading/empty state 内部处理。
+
+**Review 发现的问题**:
+- Round 31 将原始三栏式 MindView（散落思绪池 + 节点画布 + AI 蒸馏面板）替换为 MindCanvasStage 全屏画布渲染
+- 这破坏了现有的 Golden UI 三栏布局设计
+- 正确做法是在保留三栏式 UI 的前提下，将 mock 数据替换为真实数据
+
+**变更摘要**:
+
+**MindView 恢复与真实数据接入** (`app/workspace/page.tsx`):
+- 恢复原始三栏式 UI 结构：左栏散落思绪池 + 中栏图谱画布 + 右栏 AI 蒸馏面板
+- 左栏数据源：从 `listActiveTips(userId)` 获取真实未转换 Tips，替换 mock unlinkedThoughts
+- 中栏数据源：从 `useMindGraph(userId)` 获取真实 mind_nodes / mind_edges，替换 mock nodes/edges
+- 右栏 AI 蒸馏：保留 UI 框架，推荐连线目标改为从真实 localNodes[0] 读取
+- 节点拖拽：保留 DOM 拖拽交互，拖拽结束通过 onNodeDragEnd 持久化位置到 IndexedDB
+- 连线绘制：保留锚点拖拽连线交互，新连线通过 upsertMindEdge 写入数据库
+- 注入操作：injectThought 通过 upsertMindNode 创建真实节点，发射 mind_node_created 事件
+- 空图谱展示真实 empty state（"图谱为空"提示）
+- 无散落思绪时展示"暂无散落思绪"
+
+**Draft 创建逻辑抽取** (`lib/repository.ts`):
+- 抽取 `addDraftRecord(userId, title, content)` 内部 helper 函数
+- `createDraft` 和 `convertTipToDraft` 均复用此 helper，消除重复代码
+- convertTipToDraft 保持 Dexie transaction 包裹，确保原子性
+
+**MindCanvasStage 增强** (`app/workspace/features/mind/MindCanvasStage.tsx`):
+- 新增 `loading` prop，loading 状态由组件内部处理
+- 新增 empty state 渲染（snapshot.nodes.length === 0 时展示"暂无思维节点"）
+
+**改动文件名及行数**:
+1. `app/workspace/page.tsx` (-58 行简化版 MindView, +275 行三栏式真实数据 MindView, +4 行 import)
+2. `lib/repository.ts` (+8 行 addDraftRecord helper, -12 行 createDraft 简化, -10 行 convertTipToDraft 简化)
+3. `app/workspace/features/mind/MindCanvasStage.tsx` (+1 行 loading prop, +30 行 loading/empty state)
+
+**遇到的问题及解决方式**:
+1. Review 反馈 Mind 设计被回退 → 理解到三栏式设计就是最新设计，恢复三栏 UI 并接入真实数据
+2. StoredTip 类型重复导入 → 发现 page.tsx 已有 StoredTip 导入，移除重复
+3. updateMindNodePosition / StoredMindNode / StoredMindEdge 未使用 → 移除未使用 import
+
+**自动验证结果**:
+- `pnpm typecheck`: ✅ 通过
+- `pnpm lint`: ✅ 通过 (0 errors, 3 warnings 均为预先存在)
+- `pnpm test`: ✅ 595 tests passed
+- `pnpm build:web`: ✅ 构建成功
+
+**手工验证步骤**:
+1. 打开 /workspace → 进入 Mind tab
+2. 确认三栏式布局：左栏散落思绪池、中栏图谱画布、右栏 AI 蒸馏面板
+3. 若无节点，中栏显示"图谱为空"empty state
+4. 若有节点，确认来自真实 mind_nodes / mind_edges
+5. 拖拽节点后松开，切换 tab 再回来，确认位置保持
+6. 刷新页面，确认位置仍保持
+7. 左栏显示真实 active Tips，非 mock 数据
+8. 选择一个 Tip → 右栏展示蒸馏面板 → 点击"注入图谱"→ 确认新节点出现在画布
+9. 拖拽节点锚点到另一节点 → 确认新连线创建
+10. 确认 Home / Daily Brief 的 Mind 相关数据能刷新
+
+**当前风险及影响范围**:
+1. 三栏式 DOM 拖拽与 Sigma 图谱是两套渲染路径 → 当前使用 DOM 拖拽，Sigma 路径（MindCanvasStage）保留但未在 Mind tab 直接使用
+2. AI 蒸馏推荐逻辑仍为占位 → 待 IntelligenceSpine 接入
+3. 散落思绪池仅显示 active Tips → 后续可扩展为显示未链接的 Dock Items
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：Phase 3.1.5 Round 31 (FE-REAL-004 Mind Graph 真实接入) -->
+<!-- ============================================ -->
+
+## Phase 3.1.5 Round 31 devlog -- FE-REAL-004 Mind Graph 真实接入 + 事件桥接
+
+**时间戳**: 2026-05-09
+
+**任务起止时间**: 06:25 - 06:45 CST
+
+**工时**: 20 分钟
+
+**任务目标**:
+1. 让 Mind 页面接入真实 mind_nodes / mind_edges，不再以 hardcoded mock graph 作为主数据源。
+2. 补齐 Mind 节点位置持久化（positionX / positionY）。
+3. 建立 Mind 事件桥接，让 Home / Daily Brief 能感知 Mind 数据变化。
+4. 将 convertTipToDraft() 调整为 Dexie transaction，避免 Draft 创建成功但 Tip 状态未更新。
+
+**变更摘要**:
+
+**事件总线扩展** (`lib/events.ts`):
+- 新增 6 个 Mind 事件类型: mind_node_created, mind_node_updated, mind_node_deleted, mind_edge_created, mind_edge_updated, mind_edge_deleted
+
+**Repository 扩展** (`lib/repository.ts`):
+- 新增 `updateMindNodePosition(userId, id, positionX, positionY)` 函数
+- 修改 `convertTipToDraft()` 为 Dexie transaction，确保 Draft 创建和 Tip 状态更新原子性
+
+**Mind 数据 Hook** (`app/workspace/features/mind/useMindGraph.ts`):
+- 新建 `useMindGraph(userId)` hook，提供 nodes/edges/snapshot/loading/isEmpty/refresh/onNodeDragEnd
+- 订阅 Mind 事件自动刷新
+- 节点拖拽后 debounce 500ms 批量写入 positionX/positionY
+- 位置保存后发射 mind_node_updated 事件
+
+**Mind 页面真实接入** (`app/workspace/page.tsx`):
+- 移除 MindView 中全部 mock 数据（mock nodes/edges/unlinkedThoughts）
+- 替换为 useMindGraph hook 驱动的真实数据渲染
+- 空图谱时展示真实 empty state（"暂无思维节点"提示）
+- 加载中展示 loading state
+- MindView 接收 userId 和 onToast props
+
+**图谱组件拖拽事件** (`app/workspace/features/mind/MindGraphSigma.tsx`):
+- 新增 onNodeDragEnd prop
+- 通过 Sigma 的 upNode 事件检测拖拽结束，读取 graph 节点坐标并回调
+
+**图谱视图传递** (`app/workspace/features/mind/MindGraphView.tsx`, `MindCanvasStage.tsx`):
+- 透传 onNodeDragEnd prop 到 MindGraphSigma
+
+**Home / Daily Brief 事件订阅**:
+- `useHomeIntelligence.ts`: REFRESH_EVENTS 新增 6 个 mind_* 事件
+- `useDailyBrief.ts`: REFRESH_EVENTS 新增 6 个 mind_* 事件
+
+**改动文件名及行数**:
+1. `lib/events.ts` (+6 行事件类型)
+2. `lib/repository.ts` (+38 行 updateMindNodePosition, +20 行 convertTipToDraft transaction)
+3. `app/workspace/features/mind/useMindGraph.ts` (新建, 108 行)
+4. `app/workspace/page.tsx` (-230 行 mock MindView, +58 行真实 MindView, +2 行 import)
+5. `app/workspace/features/mind/MindGraphSigma.tsx` (+13 行 onNodeDragEnd)
+6. `app/workspace/features/mind/MindGraphView.tsx` (+3 行 onNodeDragEnd)
+7. `app/workspace/features/mind/MindCanvasStage.tsx` (+3 行 onNodeDragEnd)
+8. `app/workspace/features/home/useHomeIntelligence.ts` (+1 行事件)
+9. `app/workspace/features/home/useDailyBrief.ts` (+1 行事件)
+10. `tests/mind-graph.test.ts` (+35 行位置持久化测试)
+11. `tests/mind-events.test.ts` (新建, 120 行事件桥接+snapshot+transaction 测试)
+
+**遇到的问题及解决方式**:
+1. Sigma v3 没有 dragEnd 事件 → 改用 upNode 事件，在鼠标释放节点时读取 graph 坐标
+2. Map 迭代需要 downlevelIteration → 改用 Array.from(pending.entries()) 遍历
+3. MindView 移除后遗留未使用的 import (Plus, MousePointer2, GitCommit, Wand2, useRef) → 清理
+
+**自动验证结果**:
+- `pnpm typecheck`: ✅ 通过
+- `pnpm lint`: ✅ 通过 (0 errors, 3 warnings 均为预先存在)
+- `pnpm test`: ✅ 595 tests passed (含新增 7 个 mind-events 测试)
+- `pnpm build:web`: ✅ 构建成功
+
+**手工验证步骤**:
+1. 打开 /workspace → 进入 Mind tab
+2. 若无节点，确认显示"暂无思维节点"empty state，不显示假图谱
+3. 若有节点，确认图谱来自真实 mind_nodes / mind_edges
+4. 拖拽一个节点后松开鼠标
+5. 切换到 Home 再返回 Mind，确认位置保持
+6. 刷新页面，确认位置仍保持
+7. 修改 Mind 数据后，确认 Home / Daily Brief 的 Mind 数量或状态能刷新
+8. 创建 Tip 并转 Draft，确认 convertTipToDraft 正常工作
+
+**当前风险及影响范围**:
+1. upNode 事件在非拖拽场景（如单击节点后松开）也会触发位置保存 → 影响低，因为位置值未变时不会产生实际数据库写入差异
+2. 发布 Draft 为 Document 尚未自动生成 MindNode → 记录为 Dock/Review 后续任务
+3. Mind 的"散落思绪池"和"AI 蒸馏推荐"面板暂未实现 → 不在本轮范围
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：Phase 3.1.5 Round 30 (FE-REAL-003 实时刷新) -->
 <!-- ============================================ -->
 

@@ -257,6 +257,47 @@ export interface RecommendationDockQueueResult {
   total: number
 }
 
+export async function resolveRecommendationCandidate(
+  userId: string, 
+  type: RecommendationCandidateType, 
+  id: string
+): Promise<{ title: string; type: string } | null> {
+  try {
+    switch (type) {
+      case 'mindNode': {
+        const node = await mindNodesTable.get(id);
+        return node && node.userId === userId ? { title: node.label, type: node.nodeType } : null;
+      }
+      case 'entry': {
+        const entry = await entriesTable.get(Number(id));
+        return entry && entry.userId === userId ? { title: entry.title, type: entry.type } : null;
+      }
+      case 'document': {
+        // Document candidates usually point to entries or dock items that are documents
+        const doc = await entriesTable.get(Number(id));
+        return doc && doc.userId === userId ? { title: doc.title, type: 'document' } : null;
+      }
+      case 'dockItem': {
+        const item = await dockItemsTable.get(Number(id));
+        return item && item.userId === userId ? { title: item.topic || item.rawText?.slice(0, 40) || `Dock Item #${id}`, type: item.sourceType } : null;
+      }
+      case 'tag': {
+        const tag = await tagsTable.get(id);
+        return tag && tag.userId === userId ? { title: tag.name, type: 'tag' } : null;
+      }
+      case 'project': {
+        const collection = await collectionsTable.get(id);
+        return collection && collection.userId === userId ? { title: collection.name, type: collection.collectionType } : null;
+      }
+      default:
+        return null;
+    }
+  } catch (err) {
+    console.error('Error resolving candidate:', err);
+    return null;
+  }
+}
+
 function toPersistedDockItem(item: DockItemRecord | undefined): PersistedDockItem | null {
   if (!item || typeof item.id !== 'number') {
     return null
@@ -1664,6 +1705,22 @@ export async function upsertMindNode(input: {
   return toPersistedMindNode(await mindNodesTable.get(id)) as PersistedMindNode
 }
 
+export async function updateMindNodePosition(
+  userId: string,
+  id: string,
+  positionX: number,
+  positionY: number,
+): Promise<PersistedMindNode | null> {
+  const existing = await mindNodesTable.get(id)
+  if (!existing || existing.userId !== userId) return null
+  await mindNodesTable.update(id, {
+    positionX,
+    positionY,
+    updatedAt: new Date(),
+  })
+  return toPersistedMindNode(await mindNodesTable.get(id))
+}
+
 export async function deleteMindNode(userId: string, id: string): Promise<boolean> {
   const existing = await mindNodesTable.get(id)
   if (!existing || existing.userId !== userId) return false
@@ -1929,11 +1986,11 @@ function toPersistedEditorDraft(draft: EditorDraftRecord | undefined): Persisted
   return { ...draft, id: draft.id, status: draft.status ?? 'active' }
 }
 
-export async function createDraft(
+async function addDraftRecord(
   userId: string,
-  title: string = '',
-  content: string = '',
-): Promise<PersistedEditorDraft | null> {
+  title: string,
+  content: string,
+): Promise<number> {
   const now = new Date()
   const id = await editorDraftsTable.add({
     userId,
@@ -1944,11 +2001,17 @@ export async function createDraft(
     createdAt: now,
     updatedAt: now,
   })
-  const saved = await editorDraftsTable.get(id as number)
-  if (saved) {
-    await editorDraftsTable.update(id as number, { draftKey: id as number })
-    saved.draftKey = id as number
-  }
+  await editorDraftsTable.update(id as number, { draftKey: id as number })
+  return id as number
+}
+
+export async function createDraft(
+  userId: string,
+  title: string = '',
+  content: string = '',
+): Promise<PersistedEditorDraft | null> {
+  const id = await addDraftRecord(userId, title, content)
+  const saved = await editorDraftsTable.get(id)
   return toPersistedEditorDraft(saved)
 }
 
@@ -2011,6 +2074,15 @@ export async function publishDraftToDocument(
   await editorDraftsTable.update(draftId, {
     status: 'published',
     updatedAt: now,
+  })
+
+  const title = draft.title || 'Untitled'
+  await upsertMindNode({
+    userId,
+    nodeType: 'document',
+    label: title,
+    documentId: entryId as number,
+    state: 'drifting',
   })
 
   return {
@@ -3490,24 +3562,29 @@ export async function convertTipToDraft(
   userId: string,
   tipId: number,
 ): Promise<{ tip: PersistedTip | null; draft: PersistedEditorDraft | null }> {
-  const tip = await tipsTable.get(tipId)
-  if (!tip || tip.userId !== userId || tip.status !== 'active') {
+  try {
+    const result = await db.transaction('rw', [tipsTable, editorDraftsTable], async () => {
+      const tip = await tipsTable.get(tipId)
+      if (!tip || tip.userId !== userId || tip.status !== 'active') {
+        return { tip: null, draft: null }
+      }
+
+      const draftId = await addDraftRecord(userId, tip.content.slice(0, 60), tip.content)
+
+      await tipsTable.update(tipId, {
+        status: 'converted',
+        convertedDraftId: draftId,
+        updatedAt: new Date(),
+      })
+
+      const updatedTip = toPersistedTip(await tipsTable.get(tipId))
+      const persistedDraft = toPersistedEditorDraft(await editorDraftsTable.get(draftId))
+      return { tip: updatedTip, draft: persistedDraft }
+    })
+    return result
+  } catch {
     return { tip: null, draft: null }
   }
-
-  const draft = await createDraft(userId, tip.content.slice(0, 60), tip.content)
-  if (!draft) {
-    return { tip: null, draft: null }
-  }
-
-  await tipsTable.update(tipId, {
-    status: 'converted',
-    convertedDraftId: draft.id,
-    updatedAt: new Date(),
-  })
-
-  const updatedTip = toPersistedTip(await tipsTable.get(tipId))
-  return { tip: updatedTip, draft }
 }
 
 export async function discardTip(
@@ -3525,4 +3602,106 @@ export async function discardTip(
   })
 
   return toPersistedTip(await tipsTable.get(tipId))
+}
+
+export async function convertTipToMindNode(
+  userId: string,
+  tipId: number,
+): Promise<{ tip: PersistedTip | null; mindNode: PersistedMindNode | null }> {
+  try {
+    const result = await db.transaction('rw', [tipsTable, mindNodesTable], async () => {
+      const tip = await tipsTable.get(tipId)
+      if (!tip || tip.userId !== userId || tip.status !== 'active') {
+        return { tip: null, mindNode: null }
+      }
+
+      const label = tip.content.slice(0, 80)
+      const now = new Date()
+      const mindNodeId = makeMindNodeId(userId, 'fragment', label)
+
+      await mindNodesTable.put({
+        id: mindNodeId,
+        userId,
+        nodeType: 'fragment',
+        label,
+        state: 'drifting',
+        documentId: null,
+        degreeScore: 0,
+        recentActivityScore: 0,
+        documentWeightScore: 0,
+        userPinScore: 0,
+        clusterCenterScore: 0,
+        positionX: null,
+        positionY: null,
+        metadata: { sourceTipId: tipId, sourceType: tip.sourceType },
+        createdAt: now,
+        updatedAt: now,
+      })
+
+      await tipsTable.update(tipId, {
+        status: 'linked',
+        updatedAt: new Date(),
+      })
+
+      const updatedTip = toPersistedTip(await tipsTable.get(tipId))
+      const persistedMindNode = toPersistedMindNode(await mindNodesTable.get(mindNodeId))
+      return { tip: updatedTip, mindNode: persistedMindNode }
+    })
+    return result
+  } catch {
+    return { tip: null, mindNode: null }
+  }
+}
+
+export async function syncDocumentsToMindNodes(
+  userId: string,
+): Promise<number> {
+  try {
+    const [drafts, documents, existingMindNodes] = await Promise.all([
+      listDrafts(userId),
+      listArchivedEntries(userId),
+      listMindNodes(userId),
+    ])
+
+    const existingDocIds = new Set(
+      existingMindNodes
+        .filter(n => n.documentId !== null)
+        .map(n => n.documentId)
+    )
+
+    let createdCount = 0
+
+    for (const draft of drafts) {
+      if (draft.status !== 'active') continue
+      if (existingDocIds.has(draft.id)) continue
+
+      await upsertMindNode({
+        userId,
+        nodeType: 'document',
+        label: draft.title || draft.content.slice(0, 60),
+        state: 'anchored',
+        documentId: draft.id,
+        metadata: { sourceType: 'draft', draftId: draft.id },
+      })
+      createdCount++
+    }
+
+    for (const doc of documents) {
+      if (existingDocIds.has(doc.id)) continue
+
+      await upsertMindNode({
+        userId,
+        nodeType: 'document',
+        label: doc.title || doc.content?.slice(0, 60) || 'Untitled Document',
+        state: 'anchored',
+        documentId: doc.id,
+        metadata: { sourceType: 'document', entryId: doc.id },
+      })
+      createdCount++
+    }
+
+    return createdCount
+  } catch {
+    return 0
+  }
 }
