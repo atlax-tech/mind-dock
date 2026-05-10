@@ -149,7 +149,7 @@ export default function MindGraphView({
             if (ixState.selectedNodeId) {
               const node = snapshot.nodes.find(n => n.id === ixState.selectedNodeId)
               if (node?.documentId != null) {
-                const sourceType = (node.metadata?.sourceType as 'draft' | 'document') ?? 'draft'
+                const sourceType = (node.metadata?.sourceType as 'draft' | 'document') ?? 'document'
                 _onOpenEditor(node.documentId, sourceType)
               } else {
                 _onToast('此节点暂无关联文档')

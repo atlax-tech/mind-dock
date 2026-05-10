@@ -19,10 +19,14 @@ import {
   Check,
   Loader2,
   AlertCircle,
+  Copy,
+  RefreshCw,
+  Undo2,
+  X,
 } from 'lucide-react'
 import { useDrafts } from './useDrafts'
 import { useEditorDraft } from './useEditorDraft'
-import type { StoredDraft } from '@/lib/repository'
+import type { StoredDraft, PublishMode, DiscardMode } from '@/lib/repository'
 import { entriesTable } from '@/lib/db'
 
 interface DraftEditorViewProps {
@@ -34,6 +38,8 @@ interface DraftEditorViewProps {
   onToast?: (msg: string) => void
   initialDraftId?: number | null
   initialEntryId?: number | null
+  onInitialDraftConsumed?: () => void
+  onInitialEntryConsumed?: () => void
 }
 
 export default function DraftEditorView({
@@ -45,6 +51,8 @@ export default function DraftEditorView({
   onToast,
   initialDraftId,
   initialEntryId,
+  onInitialDraftConsumed,
+  onInitialEntryConsumed,
 }: DraftEditorViewProps) {
   const {
     drafts,
@@ -52,12 +60,16 @@ export default function DraftEditorView({
     createDraft: handleCreateDraft,
     publishDraft: handlePublishDraft,
     discardDraft: handleDiscardDraft,
+    findActiveBySourceEntry,
   } = useDrafts(userId)
 
   const [activeDraftId, setActiveDraftId] = useState<number | null>(null)
   const [showDraftsList, setShowDraftsList] = useState(true)
   const [publishing, setPublishing] = useState(false)
   const [discarding, setDiscarding] = useState<number | null>(null)
+  const [showPublishChoice, setShowPublishChoice] = useState(false)
+  const [showDiscardChoice, setShowDiscardChoice] = useState(false)
+  const [discardTargetId, setDiscardTargetId] = useState<number | null>(null)
 
   const {
     title,
@@ -91,55 +103,99 @@ export default function DraftEditorView({
   useEffect(() => {
     if (initialDraftId != null && initialDraftId !== activeDraftId) {
       setActiveDraftId(initialDraftId)
+      onInitialDraftConsumed?.()
     }
-  }, [initialDraftId, activeDraftId])
+  }, [initialDraftId, activeDraftId, onInitialDraftConsumed])
 
   useEffect(() => {
     if (initialEntryId == null) return
     let cancelled = false
     ;(async () => {
+      const existingDraft = await findActiveBySourceEntry(initialEntryId)
+      if (cancelled) return
+      if (existingDraft) {
+        setActiveDraftId(existingDraft.id)
+        resetForDraft(existingDraft)
+        onInitialEntryConsumed?.()
+        onToast?.('已打开关联此文档的草稿')
+        return
+      }
       const entry = await entriesTable.get(initialEntryId)
       if (cancelled || !entry) return
-      const draft = await handleCreateDraft(entry.title || 'Untitled', entry.content || '')
+      const draft = await handleCreateDraft(entry.title || 'Untitled', entry.content || '', initialEntryId, 'entry')
       if (cancelled || !draft) return
       setActiveDraftId(draft.id)
       resetForDraft(draft)
+      onInitialEntryConsumed?.()
       onToast?.('已从归档文档创建草稿')
     })()
     return () => { cancelled = true }
-  }, [initialEntryId, handleCreateDraft, resetForDraft, onToast])
+  }, [initialEntryId, handleCreateDraft, resetForDraft, onToast, findActiveBySourceEntry, onInitialEntryConsumed])
 
-  const onPublish = useCallback(async () => {
-    if (!activeDraftId) return
+  const executePublish = useCallback(async (draftId: number, publishMode: PublishMode) => {
     setPublishing(true)
+    setShowPublishChoice(false)
     try {
       await flushSave()
-      const result = await handlePublishDraft(activeDraftId)
+      const result = await handlePublishDraft(draftId, publishMode)
+      if (result.nameConflict) {
+        onToast?.('同名文档已存在于当前层级，请修改标题后重试')
+        return
+      }
       if (result.draft && result.entryId) {
         setActiveDraftId(null)
-        onToast?.(`已发布为正式文档 (ID: ${result.entryId})`)
+        if (publishMode === 'update_original' && result.draft.sourceEntryId != null) {
+          onToast?.(`已更新原文档 (ID: ${result.draft.sourceEntryId})`)
+        } else {
+          onToast?.(`已发布为新文档 (ID: ${result.entryId})`)
+        }
       } else {
         onToast?.('发布失败')
       }
     } finally {
       setPublishing(false)
     }
-  }, [activeDraftId, flushSave, handlePublishDraft, onToast])
+  }, [flushSave, handlePublishDraft, onToast])
 
-  const onDiscard = useCallback(async (draftId: number) => {
+  const onPublish = useCallback(async () => {
+    if (!activeDraftId) return
+    const activeDraft = drafts.find((d) => d.id === activeDraftId)
+    if (activeDraft?.sourceEntryId != null) {
+      setShowPublishChoice(true)
+      return
+    }
+    await executePublish(activeDraftId, 'update_original')
+  }, [activeDraftId, drafts, executePublish])
+
+  const executeDiscard = useCallback(async (draftId: number, discardMode: DiscardMode) => {
     setDiscarding(draftId)
+    setShowDiscardChoice(false)
     try {
-      const ok = await handleDiscardDraft(draftId)
+      const ok = await handleDiscardDraft(draftId, discardMode)
       if (ok) {
         if (activeDraftId === draftId) {
           setActiveDraftId(null)
         }
-        onToast?.('草稿已丢弃')
+        if (discardMode === 'abandon_changes') {
+          onToast?.('已放弃更改')
+        } else {
+          onToast?.('已删除草稿及原文档')
+        }
       }
     } finally {
       setDiscarding(null)
     }
   }, [activeDraftId, handleDiscardDraft, onToast])
+
+  const onDiscard = useCallback(async (draftId: number) => {
+    const targetDraft = drafts.find((d) => d.id === draftId)
+    if (targetDraft?.sourceEntryId != null) {
+      setDiscardTargetId(draftId)
+      setShowDiscardChoice(true)
+      return
+    }
+    await executeDiscard(draftId, 'abandon_changes')
+  }, [drafts, executeDiscard])
 
   const activeDraft = drafts.find((d) => d.id === activeDraftId)
 
@@ -457,6 +513,128 @@ export default function DraftEditorView({
                 </div>
                 <span className="text-xs text-[#899298]">发布后自动生成</span>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showPublishChoice && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-[#0b0f11]/60 backdrop-blur-sm"
+            onClick={() => setShowPublishChoice(false)}
+          />
+          <div className="relative w-[420px] bg-[#1c2023]/90 backdrop-blur-[40px] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
+              <h3 className="text-sm font-medium text-white">发布方式</h3>
+              <button
+                onClick={() => setShowPublishChoice(false)}
+                className="p-1 rounded-md hover:bg-white/10 text-[#899298] hover:text-white transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="px-5 py-3">
+              <p className="text-[11px] text-[#899298] mb-4">
+                此草稿源自已有文档，请选择发布方式：
+              </p>
+              <div className="space-y-2">
+                <button
+                  onClick={() => activeDraftId && executePublish(activeDraftId, 'update_original')}
+                  disabled={publishing}
+                  className="w-full p-3.5 rounded-xl bg-[#86d7ff]/10 border border-[#86d7ff]/20 hover:bg-[#86d7ff]/20 transition-colors text-left disabled:opacity-40"
+                >
+                  <div className="flex items-center gap-2.5 mb-1.5">
+                    <RefreshCw className="w-4 h-4 text-[#86d7ff]" />
+                    <span className="text-[12px] font-medium text-[#86d7ff]">修改原文档</span>
+                  </div>
+                  <p className="text-[10px] text-[#899298] pl-6.5">
+                    用当前草稿内容覆盖原文档，保留原文档 ID 和关联关系
+                  </p>
+                </button>
+                <button
+                  onClick={() => activeDraftId && executePublish(activeDraftId, 'as_new')}
+                  disabled={publishing}
+                  className="w-full p-3.5 rounded-xl bg-white/5 border border-white/[0.07] hover:bg-white/10 transition-colors text-left disabled:opacity-40"
+                >
+                  <div className="flex items-center gap-2.5 mb-1.5">
+                    <Copy className="w-4 h-4 text-white" />
+                    <span className="text-[12px] font-medium text-white">作为新文档存入</span>
+                  </div>
+                  <p className="text-[10px] text-[#899298] pl-6.5">
+                    创建一个全新的文档，原文档保持不变
+                  </p>
+                </button>
+              </div>
+            </div>
+            <div className="px-5 py-3 border-t border-white/[0.07]">
+              <button
+                onClick={() => setShowPublishChoice(false)}
+                className="w-full py-2 rounded-lg bg-white/5 text-[11px] text-[#899298] hover:text-white hover:bg-white/10 transition-colors"
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDiscardChoice && discardTargetId != null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-[#0b0f11]/60 backdrop-blur-sm"
+            onClick={() => setShowDiscardChoice(false)}
+          />
+          <div className="relative w-[420px] bg-[#1c2023]/90 backdrop-blur-[40px] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
+              <h3 className="text-sm font-medium text-white">丢弃方式</h3>
+              <button
+                onClick={() => setShowDiscardChoice(false)}
+                className="p-1 rounded-md hover:bg-white/10 text-[#899298] hover:text-white transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="px-5 py-3">
+              <p className="text-[11px] text-[#899298] mb-4">
+                此草稿源自已有文档，请选择丢弃方式：
+              </p>
+              <div className="space-y-2">
+                <button
+                  onClick={() => executeDiscard(discardTargetId, 'abandon_changes')}
+                  disabled={discarding === discardTargetId}
+                  className="w-full p-3.5 rounded-xl bg-[#86d7ff]/10 border border-[#86d7ff]/20 hover:bg-[#86d7ff]/20 transition-colors text-left disabled:opacity-40"
+                >
+                  <div className="flex items-center gap-2.5 mb-1.5">
+                    <Undo2 className="w-4 h-4 text-[#86d7ff]" />
+                    <span className="text-[12px] font-medium text-[#86d7ff]">放弃更改</span>
+                  </div>
+                  <p className="text-[10px] text-[#899298] pl-6.5">
+                    丢弃草稿内容，保留原文档不变
+                  </p>
+                </button>
+                <button
+                  onClick={() => executeDiscard(discardTargetId, 'delete_all')}
+                  disabled={discarding === discardTargetId}
+                  className="w-full p-3.5 rounded-xl bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 transition-colors text-left disabled:opacity-40"
+                >
+                  <div className="flex items-center gap-2.5 mb-1.5">
+                    <Trash2 className="w-4 h-4 text-red-400" />
+                    <span className="text-[12px] font-medium text-red-400">删除草稿及原文档</span>
+                  </div>
+                  <p className="text-[10px] text-[#899298] pl-6.5">
+                    同时删除草稿和原文档，此操作不可恢复
+                  </p>
+                </button>
+              </div>
+            </div>
+            <div className="px-5 py-3 border-t border-white/[0.07]">
+              <button
+                onClick={() => setShowDiscardChoice(false)}
+                className="w-full py-2 rounded-lg bg-white/5 text-[11px] text-[#899298] hover:text-white hover:bg-white/10 transition-colors"
+              >
+                取消
+              </button>
             </div>
           </div>
         </div>

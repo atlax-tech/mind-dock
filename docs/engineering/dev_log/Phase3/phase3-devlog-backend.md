@@ -9,6 +9,275 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：MIND-REAL-002 Round 7 (Bug Fix: MindNode ID 空间碰撞 - findMindNodeByDocumentId 不区分 sourceType) -->
+<!-- ============================================ -->
+
+## MIND-REAL-002 Round 7 devlog -- Bug Fix: MindNode ID 空间碰撞
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 09:30 - 10:00 CST
+
+**工时**: 30 分钟
+
+**Review 结论**: FAIL → 整改
+
+**问题**: `findMindNodeByDocumentId` 只按数字 `documentId` 查找，不区分 `metadata.sourceType`，导致 draftId 与 entryId 同号时误删 entry MindNode。
+
+**修复**:
+1. 新增 `findMindNodeBySourceType(userId, documentId, sourceType)` 函数
+2. `publishDraftToDocument` 和 `discardDraft` 中所有 MindNode 查找改用 `findMindNodeBySourceType`
+3. 新增 3 个碰撞场景测试
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/lib/repository.ts` | +14/-4 | 新增 `findMindNodeBySourceType`；替换所有 MindNode 查找调用 |
+| `apps/web/tests/draft-repository.test.ts` | +156 | 新增 3 个碰撞场景测试 |
+
+**数据模型变更**: 无
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-002 Round 6 (Bug Fix: makeMindNodeId ID 碰撞 + 同层级重名去重) -->
+<!-- ============================================ -->
+
+## MIND-REAL-002 Round 6 devlog -- Bug Fix: makeMindNodeId ID 碰撞 + 同层级重名去重
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 08:00 - 09:00 CST
+
+**工时**: 60 分钟
+
+**问题**: `makeMindNodeId` 仅基于 `userId + nodeType + label` 生成 ID，导致同标题 document 类型节点 ID 碰撞，`upsertMindNode` 的 `put` 操作覆盖已有记录。
+
+**修复**:
+1. `makeMindNodeId` 新增可选 `documentId` 参数，document 类型节点 ID 包含 documentId 后缀
+2. DB v22 迁移：已有 document 类型节点 ID 更新为新格式，同步更新引用边
+3. 新增 `checkDocumentNameConflict` 函数：同层级（同一 parent_child 边下）不允许重名
+4. `publishDraftToDocument` 的 `as_new` 模式发布前检查重名冲突，冲突时返回 `nameConflict` 字段
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `packages/domain/src/mind/types.ts` | +4/-1 | `makeMindNodeId` 新增可选 `documentId` 参数 |
+| `packages/domain/tests/mind-types.test.ts` | +19 | 新增 3 个 documentId 相关测试 |
+| `apps/web/lib/db.ts` | +69 | DB v22 迁移 |
+| `apps/web/lib/repository.ts` | +30/-5 | `upsertMindNode` 传入 documentId；新增 `checkDocumentNameConflict`；`PublishResult` 类型 |
+| `apps/web/tests/draft-repository.test.ts` | +128 | 新增 5 个重名冲突测试 |
+
+**数据模型变更**: MindNode ID 格式变更（document 类型），DB v22 迁移
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-002 Round 5 (UX 增强：PublishMode + DiscardMode 支持) -->
+<!-- ============================================ -->
+
+## MIND-REAL-002 Round 5 devlog -- UX 增强：PublishMode + DiscardMode 支持
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 07:00 - 08:00 CST
+
+**工时**: 60 分钟
+
+**⚠️ 越界说明**: 此 UX 增强不在 MIND-REAL-002 原始边界内，由用户明确要求在本轮实现。
+
+**任务目标**:
+1. 新增 `PublishMode` 类型（`'update_original' | 'as_new'`）
+2. `publishDraftToDocument` 增加 `publishMode` 参数，支持两种发布路径
+3. `as_new` 模式：始终创建新 entry + 新 MindNode，不更新原 entry
+4. `update_original` 模式（默认）：更新原 entry + 更新原 MindNode（保持向后兼容）
+5. 新增 `DiscardMode` 类型（`'abandon_changes' | 'delete_all'`）
+6. `discardDraft` 增加 `discardMode` 参数，支持两种丢弃路径
+7. `abandon_changes` 模式（默认）：丢弃草稿，保留原 entry 和 MindNode
+8. `delete_all` 模式：丢弃草稿 + 删除原 entry + 删除原 MindNode
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/lib/repository.ts` | +6/-4 | 新增 `PublishMode` + `DiscardMode` 类型导出；`publishDraftToDocument` 增加 `publishMode` 参数；`discardDraft` 增加 `discardMode` 参数，`delete_all` 模式删除原 entry + MindNode |
+| `apps/web/tests/draft-repository.test.ts` | +170 | 新增 6 个测试：`as_new` 创建新 entry、`as_new` 创建新 MindNode、`update_original` 更新原 entry、`delete_all` 删除原 entry + MindNode、`abandon_changes` 保留原 entry、`delete_all` 不影响其他用户 entry |
+
+**数据模型变更**: 无（复用现有 `sourceEntryId`/`sourceType` 字段）
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-002 Round 4 (MindNode 生命周期管理：discard 清理 + publish 更新) -->
+<!-- ============================================ -->
+
+## MIND-REAL-002 Round 4 devlog -- MindNode 生命周期管理：discard 清理 + publish 更新
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 06:15 - 06:30 CST
+
+**工时**: 15 分钟
+
+**任务目标**:
+1. 新增 findMindNodeByDocumentId 函数
+2. discardDraft 清理关联 MindNode
+3. publishDraftToDocument 更新原 entry MindNode（而非创建新节点）
+4. syncDocumentsToMindNodes 跳过 entry-origin draft
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/lib/repository.ts` | +9 | 新增 findMindNodeByDocumentId 函数 |
+| `apps/web/lib/repository.ts` | +6 | discardDraft: 丢弃 standalone draft 时删除关联 MindNode |
+| `apps/web/lib/repository.ts` | +27/-7 | publishDraftToDocument: entry-origin Draft 更新原 entry MindNode + 删除 draft MindNode |
+| `apps/web/lib/repository.ts` | +1 | syncDocumentsToMindNodes: 跳过有 sourceEntryId 的 draft |
+
+**遇到的问题及解决方式**:
+
+1. **问题**: makeMindNodeId 基于 label 生成 ID，标题变更时 ID 失效导致创建新 MindNode
+   - **解决**: 对 entry-origin Draft，通过 findMindNodeByDocumentId 找到原 entry MindNode，直接 mindNodesTable.update 绕过 makeMindNodeId
+
+2. **问题**: syncDocumentsToMindNodes 为 entry-origin draft 创建独立 MindNode，导致同一文档两个节点
+   - **解决**: 增加 `if (draft.sourceEntryId != null) continue` 跳过
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ PASS
+- `pnpm typecheck`: ✅ PASS
+- `pnpm test`: ✅ 617 passed
+- `pnpm build:web`: ✅ PASS
+
+**手工验证步骤说明**:
+
+1. 发布 entry-origin Draft，确认原 entry MindNode label 更新，无新节点
+2. 丢弃 standalone draft，确认 MindNode 被删除
+3. 丢弃 entry-origin draft，确认 entry MindNode 保留
+
+**当前风险及影响范围**:
+
+1. **makeMindNodeId 基于 label**: 架构层面问题，当前绕过但未来需重构。**风险**: 中。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-002 Round 2 (MindNode metadata.sourceType 缺失修复) -->
+<!-- ============================================ -->
+
+## MIND-REAL-002 Round 2 devlog -- MindNode metadata.sourceType 缺失修复
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 05:40 - 05:50 CST
+
+**工时**: 10 分钟
+
+**任务目标**:
+1. 修复 publishDraftToDocument 创建 MindNode 时未传 metadata.sourceType
+2. 修复 createCaptureToDocumentFlow 创建 MindNode 时未传 metadata.sourceType
+3. 确保所有 document 类型 MindNode 的 sourceType 正确设置
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/lib/repository.ts` | +1 | publishDraftToDocument: upsertMindNode 传入 metadata: { sourceType: 'document', entryId } |
+| `apps/web/lib/repository.ts` | +1 | createCaptureToDocumentFlow: upsertMindNode 传入 metadata: { sourceType: 'document', entryId: docId } |
+
+**遇到的问题及解决方式**:
+
+1. **问题**: publishDraftToDocument 和 createCaptureToDocumentFlow 创建 MindNode 时未传 metadata，导致 sourceType 为 null。UI 默认回退到 'draft'，将 entry ID 当作 draft ID，Editor 找不到对应 draft
+   - **解决**: 两个函数增加 `metadata: { sourceType: 'document', entryId }` 参数
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ PASS，0 errors
+- `pnpm typecheck`: ✅ PASS
+- `pnpm test`: ✅ 613 passed
+- `pnpm build:web`: ✅ PASS
+
+**手工验证步骤说明**:
+
+1. 发布一个 Draft 为正式文档
+2. 确认 MindNode 的 metadata.sourceType 为 'document'
+3. 从 Dock 归档一个捕获项
+4. 确认 MindNode 的 metadata.sourceType 为 'document'
+
+**当前风险及影响范围**:
+
+1. **已有 MindNode 数据**: 已有节点的 metadata.sourceType 可能为 null，需依赖 UI 默认回退值修正。**风险**: 低。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-002 Round 1 (EditorDraftRecord 增加 sourceEntryId + publishDraftToDocument 回写原 entry) -->
+<!-- ============================================ -->
+
+## MIND-REAL-002 Round 1 devlog -- EditorDraftRecord 增加 sourceEntryId + publishDraftToDocument 回写原 entry
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 05:25 - 05:35 CST
+
+**工时**: 10 分钟
+
+**任务目标**:
+1. EditorDraftRecord 增加 sourceEntryId / sourceType 字段，追踪 entry-origin Draft 的来源
+2. DB v21 迁移，为已有 editorDrafts 数据填充 null 默认值
+3. 新增 findActiveDraftBySourceEntryId 函数，支持按来源 entry 查找已有 active draft
+4. publishDraftToDocument 支持 entry-origin Draft 回写原 entry（而非创建无来源副本）
+5. 保持普通 Draft 发布逻辑不变
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/lib/db.ts` | +4 | EditorDraftRecord 增加 sourceEntryId/sourceType 字段，新增 DraftSourceType 类型 |
+| `apps/web/lib/db.ts` | +28 | DB v21 迁移：editorDrafts 索引增加 sourceEntryId + [userId+sourceEntryId]，upgrade 填充 null |
+| `apps/web/lib/repository.ts` | +1 | import DraftSourceType |
+| `apps/web/lib/repository.ts` | +1 | export type DraftSourceType |
+| `apps/web/lib/repository.ts` | +4 | addDraftRecord 增加 sourceEntryId/sourceType 参数 |
+| `apps/web/lib/repository.ts` | +4 | createDraft 增加 sourceEntryId/sourceType 参数 |
+| `apps/web/lib/repository.ts` | +12 | 新增 findActiveDraftBySourceEntryId 函数 |
+| `apps/web/lib/repository.ts` | +17/-10 | publishDraftToDocument：entry-origin Draft 回写原 entry，否则新建 entry 并记录 sourceEntryId |
+| `apps/web/lib/repository.ts` | +2 | saveEditorDraft 创建新记录时显式设置 sourceEntryId: null, sourceType: null |
+
+**遇到的问题及解决方式**:
+
+1. **问题**: publishDraftToDocument 中 entry!.id 使用 non-null assertion，lint 报错
+   - **解决**: 改用安全检查 `entry?.id`，若 entry 为 null 则提前返回
+
+2. **问题**: saveEditorDraft 创建新记录时缺少 sourceEntryId/sourceType 字段
+   - **解决**: 显式设置 sourceEntryId: null, sourceType: null，保持与类型定义一致
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ PASS，0 errors
+- `pnpm typecheck`: ✅ PASS
+- `pnpm test`: ✅ 613 passed（含新增 11 个 draft-repository 测试）
+- `pnpm build:web`: ✅ PASS
+
+**手工验证步骤说明**:
+
+1. 创建一个 entry，记录其 entryId
+2. 通过 createDraft(userId, title, content, entryId, 'entry') 创建 entry-origin Draft
+3. 确认 draft.sourceEntryId === entryId, draft.sourceType === 'entry'
+4. 调用 findActiveDraftBySourceEntryId(userId, entryId)，确认返回该 draft
+5. 修改 draft 标题和内容，调用 publishDraftToDocument(userId, draft.id)
+6. 确认原 entry 的 title/content 被更新，且 entry.id 不变
+7. 创建普通 Draft（无 sourceEntryId），发布后确认创建新 entry，sourceDockItemId = 0
+
+**当前风险及影响范围**:
+
+1. **DB v21 迁移**: 新增 sourceEntryId/sourceType 可空字段，旧数据填充 null。**影响范围**: 所有已有 editorDrafts 数据。**风险**: 低，仅增加可空字段。
+2. **回写策略**: 直接覆盖原 entry 的 title/content/archivedAt。**影响范围**: entry-origin Draft 发布时原 entry 内容被覆盖。**风险**: 中，但符合任务要求的优先回写方案。
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：MIND-REAL-001 Round 1 (RecommendationCandidateType 补充 dockItem) -->
 <!-- ============================================ -->
 

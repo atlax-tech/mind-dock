@@ -64,8 +64,11 @@ export interface MindEdge {
   updatedAt: Date
 }
 
-export function makeMindNodeId(userId: string, nodeType: MindNodeType, label: string): string {
+export function makeMindNodeId(userId: string, nodeType: MindNodeType, label: string, documentId?: number | null): string {
   const normalized = label.trim().toLowerCase().replace(/\s+/g, '_').slice(0, 40)
+  if (nodeType === 'document' && documentId != null) {
+    return `${userId}_mn_${nodeType}_${normalized}_${documentId}`
+  }
   return `${userId}_mn_${nodeType}_${normalized}`
 }
 

@@ -442,6 +442,15 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
   useEffect(() => {
     onSelectionChange(!!ixState.selectedNodeId);
   }, [ixState.selectedNodeId, onSelectionChange]);
+
+  useEffect(() => {
+    if (!userId) return;
+    syncDocumentsToMindNodes(userId).then((count) => {
+      if (count > 0) {
+        emit({ type: 'mind_node_created', nodeId: `sync-${Date.now()}` });
+      }
+    }).catch(() => {});
+  }, [userId]);
   
   const [unlinkedThoughts, setUnlinkedThoughts] = useState<StoredTip[]>([]);
   const [activeThought, setActiveThought] = useState<StoredTip | null>(null);
@@ -680,7 +689,7 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
 
               {/* Bottom Actions */}
               <div className="p-5 border-t border-white/[0.07] space-y-2">
-                <button onClick={() => { if (selectedNode?.documentId != null) { const st = (selectedNode.metadata?.sourceType as 'draft' | 'document') ?? 'draft'; onOpenEditor?.(selectedNode.documentId, st) } }} className="w-full h-[36px] rounded-lg bg-white text-[#0b0f11] text-[12px] font-semibold hover:bg-gray-200 transition-colors flex items-center justify-center gap-2">
+                <button onClick={() => { if (selectedNode?.documentId != null) { const st = (selectedNode.metadata?.sourceType as 'draft' | 'document') ?? 'document'; onOpenEditor?.(selectedNode.documentId, st) } }} className="w-full h-[36px] rounded-lg bg-white text-[#0b0f11] text-[12px] font-semibold hover:bg-gray-200 transition-colors flex items-center justify-center gap-2">
                   <PenTool className="w-4 h-4" /> Open in Editor
                 </button>
                 <button onClick={() => setSelectedNodeId(null)} className="w-full h-[32px] rounded-lg bg-white/5 text-[#8d989f] text-[11px] font-medium hover:bg-white/10 transition-colors">
@@ -1941,7 +1950,7 @@ export default function WorkspacePage() {
           {activeTab === 'toolbox' && <ToolboxView />}
           {activeTab === 'mind' && <MindView userId={userId} onToast={showToast} onSelectionChange={setIsNodeSelected} onOpenEditor={(documentId, sourceType) => { if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} />}
           {activeTab === 'dock' && <DockView setActiveTab={setActiveTab} />}
-          {activeTab === 'editor' && <DraftEditorView userId={userId} showSourcePacket={showSourcePacket} showInspector={showInspector} onToggleSourcePacket={() => setShowSourcePacket(v => !v)} onToggleInspector={() => setShowInspector(v => !v)} onToast={showToast} initialDraftId={pendingOpenDraftId} initialEntryId={pendingOpenEntryId} />}
+          {activeTab === 'editor' && <DraftEditorView userId={userId} showSourcePacket={showSourcePacket} showInspector={showInspector} onToggleSourcePacket={() => setShowSourcePacket(v => !v)} onToggleInspector={() => setShowInspector(v => !v)} onToast={showToast} initialDraftId={pendingOpenDraftId} initialEntryId={pendingOpenEntryId} onInitialDraftConsumed={() => setPendingOpenDraftId(null)} onInitialEntryConsumed={() => setPendingOpenEntryId(null)} />}
           {activeTab === 'review' && <ReviewView />}
           {activeTab === 'settings' && <SettingsView />}
         </main>

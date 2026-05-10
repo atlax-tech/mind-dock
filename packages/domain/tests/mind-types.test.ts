@@ -58,6 +58,25 @@ describe('Mind Types', () => {
       const id = makeMindNodeId('user1', 'project', longLabel)
       expect(id.length).toBeLessThan(longLabel.length + 50)
     })
+
+    it('includes documentId in ID for document nodeType when provided', () => {
+      const idWithoutDoc = makeMindNodeId('user1', 'document', 'My Doc')
+      const idWithDoc = makeMindNodeId('user1', 'document', 'My Doc', 42)
+      expect(idWithDoc).toContain('_42')
+      expect(idWithDoc).not.toBe(idWithoutDoc)
+    })
+
+    it('does not include documentId for non-document nodeType', () => {
+      const idWithoutDoc = makeMindNodeId('user1', 'project', 'My Project')
+      const idWithDoc = makeMindNodeId('user1', 'project', 'My Project', 42)
+      expect(idWithoutDoc).toBe(idWithDoc)
+    })
+
+    it('different documentId produces different ID for same label', () => {
+      const id1 = makeMindNodeId('user1', 'document', 'My Doc', 1)
+      const id2 = makeMindNodeId('user1', 'document', 'My Doc', 2)
+      expect(id1).not.toBe(id2)
+    })
   })
 
   describe('makeMindEdgeId', () => {

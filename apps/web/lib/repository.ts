@@ -154,6 +154,7 @@ import {
   type PersistedWorkspaceSession,
   type PersistedEditorDraft,
   type DraftStatus,
+  type DraftSourceType,
   type TagRecord,
   type WidgetRecord,
 } from './db'
@@ -180,6 +181,7 @@ export type { PersistedEditorDraft as StoredDraft }
 export type { PersistedTip as StoredTip }
 export type { TipSourceType, TipStatus }
 export type { DraftStatus }
+export type { DraftSourceType }
 export type { ChainProvenance }
 export type { CalendarDayResult }
 export type { CalendarMonthOverview }
@@ -1528,6 +1530,7 @@ export async function createCaptureToDocumentFlow(
     label: title,
     documentId: docId,
     state: 'drifting',
+    metadata: { sourceType: 'document', entryId: docId },
   })
 
   await dockItemsTable.update(captureId, {
@@ -1680,7 +1683,7 @@ export async function upsertMindNode(input: {
   metadata?: Record<string, unknown> | null
 }): Promise<PersistedMindNode> {
   const now = new Date()
-  const id = makeMindNodeId(input.userId, input.nodeType, input.label)
+  const id = makeMindNodeId(input.userId, input.nodeType, input.label, input.documentId)
   const existing = await mindNodesTable.get(id)
 
   const record: MindNodeRecord = {
@@ -1728,6 +1731,29 @@ export async function deleteMindNode(userId: string, id: string): Promise<boolea
   return true
 }
 
+export async function findMindNodeByDocumentId(
+  userId: string,
+  documentId: number,
+): Promise<PersistedMindNode | null> {
+  const nodes = await mindNodesTable.where('userId').equals(userId).toArray()
+  const found = nodes.find(n => n.documentId === documentId)
+  return found ? toPersistedMindNode(found) as PersistedMindNode : null
+}
+
+export async function findMindNodeBySourceType(
+  userId: string,
+  documentId: number,
+  sourceType: 'draft' | 'document',
+): Promise<PersistedMindNode | null> {
+  const nodes = await mindNodesTable.where('userId').equals(userId).toArray()
+  const found = nodes.find(n =>
+    n.documentId === documentId &&
+    n.metadata != null &&
+    (n.metadata as Record<string, unknown>).sourceType === sourceType
+  )
+  return found ? toPersistedMindNode(found) as PersistedMindNode : null
+}
+
 export async function listMindEdges(userId: string): Promise<PersistedMindEdge[]> {
   const edges = await mindEdgesTable.where('userId').equals(userId).toArray()
   return edges.flatMap((e) => { const p = toPersistedMindEdge(e); return p ? [p] : [] })
@@ -1741,6 +1767,32 @@ export async function listMindEdgesBySourceNode(userId: string, sourceNodeId: st
 export async function listMindEdgesByTargetNode(userId: string, targetNodeId: string): Promise<PersistedMindEdge[]> {
   const edges = await mindEdgesTable.where('userId').equals(userId).and((e) => e.targetNodeId === targetNodeId).toArray()
   return edges.flatMap((e) => { const p = toPersistedMindEdge(e); return p ? [p] : [] })
+}
+
+export async function checkDocumentNameConflict(
+  userId: string,
+  label: string,
+  parentEdgeType: MindEdgeType = 'parent_child',
+): Promise<{ hasConflict: boolean; conflictingParentIds: string[]; hasRootLevelConflict: boolean }> {
+  const normalized = label.trim().toLowerCase()
+  const allNodes = await mindNodesTable.where('userId').equals(userId).toArray()
+  const allEdges = await mindEdgesTable.where('userId').equals(userId).toArray()
+  const documentNodes = allNodes.filter(n => n.nodeType === 'document')
+  const sameNameNodes = documentNodes.filter(n => n.label.trim().toLowerCase() === normalized)
+  if (sameNameNodes.length === 0) return { hasConflict: false, conflictingParentIds: [], hasRootLevelConflict: false }
+  const parentEdges = allEdges.filter(e => e.edgeType === parentEdgeType)
+  const conflictingParentIds: string[] = []
+  let hasRootLevelConflict = false
+  for (const sameNameNode of sameNameNodes) {
+    const parentEdge = parentEdges.find(e => e.targetNodeId === sameNameNode.id)
+    if (parentEdge) {
+      conflictingParentIds.push(parentEdge.sourceNodeId)
+    } else {
+      hasRootLevelConflict = true
+    }
+  }
+  const hasConflict = conflictingParentIds.length > 0 || hasRootLevelConflict
+  return { hasConflict, conflictingParentIds, hasRootLevelConflict }
 }
 
 export async function getMindEdge(userId: string, id: string): Promise<PersistedMindEdge | null> {
@@ -1990,6 +2042,8 @@ async function addDraftRecord(
   userId: string,
   title: string,
   content: string,
+  sourceEntryId?: number | null,
+  sourceType?: DraftSourceType | null,
 ): Promise<number> {
   const now = new Date()
   const id = await editorDraftsTable.add({
@@ -1998,6 +2052,8 @@ async function addDraftRecord(
     title,
     content,
     status: 'active',
+    sourceEntryId: sourceEntryId ?? null,
+    sourceType: sourceType ?? null,
     createdAt: now,
     updatedAt: now,
   })
@@ -2009,8 +2065,10 @@ export async function createDraft(
   userId: string,
   title: string = '',
   content: string = '',
+  sourceEntryId?: number | null,
+  sourceType?: DraftSourceType | null,
 ): Promise<PersistedEditorDraft | null> {
-  const id = await addDraftRecord(userId, title, content)
+  const id = await addDraftRecord(userId, title, content, sourceEntryId, sourceType)
   const saved = await editorDraftsTable.get(id)
   return toPersistedEditorDraft(saved)
 }
@@ -2026,6 +2084,18 @@ export async function listDrafts(userId: string): Promise<PersistedEditorDraft[]
     const p = toPersistedEditorDraft(d)
     return p ? [p] : []
   })
+}
+
+export async function findActiveDraftBySourceEntryId(
+  userId: string,
+  entryId: number,
+): Promise<PersistedEditorDraft | null> {
+  const drafts = await editorDraftsTable
+    .where('[userId+sourceEntryId]')
+    .equals([userId, entryId])
+    .toArray()
+  const active = drafts.find((d) => d.status === 'active')
+  return active ? toPersistedEditorDraft(active) : null
 }
 
 export async function getDraft(userId: string, draftId: number): Promise<PersistedEditorDraft | null> {
@@ -2048,52 +2118,121 @@ export async function updateDraft(
   return toPersistedEditorDraft(await editorDraftsTable.get(draftId))
 }
 
+export type PublishMode = 'update_original' | 'as_new'
+
+export interface PublishResult {
+  draft: PersistedEditorDraft | null
+  entry: PersistedEntry | null
+  nameConflict?: { hasConflict: boolean; conflictingParentIds: string[] }
+}
+
 export async function publishDraftToDocument(
   userId: string,
   draftId: number,
-): Promise<{ draft: PersistedEditorDraft | null; entry: PersistedEntry | null }> {
+  publishMode: PublishMode = 'update_original',
+): Promise<PublishResult> {
   const draft = await editorDraftsTable.get(draftId)
   if (!draft || draft.userId !== userId || (draft.status && draft.status !== 'active')) {
     return { draft: null, entry: null }
   }
 
+  const title = draft.title || 'Untitled'
+
+  if (publishMode === 'as_new') {
+    const conflict = await checkDocumentNameConflict(userId, title)
+    if (conflict.hasConflict) {
+      return { draft: null, entry: null, nameConflict: conflict }
+    }
+  }
+
   const now = new Date()
-  const entryId = await entriesTable.add({
-    userId,
-    sourceDockItemId: 0,
-    title: draft.title || 'Untitled',
-    content: draft.content,
-    type: 'note',
-    tags: [],
-    project: null,
-    actions: [],
-    createdAt: now,
-    archivedAt: now,
-  })
+  let entry: PersistedEntry | null = null
+
+  if (draft.sourceEntryId != null && publishMode === 'update_original') {
+    const existing = await entriesTable.get(draft.sourceEntryId)
+    if (existing && existing.userId === userId) {
+      await entriesTable.update(draft.sourceEntryId, {
+        title: draft.title || 'Untitled',
+        content: draft.content,
+        archivedAt: now,
+      })
+      entry = toPersistedEntry(await entriesTable.get(draft.sourceEntryId))
+    }
+  }
+
+  if (!entry) {
+    const entryId = await entriesTable.add({
+      userId,
+      sourceDockItemId: draft.sourceEntryId ?? 0,
+      title: draft.title || 'Untitled',
+      content: draft.content,
+      type: 'note',
+      tags: [],
+      project: null,
+      actions: [],
+      createdAt: now,
+      archivedAt: now,
+    })
+    entry = toPersistedEntry(await entriesTable.get(entryId as number))
+  }
 
   await editorDraftsTable.update(draftId, {
     status: 'published',
     updatedAt: now,
   })
 
-  const title = draft.title || 'Untitled'
-  await upsertMindNode({
-    userId,
-    nodeType: 'document',
-    label: title,
-    documentId: entryId as number,
-    state: 'drifting',
-  })
+  const entryId = entry?.id
+  if (entryId == null) {
+    return { draft: toPersistedEditorDraft(await editorDraftsTable.get(draftId)), entry: null }
+  }
+
+  const draftNode = await findMindNodeBySourceType(userId, draftId, 'draft')
+  if (draftNode) {
+    await mindNodesTable.delete(draftNode.id)
+  }
+
+  if (draft.sourceEntryId != null && publishMode === 'update_original') {
+    const entryNode = await findMindNodeBySourceType(userId, draft.sourceEntryId, 'document')
+    if (entryNode) {
+      await mindNodesTable.update(entryNode.id, {
+        label: title,
+        documentId: entryId,
+        metadata: { sourceType: 'document', entryId },
+        updatedAt: now,
+      })
+    } else {
+      await upsertMindNode({
+        userId,
+        nodeType: 'document',
+        label: title,
+        documentId: entryId,
+        state: 'drifting',
+        metadata: { sourceType: 'document', entryId },
+      })
+    }
+  } else {
+    await upsertMindNode({
+      userId,
+      nodeType: 'document',
+      label: title,
+      documentId: entryId,
+      state: 'drifting',
+      metadata: { sourceType: 'document', entryId },
+    })
+  }
 
   return {
     draft: toPersistedEditorDraft(await editorDraftsTable.get(draftId)),
-    entry: toPersistedEntry(await entriesTable.get(entryId as number)),
+    entry,
   }
 }
+
+export type DiscardMode = 'abandon_changes' | 'delete_all'
 
 export async function discardDraft(
   userId: string,
   draftId: number,
+  discardMode: DiscardMode = 'abandon_changes',
 ): Promise<PersistedEditorDraft | null> {
   const draft = await editorDraftsTable.get(draftId)
   if (!draft || draft.userId !== userId) return null
@@ -2101,6 +2240,22 @@ export async function discardDraft(
     status: 'discarded',
     updatedAt: new Date(),
   })
+  if (!draft.sourceEntryId) {
+    const draftNode = await findMindNodeBySourceType(userId, draftId, 'draft')
+    if (draftNode) {
+      await mindNodesTable.delete(draftNode.id)
+    }
+  }
+  if (draft.sourceEntryId != null && discardMode === 'delete_all') {
+    const entryNode = await findMindNodeBySourceType(userId, draft.sourceEntryId, 'document')
+    if (entryNode) {
+      await mindNodesTable.delete(entryNode.id)
+    }
+    const existing = await entriesTable.get(draft.sourceEntryId)
+    if (existing && existing.userId === userId) {
+      await entriesTable.delete(draft.sourceEntryId)
+    }
+  }
   return toPersistedEditorDraft(await editorDraftsTable.get(draftId))
 }
 
@@ -2131,6 +2286,8 @@ export async function saveEditorDraft(
     title,
     content,
     status: 'active',
+    sourceEntryId: null,
+    sourceType: null,
     createdAt: now,
     updatedAt: now,
   })
@@ -3674,6 +3831,7 @@ export async function syncDocumentsToMindNodes(
     for (const draft of drafts) {
       if (draft.status !== 'active') continue
       if (existingDocIds.has(draft.id)) continue
+      if (draft.sourceEntryId != null) continue
 
       await upsertMindNode({
         userId,

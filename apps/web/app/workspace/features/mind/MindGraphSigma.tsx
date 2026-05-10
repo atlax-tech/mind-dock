@@ -561,7 +561,7 @@ function MindGraphInner({
     const handleDoubleClickNode = (event: { node: string }) => {
       const attrs = graph.getNodeAttributes(event.node)
       if (attrs.documentId != null) {
-        const sourceType = attrs.sourceType ?? 'draft'
+        const sourceType = attrs.sourceType ?? 'document'
         onOpenEditor(attrs.documentId, sourceType)
       }
     }

@@ -9,6 +9,486 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：MIND-REAL-002 Round 7 (Bug Fix: MindNode ID 空间碰撞 - findMindNodeByDocumentId 不区分 sourceType) -->
+<!-- ============================================ -->
+
+## MIND-REAL-002 Round 7 devlog -- Bug Fix: MindNode ID 空间碰撞
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 09:30 - 10:00 CST
+
+**工时**: 30 分钟
+
+**Review 结论**: FAIL → 整改
+
+**问题**: `findMindNodeByDocumentId(userId, documentId)` 只按数字 `documentId` 查找，不区分 `metadata.sourceType === 'draft' | 'document'`。由于 draft 和 entry 是不同自增表，ID 很容易同号，可能误删 entry/document MindNode，造成已有 edge 悬空。
+
+**具体碰撞场景**:
+1. 发布 entry-origin draft 时，`findMindNodeByDocumentId(userId, draftId)` 用 draftId 查找 draft node，但如果恰好有一个 entry 的 ID 等于 draftId，会误找到 entry 的 MindNode 并删除
+2. 丢弃 standalone draft 时，`findMindNodeByDocumentId(userId, draftId)` 同样可能误删同 ID 的 entry MindNode
+
+**修复方案**:
+1. 新增 `findMindNodeBySourceType(userId, documentId, sourceType)` 函数，按 `metadata.sourceType` 区分 draft node 和 document node
+2. `publishDraftToDocument` 中查找 draft node 改用 `findMindNodeBySourceType(userId, draftId, 'draft')`
+3. `publishDraftToDocument` 中查找 entry node 改用 `findMindNodeBySourceType(userId, entryId, 'document')`
+4. `discardDraft` 中查找 draft node 改用 `findMindNodeBySourceType(userId, draftId, 'draft')`
+5. `discardDraft` 中查找 entry node 改用 `findMindNodeBySourceType(userId, entryId, 'document')`
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/lib/repository.ts` | +14/-4 | 新增 `findMindNodeBySourceType` 函数；`publishDraftToDocument` 和 `discardDraft` 中所有 MindNode 查找改用 `findMindNodeBySourceType` |
+| `apps/web/tests/draft-repository.test.ts` | +156 | 新增 3 个碰撞场景测试：发布不误删 entry MindNode + 不丢 parent_child edge、丢弃不误删同 ID entry MindNode、`findMindNodeBySourceType` 区分 draft vs document |
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ PASS，0 errors（7 warnings 均为已有）
+- `pnpm typecheck`: ✅ PASS
+- `pnpm test`: ✅ 631 passed（含新增 3 个 ID 碰撞安全测试）
+- `pnpm build:web`: ✅ PASS
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-002 Round 6 (Bug Fix: 同标题文档覆盖 + 同层级重名去重) -->
+<!-- ============================================ -->
+
+## MIND-REAL-002 Round 6 devlog -- Bug Fix: 同标题文档覆盖 + 同层级重名去重
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 08:00 - 09:00 CST
+
+**工时**: 60 分钟
+
+**问题现象**:
+1. 从 node 节点进入编辑，不修改标题只添加内容，选择"作为新文档存入"后，Mind View 中没有出现新文档节点
+2. Home 界面能看到重名文档但内容不同
+3. 刷新后 Node 没有新增节点，但原文档中的内容被更改
+
+**根因分析**:
+`makeMindNodeId` 的 ID 生成规则为 `${userId}_mn_${nodeType}_${normalized}`，仅基于 userId + nodeType + label。当 `as_new` 模式发布同标题文档时，新 MindNode 的 ID 与原 MindNode 完全相同，`upsertMindNode` 的 `put` 操作覆盖了原有记录，导致原 MindNode 的 `documentId` 被更新为新 entry 的 ID。
+
+**修复方案**:
+1. **ID 生成策略修改**: `makeMindNodeId` 新增可选 `documentId` 参数，当 `nodeType === 'document'` 且 `documentId` 存在时，ID 格式变为 `${userId}_mn_${nodeType}_${normalized}_${documentId}`
+2. **数据库迁移**: DB v22 迁移，将已有 document 类型节点的 ID 更新为包含 `documentId` 的新格式，同时更新所有引用这些节点的边
+3. **同层级重名去重**: 新增 `checkDocumentNameConflict` 函数，在 `as_new` 模式发布前检查同层级是否存在同名文档
+4. **用户提示**: 当检测到重名冲突时，toast 提示"同名文档已存在于当前层级，请修改标题后重试"
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `packages/domain/src/mind/types.ts` | +4/-1 | `makeMindNodeId` 新增可选 `documentId` 参数，document 类型节点 ID 包含 documentId |
+| `packages/domain/tests/mind-types.test.ts` | +19 | 新增 3 个测试：documentId 参与 ID 计算、非 document 类型忽略 documentId、不同 documentId 产生不同 ID |
+| `apps/web/lib/db.ts` | +69 | DB v22 迁移：遍历 document 类型节点重新生成 ID，更新引用这些节点的边 |
+| `apps/web/lib/repository.ts` | +30/-5 | `upsertMindNode` 传入 `documentId` 生成 ID；新增 `checkDocumentNameConflict` 函数；`publishDraftToDocument` 新增 `PublishResult` 类型和 `nameConflict` 返回字段；`as_new` 模式发布前检查重名冲突 |
+| `apps/web/app/workspace/features/editor/useDrafts.ts` | +5/-2 | `handlePublish` 返回类型增加 `nameConflict` 字段；冲突时直接返回不执行发布 |
+| `apps/web/app/workspace/features/editor/DraftEditorView.tsx` | +4 | `executePublish` 处理 `nameConflict`，toast 提示用户 |
+| `apps/web/tests/draft-repository.test.ts` | +128 | 新增 5 个测试：同层级重名检测、不同层级不冲突、无同名不冲突、as_new 发布重名冲突返回 nameConflict、as_new 发布无父边不冲突 |
+
+**设计决策**:
+
+1. **ID 策略**: 仅对 `document` 类型节点将 `documentId` 纳入 ID 计算。其他类型节点（project、topic 等）不受影响，保持向后兼容。
+2. **重名策略**: 同层级（同一 parent_child 边的父节点下）不允许重名；不同层级/无父边（drifting 状态）允许同名。
+3. **冲突处理**: `as_new` 模式下检测到重名冲突时，不执行发布，返回 `nameConflict` 信息，由前端 toast 提示用户修改标题。
+4. **迁移策略**: DB v22 迁移时，先收集所有需要更新 ID 的节点，然后逐个更新节点和引用这些节点的边。
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ PASS，0 errors（7 warnings 均为已有）
+- `pnpm typecheck`: ✅ PASS
+- `pnpm test`: ✅ 628 passed（含新增 8 个 makeMindNodeId/checkDocumentNameConflict 测试）
+- `pnpm build:web`: ✅ PASS
+
+**手工验证步骤说明**:
+
+1. 从 document 节点进入编辑，不修改标题只添加内容
+2. 选择"作为新文档存入"
+3. 确认 toast 提示"同名文档已存在于当前层级，请修改标题后重试"（当前所有节点均在 root level，同名即冲突）
+4. 修改标题后重新选择"作为新文档存入"，确认发布成功
+5. 切回 Mind View 确认新文档节点出现（不同标题、不同 ID）
+6. 确认原文档节点保持不变
+7. 刷新页面确认两个节点都存在
+
+**注**: 当前未接入父节点创建功能，所有新建节点均在 root level，因此任何同名文档都会触发冲突。待父节点功能接入后，不同父节点下的同名文档将允许共存。
+
+**📌 后续推进：Mind View 父节点创建与连接逻辑**（由用户提出，待后续迭代实现，请 reviewer 记录）：
+
+1. **默认 Root 连接**: 所有节点创建后，若用户未手动配置连接，默认连接到以用户名命名的 Root 节点下。
+2. **拖动连接自动断开 Root**: 用户在 Mind View 中拖动节点连接至一个父节点时，该节点与 Root 节点的连接自动断开（不允许同时挂载 Root 和其他父节点，除非用户选择强行连接）。
+3. **强行连接 Root 提示**: 当用户将一个已有父节点的子节点拖拽连接至 Root 时，需弹出确认提示（"是否连接至 Root？"）；连接其他父节点时无需提示。
+4. **父节点自动升级**: 当一个节点下有 ≥2 个"强链接"（实线）的独立子节点连接时，该节点自动升级为父节点，并根据层级自动变为父节点配色。
+   - **强连接（实线）**: 文档强相关或存在层级包含关系
+   - **软连接（虚线）**: 文档中可能有某些关键词相关，需用户手动关联关键词
+5. **拖拽连接生成 Edge 规则**: 同级节点连接默认为"软连接"（虚线）；不同级节点连接默认为"强连接"（实线）。连接方式可由用户在节点详情处调整。
+   - **⚠️ 待进一步设计**: 此处具体连接方式需配合智能算法进行设计，当前规则为初始版本，后续需与推荐/聚类算法协同优化。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-002 Round 5 (UX 增强：发布选择 + 丢弃选择对话框) -->
+<!-- ============================================ -->
+
+## MIND-REAL-002 Round 5 devlog -- UX 增强：发布选择 + 丢弃选择对话框
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 07:00 - 08:00 CST
+
+**工时**: 60 分钟
+
+**⚠️ 越界说明**: 此 UX 增强不在 MIND-REAL-002 原始边界内，由用户明确要求在本轮实现。用户原话："这个策略就在本轮中实现吧，后面我怕忘了。你如实的记录到dev log中就说是我要求新加的UX逻辑增强，让review忽略此越界行为。" 后续用户又要求："丢弃草稿也请加一层UX逻辑增强（选择放弃更改保留原内容去除新增内容｜选择删除删除草稿文件）"
+
+**任务目标**:
+1. 为 entry-origin Draft 发布时增加用户选择：修改原文档 vs 作为新文档存入
+2. 新增 `PublishMode` 类型（`'update_original' | 'as_new'`）
+3. 修改 `publishDraftToDocument` 支持两种发布路径
+4. 在 DraftEditorView 中添加发布选择对话框
+5. 为 entry-origin Draft 丢弃时增加用户选择：放弃更改 vs 删除草稿及原文档
+6. 新增 `DiscardMode` 类型（`'abandon_changes' | 'delete_all'`）
+7. 修改 `discardDraft` 支持两种丢弃路径
+8. 在 DraftEditorView 中添加丢弃选择对话框
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/lib/repository.ts` | +6/-4 | 新增 `PublishMode` + `DiscardMode` 类型；`publishDraftToDocument` 增加 `publishMode` 参数；`discardDraft` 增加 `discardMode` 参数，`delete_all` 模式删除原 entry + MindNode |
+| `apps/web/app/workspace/features/editor/useDrafts.ts` | +6/-4 | import `PublishMode` + `DiscardMode`；`handlePublish` 增加 `publishMode` 参数；`handleDiscard` 增加 `discardMode` 参数，`delete_all` 模式发 `mind_node_deleted` 事件 |
+| `apps/web/app/workspace/features/editor/DraftEditorView.tsx` | +130/-8 | import `Copy`/`RefreshCw`/`Undo2`/`X` + `PublishMode`/`DiscardMode`；新增 `showPublishChoice`/`showDiscardChoice`/`discardTargetId` 状态；`onPublish` 拆分为 `onPublish` + `executePublish`；`onDiscard` 拆分为 `onDiscard` + `executeDiscard`；新增发布选择对话框 + 丢弃选择对话框 UI |
+| `apps/web/tests/draft-repository.test.ts` | +170 | 新增 6 个测试：`as_new` 创建新 entry、`as_new` 创建新 MindNode、`update_original` 更新原 entry、`delete_all` 删除原 entry + MindNode、`abandon_changes` 保留原 entry、`delete_all` 不影响其他用户 entry |
+
+**设计决策**:
+
+1. **发布选择对话框触发条件**: 仅当 draft 的 `sourceEntryId != null` 时弹出选择对话框。standalone draft 直接发布为新文档，无需选择。
+2. **丢弃选择对话框触发条件**: 仅当 draft 的 `sourceEntryId != null` 时弹出选择对话框。standalone draft 直接丢弃（当前行为）。
+3. **默认行为**: `publishMode` 默认 `'update_original'`，`discardMode` 默认 `'abandon_changes'`，保持向后兼容。
+4. **MindNode 处理**:
+   - `update_original` 模式：更新原 entry MindNode
+   - `as_new` 模式：创建新 MindNode，原 entry MindNode 保持不变
+   - `abandon_changes` 模式：保留原 entry MindNode
+   - `delete_all` 模式：删除原 entry MindNode
+5. **对话框 UI**: 遵循项目现有毛玻璃风格，两个选项卡片：
+   - 发布："修改原文档"（高亮色 `#86d7ff`，RefreshCw 图标）vs "作为新文档存入"（中性色，Copy 图标）
+   - 丢弃："放弃更改"（高亮色 `#86d7ff`，Undo2 图标）vs "删除草稿及原文档"（红色警告，Trash2 图标）
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ PASS，0 errors（7 warnings 均为已有）
+- `pnpm typecheck`: ✅ PASS
+- `pnpm test`: ✅ 623 passed（含新增 6 个 PublishMode/DiscardMode 测试）
+- `pnpm build:web`: ✅ PASS
+
+**手工验证步骤说明**:
+
+1. 选中一个 document 类型节点（已归档文档），点击 "Open in Editor"
+2. 修改文档标题和内容，点击"发布"
+3. 确认弹出"发布方式"选择对话框
+4. 选择"修改原文档"：确认 toast 提示"已更新原文档"，切回 Mind 视图确认原节点标题已更新
+5. 重复步骤 1-2，这次选择"作为新文档存入"：确认 toast 提示"已发布为新文档"，切回 Mind 视图确认原节点不变、出现新节点
+6. 创建一个全新草稿（不关联 entry），点击"发布"：确认不弹出选择对话框，直接发布为新文档
+7. 选中一个 document 类型节点，点击 "Open in Editor"
+8. 修改文档内容，点击"丢弃草稿"
+9. 确认弹出"丢弃方式"选择对话框
+10. 选择"放弃更改"：确认 toast 提示"已放弃更改"，切回 Mind 视图确认原节点仍在
+11. 重复步骤 7-8，这次选择"删除草稿及原文档"：确认 toast 提示"已删除草稿及原文档"，切回 Mind 视图确认原节点已消失
+12. 创建一个全新草稿（不关联 entry），点击"丢弃草稿"：确认不弹出选择对话框，直接丢弃
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-002 Round 4 (MindNode 生命周期管理：discard 清理 + publish 更新) -->
+<!-- ============================================ -->
+
+## MIND-REAL-002 Round 4 devlog -- MindNode 生命周期管理：discard 清理 + publish 更新
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 06:15 - 06:30 CST
+
+**工时**: 15 分钟
+
+**任务目标**:
+1. 修复丢弃草稿后 MindNode 仍可见的问题
+2. 修复发布 entry-origin Draft 后创建新节点而非更新原节点的问题
+3. entry-origin Draft 不应有独立 MindNode（已有 entry 的 MindNode）
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/lib/repository.ts` | +9 | 新增 findMindNodeByDocumentId 函数 |
+| `apps/web/lib/repository.ts` | +6 | discardDraft: 丢弃 standalone draft 时删除关联 MindNode |
+| `apps/web/lib/repository.ts` | +27/-7 | publishDraftToDocument: entry-origin Draft 更新原 entry MindNode + 删除 draft MindNode |
+| `apps/web/lib/repository.ts` | +1 | syncDocumentsToMindNodes: 跳过有 sourceEntryId 的 draft |
+| `apps/web/app/workspace/features/editor/useDrafts.ts` | +8/-2 | handlePublish: entry-origin 发 mind_node_updated 事件；handleDiscard: standalone draft 发 mind_node_deleted 事件 |
+| `apps/web/tests/draft-repository.test.ts` | +2 | import findMindNodeByDocumentId + upsertMindNode |
+| `apps/web/tests/draft-repository.test.ts` | +63 | 新增 4 个测试：publish 更新 entry MindNode、publish 删除 draft MindNode、discard 删除 draft MindNode、discard 保留 entry MindNode |
+
+**遇到的问题及解决方式**:
+
+1. **问题**: 丢弃草稿后 MindNode 仍可见
+   - **根因**: `discardDraft` 只更新 draft status 为 'discarded'，不清理关联 MindNode
+   - **解决**: `discardDraft` 在丢弃 standalone draft（无 sourceEntryId）时，查找并删除关联的 draft MindNode。entry-origin draft 丢弃时不删除 entry MindNode（原 entry 仍存在）
+
+2. **问题**: 发布 entry-origin Draft 后创建新 MindNode 而非更新原节点
+   - **根因**: `makeMindNodeId` 基于 label 生成 ID，标题变更时生成新 ID → 创建新 MindNode。且 entry-origin Draft 的 draft MindNode（documentId=draftId）与 entry MindNode（documentId=entryId）是两个不同节点
+   - **解决**: (1) `publishDraftToDocument` 对 entry-origin Draft：先删除 draft MindNode，再找到原 entry MindNode 直接更新 label/metadata（绕过 makeMindNodeId 的 label 依赖）；(2) `syncDocumentsToMindNodes` 跳过有 sourceEntryId 的 draft，避免为 entry-origin draft 创建独立 MindNode
+
+3. **问题**: entry-origin Draft 不应有独立 MindNode
+   - **根因**: `syncDocumentsToMindNodes` 为所有 active draft 创建 MindNode，包括 entry-origin draft，导致同一文档出现两个节点
+   - **解决**: `syncDocumentsToMindNodes` 增加 `if (draft.sourceEntryId != null) continue` 跳过
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ PASS，0 errors
+- `pnpm typecheck`: ✅ PASS
+- `pnpm test`: ✅ 617 passed（含新增 4 个 MindNode 生命周期测试）
+- `pnpm build:web`: ✅ PASS
+
+**手工验证步骤说明**:
+
+1. 创建一个草稿（不关联 entry），切换到 Mind 确认节点出现
+2. 选中该草稿节点，点击 "Open in Editor"
+3. 点击"丢弃草稿"
+4. 切回 Mind 视图，确认草稿节点已消失
+5. 选中一个 document 类型节点（已归档文档），点击 "Open in Editor"
+6. 修改文档标题和内容，点击"发布"
+7. 切回 Mind 视图，确认原节点标题已更新，且没有新增节点
+8. 再次选中该 document 节点，点击 "Open in Editor"
+9. 点击"丢弃草稿"
+10. 切回 Mind 视图，确认原 document 节点仍然存在（内容未变）
+
+**当前风险及影响范围**:
+
+1. **makeMindNodeId 基于 label**: 这是架构层面的设计问题，标题变更会导致 ID 失效。当前通过 `findMindNodeByDocumentId` + 直接 `mindNodesTable.update` 绕过了此问题，但未来可能需要重构 MindNode ID 生成策略。**风险**: 中。
+2. **findMindNodeByDocumentId 性能**: 当前通过 scan + filter 实现，无 documentId 索引。数据量大时可能有性能问题。**风险**: 低（当前数据量小）。
+3. **passive event listener 控制台警告**: 已有问题，不影响功能。**风险**: 低。
+4. **推荐连接功能不可用**: 非本任务边界。**风险**: 中，需后续修复。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-002 Round 3 (草稿节点不显示 + 风险点确认) -->
+<!-- ============================================ -->
+
+## MIND-REAL-002 Round 3 devlog -- 草稿节点不显示 + 风险点确认
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 05:55 - 06:10 CST
+
+**工时**: 15 分钟
+
+**任务目标**:
+1. 修复草稿态文档没有出现在 Mind View 中的问题
+2. 确认"丢弃 entry-origin Draft 后原 entry 未删除"的逻辑风险归属
+3. 记录非任务边界内的风险点
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/app/workspace/page.tsx` | +9 | MindView 组件挂载时调用 syncDocumentsToMindNodes，确保切换到 Mind tab 时 draft 节点同步 |
+
+**遇到的问题及解决方式**:
+
+1. **问题**: 草稿态文档没有出现在 Mind View 中
+   - **根因**: `syncDocumentsToMindNodes` 只在应用启动时调用一次（`useEffect([userId])`），之后创建的 draft 不会自动同步到 Mind View
+   - **解决**: 在 MindView 组件挂载时也调用 `syncDocumentsToMindNodes`。由于 MindView 只在 `activeTab === 'mind'` 时渲染，每次切到 Mind tab 都会触发同步
+
+2. **问题**: 丢弃 entry-origin Draft 后原 entry 未删除
+   - **分析**: 这是**预期行为**，不是 bug。丢弃草稿 = 放弃编辑，原 entry 应保留。如果需要"撤销编辑并删除原 entry"，应设计为独立操作
+   - **决定**: 记录为后续风险点，不在本轮修复
+
+3. **问题**: 控制台报错 `Unable to preventDefault inside passive event listener`
+   - **根因**: `useMindCanvasRenderer.ts:547` 中 `e.preventDefault()` 在 React 合成事件的 passive wheel listener 中调用
+   - **决定**: 不在本轮修复，记录为已知问题。修复方案：改用原生 `addEventListener('wheel', handler, { passive: false })`
+
+4. **问题**: 推荐连接按钮显示"连接建立失败"
+   - **决定**: 不在本轮修复，记录为非任务边界内的风险点
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ PASS，0 errors / 7 warnings
+- `pnpm typecheck`: ✅ PASS
+- `pnpm test`: ✅ 613 passed
+- `pnpm build:web`: ✅ PASS
+
+**手工验证步骤说明**:
+
+1. 在 Editor 中创建一个新草稿（不关联 entry）
+2. 切换到 Mind 视图
+3. 确认：新创建的草稿节点出现在图谱中（sourceType='draft'）
+4. 选中该草稿节点，点击 "Open in Editor"
+5. 确认：自动切换到 Editor 并打开对应 draftId 的草稿
+6. 选中一个 document 类型节点（已归档文档），点击 "Open in Editor"
+7. 确认：自动切换到 Editor，创建 entry-origin Draft 并打开
+
+**当前风险及影响范围**:
+
+1. **丢弃 entry-origin Draft 不删除原 entry**: 预期行为。丢弃 = 放弃编辑，原 entry 保留。**影响范围**: 用户可能期望"丢弃"= 删除原文档。**后续需考虑**: 增加"撤销编辑"与"删除原文档"的区分。**风险**: 中。
+2. **passive event listener 控制台警告**: 已有问题，不影响功能。**影响范围**: 控制台噪音。**风险**: 低。
+3. **推荐连接功能不可用**: 非本任务边界。**影响范围**: 用户点击推荐连接按钮会失败。**风险**: 中，需后续修复。
+4. **syncDocumentsToMindNodes 性能**: 每次切到 Mind tab 都会全量同步。**影响范围**: 当 draft/entry 数量大时可能有性能问题。**风险**: 低（当前数据量小）。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-002 Round 2 (修复 document 节点打开失败 + sourceType 默认回退修正) -->
+<!-- ============================================ -->
+
+## MIND-REAL-002 Round 2 devlog -- 修复 document 节点打开失败 + sourceType 默认回退修正
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 05:40 - 05:50 CST
+
+**工时**: 10 分钟
+
+**任务目标**:
+1. 修复从 Mind 打开 document 节点时 toast 不出现的问题
+2. 修复正式文档和草稿文档在 Mind 中无法分辨的问题
+3. 确保 sourceType 正确传递和回退
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/lib/repository.ts` | +1 | publishDraftToDocument: upsertMindNode 传入 metadata: { sourceType: 'document', entryId } |
+| `apps/web/lib/repository.ts` | +1 | createCaptureToDocumentFlow: upsertMindNode 传入 metadata: { sourceType: 'document', entryId: docId } |
+| `apps/web/app/workspace/features/mind/MindGraphView.tsx` | -1/+1 | sourceType 默认回退从 'draft' 改为 'document' |
+| `apps/web/app/workspace/features/mind/MindGraphSigma.tsx` | -1/+1 | sourceType 默认回退从 'draft' 改为 'document' |
+| `apps/web/app/workspace/page.tsx` | -1/+1 | 右侧面板 sourceType 默认回退从 'draft' 改为 'document' |
+
+**遇到的问题及解决方式**:
+
+1. **问题**: 从 Mind 打开 document 类型节点时，toast "已从归档文档创建草稿" 不出现
+   - **根因**: `publishDraftToDocument` 和 `createCaptureToDocumentFlow` 创建 MindNode 时未传 `metadata.sourceType`，导致 sourceType 为 null。UI 代码在 sourceType 为 null 时默认回退到 `'draft'`，将 entry ID 当作 draft ID 传给 Editor，Editor 找不到对应 draft，无任何反应
+   - **解决**: (1) 两个 repository 函数增加 `metadata: { sourceType: 'document', entryId }`；(2) UI 默认回退从 `'draft'` 改为 `'document'`
+
+2. **问题**: 正式文档和草稿文档在 Mind 中都是 `nodeType: 'document'`，无法分辨
+   - **根因**: `MindNodeType` 类型定义中没有 `'draft'` 子类型，所有文档类内容统一使用 `nodeType: 'document'`。区分 draft/document 的唯一方式是 `metadata.sourceType`，但部分创建路径未设置此字段
+   - **解决**: 修复所有创建路径确保 sourceType 正确设置；UI 默认回退改为 `'document'`（因为 null sourceType 的节点都是 entry 类型）
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ PASS，0 errors / 7 warnings
+- `pnpm typecheck`: ✅ PASS
+- `pnpm test`: ✅ 613 passed
+- `pnpm build:web`: ✅ PASS
+
+**手工验证步骤说明**:
+
+1. 打开应用，切换到 Mind 视图
+2. 选中一个 document 类型节点（已归档文档），点击 "Open in Editor" 按钮
+3. 确认：自动切换到 Editor，toast 提示"已从归档文档创建草稿"或"已打开关联此文档的草稿"
+4. 选中一个 draft 类型节点（草稿），点击 "Open in Editor" 按钮
+5. 确认：自动切换到 Editor 并打开对应 draftId 的草稿
+6. 双击一个有 documentId 的节点
+7. 确认：自动跳转到 Editor 并正确打开对应文档
+
+**当前风险及影响范围**:
+
+1. **sourceType 默认回退改为 'document'**: 对于 `syncDocumentsToMindNodes` 创建的 draft 节点，sourceType 已正确设为 `'draft'`，不受影响。对于 null sourceType 的旧数据节点，默认当作 document 处理是正确的（因为 `createCaptureToDocumentFlow` 和 `publishDraftToDocument` 创建的都是 entry）。**风险**: 低。
+2. **已有 MindNode 数据**: 已有 MindNode 的 metadata.sourceType 可能为 null，但 UI 默认回退已修正为 'document'，功能正确。**风险**: 低。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-002 Round 1 (Mind 节点打开链路收口：Entry 编辑回写 + Pending State 清理) -->
+<!-- ============================================ -->
+
+## MIND-REAL-002 Round 1 devlog -- Mind 节点打开链路收口：Entry 编辑回写 + Pending State 清理
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 05:25 - 05:35 CST
+
+**工时**: 10 分钟
+
+**任务目标**:
+1. 从 Mind 打开 draft 节点时，Editor 正确锁定对应 Draft
+2. 从 Mind 打开 entry/document 节点时，不允许每次渲染或切回 Editor 都重复创建 Draft
+3. pendingOpenDraftId / pendingOpenEntryId 被 DraftEditorView 消费后必须清理
+4. entry-origin Draft 必须记录 sourceEntryId 来源关系
+5. 发布 entry-origin Draft 时，回写更新原 entry
+6. 刷新页面后，entry-origin Draft 的来源关系不能丢
+7. 不破坏 MIND-REAL-001 已完成链路
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/lib/db.ts` | +4 | EditorDraftRecord 增加 sourceEntryId/sourceType 字段，新增 DraftSourceType 类型 |
+| `apps/web/lib/db.ts` | +28 | DB v21 迁移：editorDrafts 索引增加 sourceEntryId + [userId+sourceEntryId]，upgrade 填充 null |
+| `apps/web/lib/repository.ts` | +1 | import DraftSourceType |
+| `apps/web/lib/repository.ts` | +1 | export type DraftSourceType |
+| `apps/web/lib/repository.ts` | +4 | addDraftRecord 增加 sourceEntryId/sourceType 参数 |
+| `apps/web/lib/repository.ts` | +4 | createDraft 增加 sourceEntryId/sourceType 参数 |
+| `apps/web/lib/repository.ts` | +12 | 新增 findActiveDraftBySourceEntryId 函数 |
+| `apps/web/lib/repository.ts` | +17/-10 | publishDraftToDocument：entry-origin Draft 回写原 entry，否则新建 entry 并记录 sourceEntryId |
+| `apps/web/lib/repository.ts` | +2 | saveEditorDraft 创建新记录时显式设置 sourceEntryId: null, sourceType: null |
+| `apps/web/app/workspace/features/editor/useDrafts.ts` | +2 | import findActiveDraftBySourceEntryId + DraftSourceType |
+| `apps/web/app/workspace/features/editor/useDrafts.ts` | +5 | handleCreate 增加 sourceEntryId/sourceType 参数 |
+| `apps/web/app/workspace/features/editor/useDrafts.ts` | +6 | 新增 handleFindActiveBySourceEntry + 暴露 findActiveBySourceEntry |
+| `apps/web/app/workspace/features/editor/DraftEditorView.tsx` | +2 | Props 增加 onInitialDraftConsumed / onInitialEntryConsumed |
+| `apps/web/app/workspace/features/editor/DraftEditorView.tsx` | +1 | 解构 findActiveBySourceEntry |
+| `apps/web/app/workspace/features/editor/DraftEditorView.tsx` | +2 | initialDraftId useEffect 消费后调用 onInitialDraftConsumed |
+| `apps/web/app/workspace/features/editor/DraftEditorView.tsx` | +12/-4 | initialEntryId useEffect：先查已有 active source draft 复用，否则创建带 sourceEntryId 的新 draft，消费后调用 onInitialEntryConsumed |
+| `apps/web/app/workspace/page.tsx` | +1 | DraftEditorView 传入 onInitialDraftConsumed / onInitialEntryConsumed 回调 |
+| `apps/web/tests/draft-repository.test.ts` | +106/-0 | 新增测试：sourceEntryId/sourceType 创建、findActiveDraftBySourceEntryId、publishDraftToDocument 回写原 entry、来源丢失降级、跨用户隔离 |
+
+**遇到的问题及解决方式**:
+
+1. **问题**: pendingOpenDraftId / pendingOpenEntryId 一旦设置后永远不会被清除，导致切回 Editor tab 时可能重复触发 useEffect
+   - **解决**: DraftEditorView 新增 onInitialDraftConsumed / onInitialEntryConsumed 回调，消费后通知 page.tsx 将对应 pending 状态置 null
+
+2. **问题**: initialEntryId useEffect 每次触发都会创建新 Draft，即使已有同来源的 active Draft
+   - **解决**: 新增 findActiveDraftBySourceEntryId 函数，useEffect 先查询已有 active source draft，找到则复用，否则才创建新 draft
+
+3. **问题**: entry-origin Draft 发布后生成无来源副本（sourceDockItemId 硬编码为 0）
+   - **解决**: publishDraftToDocument 检测 draft.sourceEntryId，若原 entry 存在则回写更新原 entry 的 title/content/archivedAt；若原 entry 不存在则降级创建新 entry 并记录 sourceDockItemId = sourceEntryId
+
+4. **问题**: saveEditorDraft 创建新记录时缺少 sourceEntryId/sourceType 字段，导致 undefined 而非 null
+   - **解决**: 显式设置 sourceEntryId: null, sourceType: null
+
+5. **问题**: lint 报错 repository.ts 和 test 文件中的 non-null assertion
+   - **解决**: 用安全检查 + unwrap 函数替代 `!` 操作符
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ PASS，0 errors / 7 warnings（均为已有）
+- `pnpm typecheck`: ✅ PASS
+- `pnpm test`: ✅ 613 passed（含新增 11 个 draft-repository 测试）
+- `pnpm build:web`: ✅ PASS
+
+**手工验证步骤说明**:
+
+1. 打开应用，切换到 Mind 视图
+2. 选中一个 document 类型节点（sourceType='document'），点击 "Open in Editor" 按钮
+3. 确认：自动切换到 Editor，创建 entry-origin Draft 并打开，toast 提示"已从归档文档创建草稿"
+4. 切回 Mind 视图，再次选中同一个 document 节点，再次点击 "Open in Editor"
+5. 确认：自动切换到 Editor，复用已有 Draft 而非创建新 Draft，toast 提示"已打开关联此文档的草稿"
+6. 在 Editor 中编辑该 Draft 的标题和内容，点击"发布"
+7. 确认：发布成功，原 entry 的 title/content 被更新（而非创建新 entry）
+8. 选中一个 draft 类型节点（sourceType='draft'），点击 "Open in Editor"
+9. 确认：自动切换到 Editor 并打开对应 draftId 的草稿
+10. 切换到其他 tab 再切回 Editor
+11. 确认：不会重复触发 draft 打开或 entry 创建（pending 状态已被清除）
+
+**当前风险及影响范围**:
+
+1. **DB v21 迁移**: 新增 sourceEntryId/sourceType 字段，旧数据自动填充 null。**影响范围**: 所有已有 editorDrafts 数据，迁移安全（仅增加可空字段）。**风险**: 低。
+2. **回写原 entry 策略**: 当前采用直接回写原 entry 的 title/content/archivedAt 方案。**影响范围**: entry-origin Draft 发布时，原 entry 内容被覆盖。**风险**: 中——如果用户期望保留原 entry 不变，当前行为可能不符合预期。但任务要求优先回写，且 sourceEntryId 保留了来源关系。
+3. **MindNode 更新**: publishDraftToDocument 中 upsertMindNode 使用 entry.id，回写场景下 entry.id 就是原 entry 的 id，MindNode 的 documentId 不变。**影响范围**: 低。
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：MIND-REAL-001 Round 1 (Mind 分支基线稳定：清除 Mock Edge + 节点打开入口) -->
 <!-- ============================================ -->
 
