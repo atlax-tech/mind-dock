@@ -19,6 +19,7 @@ interface MindGraphViewProps {
   onToast: (msg: string) => void
   onNodeDragEnd?: (nodeId: string, x: number, y: number) => void
   onDeleteEdge?: (edgeId: string) => void
+  onCreateEdge?: (sourceNodeId: string, targetNodeId: string) => Promise<{ success: boolean; error?: string }>
   activeModule?: string
 }
 
@@ -30,6 +31,7 @@ export default function MindGraphView({
   onToast: _onToast,
   onNodeDragEnd,
   onDeleteEdge,
+  onCreateEdge,
   activeModule: _activeModule,
 }: MindGraphViewProps) {
   const { state: ixState, actions: ixActions } = interaction
@@ -40,6 +42,18 @@ export default function MindGraphView({
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   const handleSelectNode = useCallback((nodeId: string | null) => {
+    if (ixState.connectMode && nodeId && ixState.connectSourceId && onCreateEdge) {
+      onCreateEdge(ixState.connectSourceId, nodeId).then((result) => {
+        if (result.success) {
+          _onToast('链接创建成功')
+        } else {
+          _onToast(result.error || '创建链接失败')
+        }
+      })
+      ixActions.exitConnectMode()
+      return
+    }
+
     ixActions.setSelectedNode(nodeId)
     _onSelectNode?.(nodeId)
     
@@ -54,7 +68,7 @@ export default function MindGraphView({
     } else {
       ixActions.clearFocus()
     }
-  }, [ixActions, ixState.scope, snapshot.nodes])
+  }, [ixActions, ixState.connectMode, ixState.connectSourceId, ixState.scope, snapshot.nodes, onCreateEdge, _onSelectNode, _onToast])
 
   const renderer = useMindCanvasRenderer(
     canvasRef,
@@ -146,6 +160,12 @@ export default function MindGraphView({
 
         <MindNodeActionBar 
           selectedNodeId={ixState.selectedNodeId}
+          connectMode={ixState.connectMode}
+          onConnect={() => {
+            if (ixState.selectedNodeId) {
+              ixActions.enterConnectMode(ixState.selectedNodeId)
+            }
+          }}
           onMove={() => _onToast('Moving to cluster...')}
           onOpen={() => {
             if (ixState.selectedNodeId) {
@@ -159,7 +179,14 @@ export default function MindGraphView({
             }
           }}
           onArchive={() => _onToast('Archiving...')}
-          onClose={() => handleSelectNode(null)}
+          onClose={() => {
+            if (ixState.connectMode) {
+              ixActions.exitConnectMode()
+            } else {
+              handleSelectNode(null)
+            }
+          }}
+          onCancelConnect={() => ixActions.exitConnectMode()}
         />
 
         {/* Hover Preview Card */}

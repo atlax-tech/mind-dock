@@ -8,10 +8,12 @@ import {
   upsertMindEdge,
   upsertMindNode,
   deleteMindEdge,
+  getMindEdge,
   type StoredMindNode,
   type StoredMindEdge,
 } from '@/lib/repository'
 import { subscribe, emit } from '@/lib/events'
+import { makeMindEdgeId } from '@atlax/domain'
 import { buildSimpleMindGraphSnapshot } from './mindSnapshotBuilder'
 import type { MindGraphSnapshot } from './types'
 
@@ -164,10 +166,55 @@ export function useMindGraph(userId: string) {
   }, [])
 
   const handleDeleteEdge = useCallback(async (edgeId: string) => {
+    const edge = edges.find(e => e.id === edgeId)
+    if (edge && edge.reason === 'baseline-auto-connect') {
+      return false
+    }
     setEdges((prev) => prev.filter((e) => e.id !== edgeId))
     await deleteMindEdge(userId, edgeId)
     emit({ type: 'mind_edge_deleted', edgeId })
-  }, [userId])
+    return true
+  }, [userId, edges])
+
+  const handleCreateEdge = useCallback(async (sourceNodeId: string, targetNodeId: string): Promise<{ success: boolean; error?: string }> => {
+    if (sourceNodeId === targetNodeId) {
+      return { success: false, error: '不能连接到自身' }
+    }
+
+    const sourceExists = nodes.some(n => n.id === sourceNodeId)
+    const targetExists = nodes.some(n => n.id === targetNodeId)
+    if (!sourceExists || !targetExists) {
+      return { success: false, error: '目标节点不存在' }
+    }
+
+    const edgeType = 'semantic'
+    const existingId = makeMindEdgeId(userId, sourceNodeId, targetNodeId, edgeType)
+    const existingEdge = await getMindEdge(userId, existingId)
+    if (existingEdge) {
+      return { success: false, error: '连接已存在' }
+    }
+
+    const reverseId = makeMindEdgeId(userId, targetNodeId, sourceNodeId, edgeType)
+    const reverseEdge = await getMindEdge(userId, reverseId)
+    if (reverseEdge) {
+      return { success: false, error: '反向连接已存在' }
+    }
+
+    const created = await upsertMindEdge({
+      userId,
+      sourceNodeId,
+      targetNodeId,
+      edgeType,
+      strength: 0.5,
+      source: 'user',
+      confidence: null,
+      reason: null,
+    })
+
+    setEdges((prev) => [...prev, created])
+    emit({ type: 'mind_edge_created', edgeId: created.id })
+    return { success: true }
+  }, [userId, nodes])
 
   return {
     nodes,
@@ -178,5 +225,6 @@ export function useMindGraph(userId: string) {
     refresh: forceRefresh,
     onNodeDragEnd: handleNodeDragEnd,
     onDeleteEdge: handleDeleteEdge,
+    onCreateEdge: handleCreateEdge,
   }
 }

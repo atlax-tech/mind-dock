@@ -9,8 +9,80 @@
 ---
 
 <!-- ============================================ -->
-<!-- 分割线：MIND-REAL-003 Round 3 (节点悬浮预览卡片 + 快速取消链接) -->
+<!-- 分割线：MIND-REAL-004 Round 1 (Mind Edge 最小真实操作：手动建链 + 删除/隐藏) -->
 <!-- ============================================ -->
+
+## MIND-REAL-004 Round 1 devlog -- Mind Edge 最小真实操作：手动建链 + 删除/隐藏
+
+**时间戳**: 2026-05-12
+
+**任务起止时间**: 03:35 - 03:50 CST
+
+**工时**: 15 分钟
+
+**任务目标**:
+
+1. 将当前 Planned 状态的 Connect 按钮改为最小可用建链入口
+2. 用户可从一个节点进入 connect mode，再选择另一个节点创建真实 mind_edge
+3. 创建 edge 必须写入 repository / IndexedDB / Local Core，不允许只存在 React state
+4. 创建后刷新页面 edge 仍存在
+5. 非 baseline edge 可删除，结果真实写库
+6. baseline-auto-connect edge 不可删除，只显示 Lock
+7. 发射 mind_edge_created / mind_edge_deleted 事件
+8. 不破坏 MIND-REAL-001/002/003
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/app/workspace/features/mind/useMindGraphInteraction.ts` | +20 行 | 新增 `connectMode` / `connectSourceId` 状态 + `enterConnectMode` / `exitConnectMode` actions |
+| `apps/web/app/workspace/features/mind/useMindGraph.ts` | +50 行 | 新增 `handleCreateEdge`（含 self-loop / 重复 / 反向 / 不存在节点保护）+ `handleDeleteEdge` 增加 baseline 保护 + 导出 `onCreateEdge` |
+| `apps/web/app/workspace/features/mind/MindNodeActionBar.tsx` | 重写 ~110 行 | 启用 Connect 按钮（移除 disabled/Planned 状态）+ connect mode 专属 UI（选择目标节点提示 + 取消按钮） |
+| `apps/web/app/workspace/features/mind/MindGraphView.tsx` | +25 行 | 新增 `onCreateEdge` prop + connect mode 下点击节点触发建链 + 传入 connectMode/onConnect/onCancelConnect 到 ActionBar |
+| `apps/web/app/workspace/features/mind/MindCanvasStage.tsx` | +3 行 | 透传 `onCreateEdge` prop |
+| `apps/web/app/workspace/page.tsx` | +2 行 | 从 useMindGraph 解构 `onCreateEdge` 并传递给 MindCanvasStage |
+| `apps/web/tests/mind-edge-ops.test.ts` | 新增 ~405 行 | 18 个测试用例覆盖：创建/持久化/self-loop 防护/重复防护/baseline 保护/删除/事件/回归 |
+
+**技术要点**:
+
+1. **Connect Mode 状态机**: 在 `useMindGraphInteraction` 中新增 `connectMode: boolean` + `connectSourceId: string | null`。点击 Connect 按钮进入 connect mode，记录 source node；点击目标节点触发建链后自动退出 connect mode。
+2. **Edge 创建保护**: `handleCreateEdge` 中实现四重保护：(a) sourceNodeId === targetNodeId 禁止 self-loop；(b) 源/目标节点必须存在于当前 nodes 列表；(c) 正向重复检测（通过 `makeMindEdgeId` + `getMindEdge`）；(d) 反向重复检测（A→B 已存在时禁止创建 B→A）。
+3. **Baseline 删除保护**: `handleDeleteEdge` 在删除前检查 `edge.reason === 'baseline-auto-connect'`，若是则返回 `false` 拒绝删除。UI 层 MindNodeHoverCard 已有 Lock 图标显示（MIND-REAL-003 实现）。
+4. **Edge 类型选择**: 用户手动创建的 edge 使用 `semantic` 类型，`source: 'user'`，与系统自动创建的 `parent_child` / `baseline-auto-connect` 区分。
+5. **事件发射**: 创建成功后发射 `mind_edge_created`，删除成功后发射 `mind_edge_deleted`，均通过 `emit()` 同步广播。
+6. **Hard Delete 策略**: 当前 MindEdge 数据结构没有 `hidden` / `archived` 字段，因此非 baseline edge 采用 hard delete（直接从 IndexedDB 删除记录）。
+
+**遇到的问题及解决方式**:
+
+1. **lint no-non-null-assertion**: 测试文件中使用了 `reRead!.id` 等 non-null assertion，ESLint 报错。改为 `if (reRead) { expect(reRead.id)... }` 模式。
+2. **lint no-unused-vars**: 回归测试中创建了 `rootNode` / `doc` 但未使用，移除变量声明。
+3. **typecheck 类型不匹配**: `snapshot.edges.filter(e => e.source === 'mock')` 中 `source` 类型为 `'user' | 'system' | 'import'`，不包含 `'mock'`。改为 `(e.source as string) === 'mock'`。
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ 0 errors, 6 warnings（均为已有 warning）
+- `pnpm typecheck`: ✅ 通过
+- `pnpm test`: ✅ 666 tests passed（含新增 18 个 mind-edge-ops 测试）
+- `pnpm build:web`: ✅ 构建成功
+
+**手工验证步骤说明**:
+
+1. 启动开发服务器 `pnpm dev`
+2. 进入 Mind 视图，选中一个节点
+3. 点击底部操作栏的 **Connect** 按钮，确认进入 connect mode（底部栏变为蓝色提示"选择目标节点建立链接"）
+4. 点击另一个节点，确认 toast 提示"链接创建成功"
+5. 刷新页面，确认新建的 edge 仍然存在
+6. 悬浮在节点上，在 HoverCard 中确认新建的 semantic edge 出现在 Links 列表
+7. 点击 Links 列表中的 X 按钮取消链接，确认 edge 被删除
+8. 悬浮在有 baseline-auto-connect edge 的节点上，确认 Lock 图标显示，X 按钮不可用
+9. 尝试连接同一节点到自身，确认 toast 提示"不能连接到自身"
+10. 尝试重复连接两个已连接的节点，确认 toast 提示"连接已存在"
+
+**当前风险及影响范围**:
+
+1. **Hard Delete**: 当前非 baseline edge 删除为硬删除，不可恢复。后续如需"隐藏"功能需在 MindEdge 数据结构中增加 `hidden` / `archived` 字段。
+2. **Connect Mode 交互**: 当前 connect mode 仅支持通过点击节点选择目标，不支持拖拽连线。后续可增强为拖拽创建边的交互方式。
+3. **Edge 类型固定**: 当前手动建链固定使用 `semantic` 类型，不支持用户选择边类型。后续可增加类型选择器。
 
 ## MIND-REAL-003 Round 3 devlog -- 节点悬浮预览卡片 + 快速取消链接
 

@@ -44,6 +44,8 @@ export interface MindInteractionState {
   scope: 'global' | 'currentChain'
   chainRootId: string | null
   viewScope: 'focusMap' | 'clusterMap' | 'linkReview' | 'driftInbox' | 'timelineSnapshot'
+  connectMode: boolean
+  connectSourceId: string | null
 }
 
 export interface MindInteractionActions {
@@ -60,6 +62,8 @@ export interface MindInteractionActions {
   setScope: (scope: 'global' | 'currentChain') => void
   setChainRoot: (nodeId: string | null) => void
   setViewScope: (viewScope: MindInteractionState['viewScope']) => void
+  enterConnectMode: (sourceId: string) => void
+  exitConnectMode: () => void
 }
 
 export function useMindGraphInteraction(): {
@@ -84,6 +88,8 @@ export function useMindGraphInteraction(): {
   const [scope, setScope] = useState<'global' | 'currentChain'>('global')
   const [chainRootId, setChainRoot] = useState<string | null>(null)
   const [viewScope, setViewScope] = useState<MindInteractionState['viewScope']>('focusMap')
+  const [connectMode, setConnectMode] = useState(false)
+  const [connectSourceId, setConnectSourceId] = useState<string | null>(null)
 
   const clearFocus = useCallback(() => {
     setFocusedNode(null)
@@ -134,6 +140,16 @@ export function useMindGraphInteraction(): {
     setLayoutMode(mode)
   }, [])
 
+  const enterConnectMode = useCallback((sourceId: string) => {
+    setConnectMode(true)
+    setConnectSourceId(sourceId)
+  }, [])
+
+  const exitConnectMode = useCallback(() => {
+    setConnectMode(false)
+    setConnectSourceId(null)
+  }, [])
+
   const state: MindInteractionState = useMemo(() => ({
     hoveredNodeId,
     focusedNodeId,
@@ -148,7 +164,9 @@ export function useMindGraphInteraction(): {
     scope,
     chainRootId,
     viewScope,
-  }), [hoveredNodeId, focusedNodeId, selectedNodeId, filterState, filterOpen, layoutPhase, layoutIterations, layoutMaxIterations, relayoutCounter, layoutMode, scope, chainRootId, viewScope])
+    connectMode,
+    connectSourceId,
+  }), [hoveredNodeId, focusedNodeId, selectedNodeId, filterState, filterOpen, layoutPhase, layoutIterations, layoutMaxIterations, relayoutCounter, layoutMode, scope, chainRootId, viewScope, connectMode, connectSourceId])
 
   const actions: MindInteractionActions = useMemo(() => ({
     setHoveredNode,
@@ -164,7 +182,9 @@ export function useMindGraphInteraction(): {
     setScope,
     setChainRoot,
     setViewScope,
-  }), [clearFocus, toggleFilterPanel, updateFilter, resetFilters, setLayoutProgress, triggerRelayout, handleSetLayoutMode])
+    enterConnectMode,
+    exitConnectMode,
+  }), [clearFocus, toggleFilterPanel, updateFilter, resetFilters, setLayoutProgress, triggerRelayout, handleSetLayoutMode, enterConnectMode, exitConnectMode])
 
   return { state, actions }
 }

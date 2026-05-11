@@ -19,6 +19,7 @@ interface MindCanvasStageProps {
   onToast: (msg: string) => void
   onNodeDragEnd?: (nodeId: string, x: number, y: number) => void
   onDeleteEdge?: (edgeId: string) => void
+  onCreateEdge?: (sourceNodeId: string, targetNodeId: string) => Promise<{ success: boolean; error?: string }>
   activeModule?: string
 }
 
@@ -33,6 +34,7 @@ export default function MindCanvasStage({
   onToast,
   onNodeDragEnd,
   onDeleteEdge,
+  onCreateEdge,
   activeModule,
 }: MindCanvasStageProps) {
   if (loading) {
@@ -74,6 +76,7 @@ export default function MindCanvasStage({
         onToast={onToast}
         onNodeDragEnd={onNodeDragEnd}
         onDeleteEdge={onDeleteEdge}
+        onCreateEdge={onCreateEdge}
         activeModule={activeModule}
       />
     )
