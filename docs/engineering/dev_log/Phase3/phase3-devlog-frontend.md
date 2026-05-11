@@ -9,6 +9,261 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：MIND-REAL-003 Round 3 (节点悬浮预览卡片 + 快速取消链接) -->
+<!-- ============================================ -->
+
+## MIND-REAL-003 Round 3 devlog -- 节点悬浮预览卡片 + 快速取消链接
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 19:00 - 20:00 CST
+
+**工时**: 60 分钟
+
+> **⚠️ Reviewer 注意**: 本轮 Feature「节点悬浮预览卡片 + 快速取消链接」为**用户明确要求添加**，不属于超出任务边界。用户原话："再加上一个feature：鼠标悬浮在节点上时需要支持小窗预览节点的标题｜tags｜链接列表，并且预览窗口可以支持快速取消链接，列表条目后面加上取消链接的图标，取消链接后链接从链接列表消失。"
+
+**需求描述**:
+
+1. 鼠标悬浮在 Mind 图谱节点上时，显示小窗预览卡片，展示：
+   - 节点标题（label）
+   - 节点类型标识（nodeType badge + 颜色圆点）
+   - Tags（连接到 tag 类型节点的边，以标签胶囊形式展示）
+   - Links（所有非 tag 类型的连接边，以列表形式展示，含 edgeType 标注）
+2. 预览窗口支持快速取消链接：每个链接条目后面有取消链接图标（X），点击后：
+   - 调用 `deleteMindEdge` 从 IndexedDB 删除该边
+   - 链接从列表中即时消失（乐观更新）
+   - 发射 `mind_edge_deleted` 事件通知其他组件
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/app/workspace/features/mind/MindNodeHoverCard.tsx` | 新增 ~140 行 | 悬浮预览卡片组件：标题、Tags 胶囊、Links 列表 + 取消链接按钮 |
+| `apps/web/app/workspace/features/mind/useMindCanvasRenderer.ts` | +15 行 | 新增 `hoverScreenPos` 状态，悬浮节点时计算并暴露节点屏幕坐标 |
+| `apps/web/app/workspace/features/mind/useMindGraph.ts` | +8 行 | 新增 `handleDeleteEdge` 回调 + `onDeleteEdge` 导出 |
+| `apps/web/app/workspace/features/mind/MindGraphView.tsx` | +12 行 | 集成 MindNodeHoverCard，新增 `onDeleteEdge` prop |
+| `apps/web/app/workspace/features/mind/MindCanvasStage.tsx` | +2 行 | 透传 `onDeleteEdge` prop |
+| `apps/web/app/workspace/page.tsx` | +2 行 | 从 useMindGraph 解构 `onDeleteEdge` 并传递给 MindCanvasStage |
+
+**技术要点**:
+
+1. **悬浮节点屏幕坐标计算**: Canvas 渲染使用 camera 变换（translate + scale），世界坐标转屏幕坐标公式：`screenX = (worldX - w/2) * zoom + cam.x + w/2`。在 `handlePointerMove` 悬浮检测命中时同步计算并存储。
+2. **Tags vs Links 分类**: Tags = 连接到 `nodeType === 'tag'` 节点的边；Links = 其余所有边。分类逻辑在 MindNodeHoverCard 中通过 `useMemo` 计算。
+3. **乐观更新**: `handleDeleteEdge` 先通过 `setEdges(prev => prev.filter(...))` 从本地状态移除边，再异步调用 `deleteMindEdge` 持久化删除，确保 UI 即时响应。
+4. **卡片定位**: 使用 `fixed` 定位，基于节点屏幕坐标偏移 (+20, -10)，并 clamp 到视口范围内防止溢出。
+5. **视觉风格**: 延续现有 glass morphism 风格（`rgba(15,18,20,0.96)` + `backdrop-blur(24px)`），与 MindNodeActionBar、MindFilterPanel 等组件保持一致。
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-003 Round 4 (Review FAIL 修复：baseline edge 不进入当前 snapshot) -->
+<!-- ============================================ -->
+
+## MIND-REAL-003 Round 4 devlog -- Review FAIL 修复：baseline edge 不进入当前 snapshot
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 20:15 - 20:45 CST
+
+**工时**: 30 分钟
+
+**Review FAIL 原因**:
+
+`useMindGraph.refresh()` 在 `setEdges(updatedEdges)` 之后才执行 `ensureBaselineParentConnections()`，导致本轮自动创建的 root → document parent_child edge 虽然真实写入 IndexedDB，但不会进入当前 render 的 edges/snapshot，需要下一次 refresh 才显示。
+
+**修复方案**:
+
+1. `ensureBaselineParentConnections` 改为返回 `Promise<StoredMindEdge[]>`（创建的 edge 列表），而非 `Promise<void>`。
+2. `refresh()` 中先调用 `ensureBaselineParentConnections`，拿到返回的 `baselineEdges`，再 `setEdges([...updatedEdges, ...baselineEdges])`，确保当前 render 的 snapshot 立即包含 baseline edge。
+3. 修复 `mindSnapshotBuilder.ts` 中 edge 映射硬编码 `source: 'system' / confidence: 0.5 / reason: null` 的问题，改为使用实际 edge 数据（`e.source || 'system'`, `e.confidence ?? null`, `e.reason ?? null`）。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/app/workspace/features/mind/useMindGraph.ts` | ~10 行 | `ensureBaselineParentConnections` 返回 `StoredMindEdge[]`；`refresh()` 合并 baselineEdges 到 setEdges；导出两个 ensure 函数 |
+| `apps/web/app/workspace/features/mind/mindSnapshotBuilder.ts` | 3 行 | 修复 edge 映射：使用实际 source/confidence/reason 而非硬编码 |
+| `apps/web/tests/mind-layout-persistence.test.ts` | +55 行 | 新增 3 个测试：orphan doc 在 ensure 后 snapshot 立即包含 parent_child edge；无 orphan 时返回空；无 root 时返回空 |
+
+**测试覆盖**:
+
+- ✅ `orphan document gets root→document parent_child edge in current snapshot after ensureBaselineParentConnections` — 核心回归测试，验证 `[...edgesBefore, ...baselineEdges]` 模式下 snapshot 立即包含 baseline edge
+- ✅ `ensureBaselineParentConnections returns empty when no orphans exist` — 已有 parent_child edge 的 document 不重复创建
+- ✅ `ensureBaselineParentConnections returns empty when no root node exists` — 无 root 时 early return
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-003 Round 5 (Review FAIL 修复：quick unlink 与 baseline auto-connect 冲突) -->
+<!-- ============================================ -->
+
+## MIND-REAL-003 Round 5 devlog -- Review FAIL 修复：quick unlink 与 baseline auto-connect 冲突
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 19:25 - 19:45 CST
+
+**工时**: 20 分钟
+
+**Review FAIL 原因**:
+
+用户通过 hover preview 卡片取消链接（quick unlink）后，`ensureBaselineParentConnections` 在下次 refresh 时会自动重建 `reason: 'baseline-auto-connect'` 的 root → document parent_child edge，导致取消操作被静默恢复，用户困惑。
+
+**修复方案**:
+
+选择方案一：**禁用 baseline-auto-connect 边的取消按钮**。理由：
+1. baseline edge 是系统自动创建的结构性安全网，删除后必然被重建，允许取消会给用户虚假预期
+2. 用户如需真正断开 document 与 root 的关系，应通过"移动到其他父节点"操作实现，而非直接删除基线边
+3. 在 UI 上用 Lock 图标 + tooltip（"基线连接，不可取消"）明确告知用户
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/app/workspace/features/mind/MindNodeHoverCard.tsx` | ~20 行 | 新增 `isBaselineEdge()` 判断；Tags/Links 列表中 baseline 边用 Lock 图标替代 X 按钮；导入 Lock 图标 |
+| `apps/web/tests/mind-layout-persistence.test.ts` | +40 行 / 修复 4 个 lint error | 新增 3 个测试；移除未使用 `doc` 变量；替换 non-null assertion 为 guard clause；导入 `deleteMindEdge` |
+
+**测试覆盖**:
+
+- ✅ `baseline-auto-connect edge is recreated after deletion on next ensure cycle` — 验证删除 baseline edge 后，orphan 检测逻辑会重新识别该 document 为 orphan（即 baseline edge 会被重建）
+- ✅ `snapshot preserves reason field for baseline-auto-connect edges` — 验证 snapshot 正确保留 `reason: 'baseline-auto-connect'`，UI 可据此判断是否禁用取消按钮
+- ✅ `non-baseline edge can be deleted without recreation` — 验证非 baseline 边（如 semantic）可正常删除且不会被重建
+
+**Lint 修复**:
+
+- 移除第 172 行未使用的 `doc` 变量
+- 第 211-214 行 non-null assertion (`snapRoot!`, `snapDoc!`, `parentEdge!`) 替换为 guard clause (`if (!snapRoot \|\| !snapDoc) return` + `if (parentEdge) { ... }`)
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-003 Round 2 (手工验证修复：Root 节点缺失 + 点击/拖拽分离 + 布局切换位置重置) -->
+<!-- ============================================ -->
+
+## MIND-REAL-003 Round 2 devlog -- 手工验证修复
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 17:30 - 18:30 CST
+
+**工时**: 60 分钟
+
+**手工验证发现的问题**:
+
+1. **Root 节点缺失**: 手工验证时发现 Mind 图谱中没有 root 节点。原因：生产代码中从未创建 root 类型的 MindNode（`ensureWorldTreeRoot` 在早期重构中被移除），导致 `ensureBaselineParentConnections` 直接 return，无法为孤立 document 节点创建 parent_child edge。
+2. **点击与拖拽交互边界不清**: 点击节点时立即触发选中聚焦态，导致拖动节点时无法确认拖动位置。需要将"点击选中"和"拖拽移动"操作明确分离。
+3. **布局切换位置策略（用户约束）**: 用户要求——节点拖动到任意位置后，如果不切换布局方式，节点保留拖动位置；但当切换散布方式时，节点应按照各自排列及运动公式重新定位。否则节点变多后，拖动后一直保留原位置会变得混乱。
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/app/workspace/features/mind/useMindGraph.ts` | +20/-4 | 新增 `ensureRootNode` 函数：首次加载时如果不存在 root 节点则自动创建（positionX=0, positionY=0, state='anchored'）；refresh 流程改为先 ensureRootNode 再重新加载节点列表 |
+| `apps/web/app/workspace/features/mind/useMindCanvasRenderer.ts` | +22/-10 | 1) 新增 `pointerDownPosRef` 和 `hasDraggedRef` 跟踪指针移动距离；2) `handlePointerDown` 不再立即调用 `onSelectNode`，改为记录起始位置；3) `handlePointerMove` 检测 5px 拖拽阈值，超过阈值才进入拖拽模式；4) `handlePointerUp` 区分：拖拽→调用 `onNodeDragEnd` + 标记 `hasSavedPosition=true`；点击→调用 `onSelectNode`；5) 布局切换时清除所有节点的 `hasSavedPosition` 标记，使节点跟随新布局公式 |
+
+**用户约束说明（用户明确要求）**:
+
+> 将节点拖动到任意位置后如果不切换三种分布方式节点可以保留拖动位置，但是当切换散布方式时，节点应该按照散步方式各自的排列以及运动公式定义节点位置。否则当节点变多，用户拖动后一直保留原位置后续会变得非常混乱。
+
+实现策略：
+- 拖拽结束后标记 `hasSavedPosition = true`，同模式下 `computeTargets` 不会覆盖 target
+- 布局模式切换时，清除所有节点的 `hasSavedPosition = false`，`computeTargets` 按新布局公式计算 target
+- 节点通过 lerp 动画平滑过渡到新位置
+
+**遇到的问题以及解决方式**:
+
+1. **Root 节点从未在生产代码中创建**: `ensureWorldTreeRoot` 在早期版本存在但被移除。解决：新增 `ensureRootNode` 函数，在 `useMindGraph.refresh()` 中首次加载时自动创建。
+2. **点击即选中导致拖拽体验差**: 原来在 `handlePointerDown` 中立即调用 `onSelectNode`。解决：引入 5px 拖拽阈值，`handlePointerUp` 时根据是否超过阈值决定是选中还是拖拽。
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ PASS，0 errors（7 warnings 均为已有）
+- `pnpm typecheck`: ✅ PASS
+- `pnpm test`: ✅ 642 passed
+- `pnpm build:web`: ✅ PASS
+
+**手工验证步骤说明**:
+
+1. 打开 Mind 图谱 → 验证出现 Root 节点（圆形大节点，位于中心）
+2. 点击节点 → 验证触发选中聚焦态（节点高亮，其余淡化）
+3. 拖拽节点 → 验证不触发聚焦态，节点跟随鼠标移动
+4. 释放拖拽 → 验证节点位置保留
+5. 切换布局方式（Force → Radial → Orbit）→ 验证所有节点按新布局公式重新排列
+6. 在同一布局模式下拖拽节点后 → 验证位置保持
+7. 新发布文档 → 验证 Mind 中出现新 document 节点，且有 root → doc 的 parent_child edge
+
+**当前风险以及影响范围**:
+
+1. **Root 节点自动创建**: 如果用户清空所有数据后重新进入 Mind，会自动创建新的 root 节点。但如果 root 节点被手动删除，下次 refresh 会重新创建。
+2. **布局切换清除 hasSavedPosition**: 切换布局后所有节点回到布局公式位置，用户之前的拖拽位置丢失。这是用户明确要求的行为。
+3. **5px 拖拽阈值**: 在高 DPI 屏幕上可能需要调整。当前 5px 是基于屏幕像素的阈值。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-003 Round 1 (Mind 图谱布局持久化 + Root/Parent 连接基线) -->
+<!-- ============================================ -->
+
+## MIND-REAL-003 Round 1 devlog -- Mind 图谱布局持久化 + Root/Parent 连接基线
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 16:20 - 17:30 CST
+
+**工时**: 70 分钟
+
+**任务目标**:
+1. Mind 节点拖动后位置真实写入本地数据层
+2. 切换页面再返回 Mind，节点位置保持
+3. 刷新页面后节点位置仍可恢复
+4. 已保存 position 不被运行时布局算法强行覆盖
+5. 新创建/同步的 document 节点具备稳定 Root/Parent 基线连接策略
+6. 修复 useMindCanvasRenderer.ts passive event listener warning
+7. 推荐连接按钮不可用时显示 disabled/Planned 状态
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/app/workspace/features/mind/mindGraphAdapter.ts` | +1/-3 | 移除 `FORCE_RECALCULATE = true` 硬编码，改为 `hasPos = n.positionX != null && n.positionY != null`，使保存的位置不再被忽略 |
+| `apps/web/app/workspace/features/mind/mindGraphLayout.ts` | +9/-0 | 新增 `reapplySavedPositions` 函数，在 noverlap 之后重新应用保存的位置，防止布局算法覆盖已保存坐标 |
+| `apps/web/app/workspace/features/mind/useMindCanvasRenderer.ts` | +30/-12 | 1) `buildRenderNodes` 增加 `hasSavedPosition` 标记，有保存位置时 `targetX/Y` 也使用保存值（防止 radial/orbit 模式漂移）；2) `CanvasRenderNode` 新增 `hasSavedPosition` 字段；3) `computeTargets` 末尾对 `hasSavedPosition` 节点强制 `targetX/Y = x/y`；4) `handleWheel` 从 React `onWheel` 改为原生 `addEventListener('wheel', ..., { passive: false })` 修复 passive event listener warning |
+| `apps/web/app/workspace/features/mind/useMindGraph.ts` | +35/-1 | 新增 `ensureBaselineParentConnections` 函数：在 refresh 时检测所有没有 parent_child edge 的 document 节点，自动创建 root → document 的 parent_child 基线连接（reason: baseline-auto-connect） |
+| `apps/web/app/workspace/features/mind/MindNodeActionBar.tsx` | +8/-5 | Connect 按钮改为 disabled 状态，图标从 Link2 改为 Clock，增加 "Planned" 徽章（bg-[#c8a0f0]/20 text-[#c8a0f0]），移除 onClick 回调 |
+| `apps/web/app/workspace/features/mind/MindGraphView.tsx` | +0/-2 | 移除 `onConnect` prop 传递和 `onWheel={renderer.handleWheel}` |
+| `apps/web/tests/mind-layout-persistence.test.ts` | +220 | 新增 11 个测试覆盖位置持久化、基线连接、回归守卫 |
+
+**遇到的问题以及解决方式**:
+
+1. **`FORCE_RECALCULATE = true` 导致位置无法持久化**: 这是 MIND-REAL-002 遗留的临时修复（为打破旧 ROOT sunburst 布局），但硬编码为 true 导致所有保存位置被忽略。解决：移除该常量，改为直接检查 `n.positionX != null && n.positionY != null`。
+
+2. **noverlap 布局算法覆盖保存位置**: 即使 `snapshotToGraphology` 正确设置了保存位置，noverlap 运行后会把节点推开。解决：在 `applyForceAtlas2Layout` 末尾调用 `reapplySavedPositions` 将有保存位置的节点钉回原位。
+
+3. **Canvas 渲染器 radial/orbit 模式下节点漂移**: `buildRenderNodes` 中 `targetX/Y` 始终使用环形布局，导致有保存位置的节点在 lerp 动画中漂移。解决：增加 `hasSavedPosition` 标记，有保存位置时 `targetX/Y = x/y`。
+
+4. **passive event listener warning**: React 的 `onWheel` 默认 passive，调用 `e.preventDefault()` 触发浏览器警告。解决：改用原生 `addEventListener('wheel', handler, { passive: false })`。
+
+5. **测试中 `computeSnapshotSignature` 包含 `generatedAt` 时间戳**: 导致两个 snapshot 的签名不同。解决：改为直接比较 node/edge ID 列表。
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ PASS，0 errors（7 warnings 均为已有）
+- `pnpm typecheck`: ✅ PASS
+- `pnpm test`: ✅ 642 passed（含新增 11 个 MIND-REAL-003 测试）
+- `pnpm build:web`: ✅ PASS
+
+**手工验证步骤说明**:
+
+1. 打开 Mind 图谱，拖动若干节点到新位置
+2. 切换到 Home 页面，再切回 Mind → 验证节点位置保持
+3. 刷新页面 → 验证节点位置保持
+4. 新发布一个文档 → 验证 Mind 中出现新 document 节点，且有 root → doc 的 parent_child edge
+5. 选中节点 → 验证 Connect 按钮显示 disabled + "Planned" 徽章
+6. 打开浏览器控制台 → 验证无 passive event listener warning
+
+**当前风险以及影响范围**:
+
+1. **基线连接仅支持 root → document 单层**: 当前 `ensureBaselineParentConnections` 只将孤立 document 节点连接到 root，不支持多层级（project → topic → document）。后续 MIND-REAL-004/005 需承接多层级连接策略。
+2. **Canvas 渲染器 force 模式下物理引擎仍会移动节点**: 有保存位置的节点在 force 模式下 targetX/Y 被钉住，但物理引擎的斥力/引力仍会作用于它们。如果用户不拖动节点，物理引擎最终会让节点稳定在 target 位置附近。
+3. **Sigma.js 渲染器路径未修改**: 当前项目使用 Canvas 渲染器（MindGraphView），Sigma.js 路径（MindGraphSigma）的物理循环仍会移动节点。如果未来切换回 Sigma.js，需要同步处理位置钉住逻辑。
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：MIND-REAL-002 Round 7 (Bug Fix: MindNode ID 空间碰撞 - findMindNodeByDocumentId 不区分 sourceType) -->
 <!-- ============================================ -->
 

@@ -19,6 +19,7 @@ export interface CanvasRenderNode {
   color: string
   alpha: number
   documentId: number | null
+  hasSavedPosition: boolean
 }
 
 interface Camera { x: number; y: number; zoom: number }
@@ -45,19 +46,25 @@ function buildRenderNodes(snapshot: MindGraphSnapshot, vw: number, vh: number): 
   return snapshot.nodes.map((n, i) => {
     const angle = (i / Math.max(snapshot.nodes.length, 1)) * Math.PI * 2
     const r = Math.min(vw, vh) * 0.25
+    const fallbackX = cx + Math.cos(angle) * r
+    const fallbackY = cy + Math.sin(angle) * r
+    const hasSavedPos = n.positionX != null && n.positionY != null
+    const posX = hasSavedPos ? n.positionX as number : fallbackX
+    const posY = hasSavedPos ? n.positionY as number : fallbackY
     return {
       id: n.id,
       label: n.label,
       nodeType: n.nodeType,
-      x: n.positionX ?? cx + Math.cos(angle) * r,
-      y: n.positionY ?? cy + Math.sin(angle) * r,
+      x: posX,
+      y: posY,
       vx: 0, vy: 0,
-      targetX: cx + Math.cos(angle) * r,
-      targetY: cy + Math.sin(angle) * r,
+      targetX: hasSavedPos ? posX : fallbackX,
+      targetY: hasSavedPos ? posY : fallbackY,
       radius: getProtoRadius(n.nodeType),
       color: getProtoColor(n.nodeType),
       alpha: 1,
       documentId: n.documentId,
+      hasSavedPosition: hasSavedPos,
     }
   })
 }
@@ -164,6 +171,13 @@ function computeTargets(
     n.targetX = Math.max(padding, Math.min(vw - padding, n.targetX))
     n.targetY = Math.max(padding, Math.min(vh - padding, n.targetY))
   })
+
+  nodes.forEach(n => {
+    if (n.hasSavedPosition) {
+      n.targetX = n.x
+      n.targetY = n.y
+    }
+  })
 }
 
 // --- Main Hook ---
@@ -189,6 +203,8 @@ export function useMindCanvasRenderer(
   const dragNodeRef = useRef<string | null>(null)
   const lastPtrRef = useRef({ x: 0, y: 0 })
   const snapTargetRef = useRef<string | null>(null)
+  const pointerDownPosRef = useRef<{ x: number; y: number } | null>(null)
+  const hasDraggedRef = useRef(false)
   const selectedRef = useRef(selectedNodeId)
   const hoveredRef = useRef(hoveredNodeId)
   const layoutRef = useRef(layoutMode)
@@ -197,6 +213,7 @@ export function useMindCanvasRenderer(
   const focusAlphasRef = useRef<Map<string, number>>(new Map())
 
   const [camera, setCameraState] = useState<Camera>({ x: 0, y: 0, zoom: 1 })
+  const [hoverScreenPos, setHoverScreenPos] = useState<{ x: number; y: number } | null>(null)
   const PADDING = 32
 
   selectedRef.current = selectedNodeId
@@ -230,6 +247,7 @@ export function useMindCanvasRenderer(
   useEffect(() => {
     if (layoutRef.current !== prevLayoutRef.current) {
       prevLayoutRef.current = layoutRef.current
+      nodesRef.current.forEach(n => { n.hasSavedPosition = false })
       const { w, h } = sizeRef.current
       computeTargets(layoutRef.current, nodesRef.current, edgesRef.current, w, h, PADDING)
     }
@@ -474,9 +492,11 @@ export function useMindCanvasRenderer(
       if (d < hr && d < hitDist) { hitDist = d; hitId = n.id }
     })
 
+    pointerDownPosRef.current = { x: sx, y: sy }
+    hasDraggedRef.current = false
+
     if (hitId) {
       dragNodeRef.current = hitId
-      onSelectNode(hitId)
       lastPtrRef.current = { x: sx, y: sy }
       return
     }
@@ -493,10 +513,18 @@ export function useMindCanvasRenderer(
     const sx = e.clientX - rect.left, sy = e.clientY - rect.top
     const dx = sx - lastPtrRef.current.x, dy = sy - lastPtrRef.current.y
 
+    if (pointerDownPosRef.current && !hasDraggedRef.current) {
+      const pdx = sx - pointerDownPosRef.current.x
+      const pdy = sy - pointerDownPosRef.current.y
+      if (Math.hypot(pdx, pdy) > 5) {
+        hasDraggedRef.current = true
+      }
+    }
+
     if (isPanningRef.current) {
       cameraRef.current.x += dx; cameraRef.current.y += dy
       setCameraState({ ...cameraRef.current })
-    } else if (dragNodeRef.current) {
+    } else if (dragNodeRef.current && hasDraggedRef.current) {
       const world = screenToWorld(sx, sy)
       const { w, h } = sizeRef.current
       const cx = Math.max(PADDING, Math.min(w - PADDING, world.x))
@@ -504,7 +532,6 @@ export function useMindCanvasRenderer(
       const node = nodesRef.current.find(n => n.id === dragNodeRef.current)
       if (node) { node.x = cx; node.y = cy; node.vx = 0; node.vy = 0 }
 
-      // Magnetic snap detection
       let closestId: string | null = null, closestDist = 60
       nodesRef.current.forEach(n => {
         if (n.id === dragNodeRef.current) return
@@ -512,8 +539,7 @@ export function useMindCanvasRenderer(
         if (d < closestDist) { closestDist = d; closestId = n.id }
       })
       snapTargetRef.current = closestId
-    } else {
-      // Hover detection
+    } else if (!dragNodeRef.current) {
       const world = screenToWorld(sx, sy)
       let hoverId: string | null = null, hitDist = Infinity
       nodesRef.current.forEach(n => {
@@ -523,27 +549,48 @@ export function useMindCanvasRenderer(
       })
       if (hoverId !== hoveredRef.current) {
         onHoverNode(hoverId)
+        if (hoverId) {
+          const hNode = nodesRef.current.find(n => n.id === hoverId)
+          if (hNode) {
+            const cam = cameraRef.current
+            const { w, h } = sizeRef.current
+            const hsx = (hNode.x - w / 2) * cam.zoom + cam.x + w / 2
+            const hsy = (hNode.y - h / 2) * cam.zoom + cam.y + h / 2
+            setHoverScreenPos({ x: hsx, y: hsy })
+          }
+        } else {
+          setHoverScreenPos(null)
+        }
       }
     }
     lastPtrRef.current = { x: sx, y: sy }
   }, [containerRef, screenToWorld, onHoverNode])
 
   const handlePointerUp = useCallback(() => {
-    if (dragNodeRef.current && onNodeDragEnd) {
-      const node = nodesRef.current.find(n => n.id === dragNodeRef.current)
-      if (node) {
-        const { w, h } = sizeRef.current
-        const fx = Math.max(PADDING, Math.min(w - PADDING, node.x))
-        const fy = Math.max(PADDING, Math.min(h - PADDING, node.y))
-        onNodeDragEnd(node.id, fx, fy)
+    if (dragNodeRef.current) {
+      if (hasDraggedRef.current && onNodeDragEnd) {
+        const node = nodesRef.current.find(n => n.id === dragNodeRef.current)
+        if (node) {
+          const { w, h } = sizeRef.current
+          const fx = Math.max(PADDING, Math.min(w - PADDING, node.x))
+          const fy = Math.max(PADDING, Math.min(h - PADDING, node.y))
+          node.hasSavedPosition = true
+          node.targetX = fx
+          node.targetY = fy
+          onNodeDragEnd(node.id, fx, fy)
+        }
+      } else {
+        onSelectNode(dragNodeRef.current)
       }
     }
     isPanningRef.current = false
     dragNodeRef.current = null
     snapTargetRef.current = null
-  }, [onNodeDragEnd])
+    pointerDownPosRef.current = null
+    hasDraggedRef.current = false
+  }, [onNodeDragEnd, onSelectNode])
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
+  const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault()
     const el = containerRef.current
     if (!el) return
@@ -554,13 +601,19 @@ export function useMindCanvasRenderer(
     const factor = Math.exp(e.deltaY * -0.002)
     const newZoom = Math.max(0.3, Math.min(4.0, cam.zoom * factor))
     const scale = newZoom / cam.zoom
-    // zoom around mouse position
     const cx = mx - w / 2, cy = my - h / 2
     const nx = cx - (cx - cam.x) * scale
     const ny = cy - (cy - cam.y) * scale
     cameraRef.current = { x: nx, y: ny, zoom: newZoom }
     setCameraState({ x: nx, y: ny, zoom: newZoom })
   }, [containerRef])
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    el.addEventListener('wheel', handleWheel, { passive: false })
+    return () => { el.removeEventListener('wheel', handleWheel) }
+  }, [handleWheel, containerRef])
 
   // --- Zoom controls ---
   const zoomIn = useCallback(() => {
@@ -584,7 +637,8 @@ export function useMindCanvasRenderer(
 
   return {
     camera,
-    handlePointerDown, handlePointerMove, handlePointerUp, handleWheel,
+    hoverScreenPos,
+    handlePointerDown, handlePointerMove, handlePointerUp,
     zoomIn, zoomOut, centerView,
     nodeCount: nodesRef.current.length,
     edgeCount: edgesRef.current.length,

@@ -112,10 +112,6 @@ export function snapshotToGraphology(snapshot: MindGraphSnapshot): MindGraphStat
   const graph = new Graph<GraphNodeAttributes, GraphEdgeAttributes>({ multi: false })
   const totalNodes = snapshot.nodes.length
 
-  // MG-FIX-02: Force re-calculate by ignoring saved positions for now
-  // to break free from the old ROOT sunburst layout
-  const FORCE_RECALCULATE = true
-
   snapshot.nodes.forEach((n, idx) => {
     const color = getNodeColor(n.nodeType)
     const typeBaseSize = getNodeBaseSize(n.nodeType)
@@ -132,7 +128,7 @@ export function snapshotToGraphology(snapshot: MindGraphSnapshot): MindGraphStat
     const baseSize = visualWeightToSize(visualWeight, typeBaseSize)
     const showLabel = shouldShowLabel(visualWeight)
 
-    const hasPos = !FORCE_RECALCULATE && n.positionX != null && n.positionY != null
+    const hasPos = n.positionX != null && n.positionY != null
     const seeded = !hasPos ? seededPosition(n.id, n.nodeType, idx, Math.max(totalNodes, 1)) : null
 
     graph.addNode(n.id, {

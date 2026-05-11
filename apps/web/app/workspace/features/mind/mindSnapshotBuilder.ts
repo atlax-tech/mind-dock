@@ -27,9 +27,9 @@ export function buildSimpleMindGraphSnapshot(
     targetNodeId: e.targetNodeId,
     edgeType: e.edgeType,
     strength: e.strength || 0.5,
-    source: 'system',
-    confidence: 0.5,
-    reason: null,
+    source: e.source || 'system',
+    confidence: e.confidence ?? null,
+    reason: e.reason ?? null,
   }))
 
   const rootNodeId = nodes.find(n => n.nodeType === 'root')?.id || null

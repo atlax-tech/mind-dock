@@ -52,6 +52,10 @@ function applySavedPositions(graph: Graph<GraphNodeAttributes>): void {
   })
 }
 
+function reapplySavedPositions(graph: Graph<GraphNodeAttributes>): void {
+  applySavedPositions(graph)
+}
+
 export function applyForceAtlas2Layout(
   graph: Graph<GraphNodeAttributes>,
   onProgress?: (progress: LayoutProgress) => void,
@@ -79,6 +83,8 @@ export function applyForceAtlas2Layout(
     })
     onProgress?.({ phase: 'noverlap', iterations: NOVERLAP_SETTINGS.maxIterations, maxIterations: NOVERLAP_SETTINGS.maxIterations })
   }
+
+  reapplySavedPositions(graph)
 
   onProgress?.({ phase: 'done', iterations: FA2_SETTINGS.iterations, maxIterations: FA2_SETTINGS.iterations })
 }

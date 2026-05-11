@@ -5,6 +5,9 @@ import {
   listMindNodes,
   listMindEdges,
   updateMindNodePosition,
+  upsertMindEdge,
+  upsertMindNode,
+  deleteMindEdge,
   type StoredMindNode,
   type StoredMindEdge,
 } from '@/lib/repository'
@@ -24,6 +27,57 @@ const REFRESH_EVENTS = [
   'archive_completed',
 ] as const
 
+export async function ensureRootNode(userId: string, nodes: StoredMindNode[]): Promise<string | null> {
+  const existing = nodes.find(n => n.nodeType === 'root')
+  if (existing) return existing.id
+
+  const created = await upsertMindNode({
+    userId,
+    nodeType: 'root',
+    label: 'Root',
+    state: 'anchored',
+    positionX: 0,
+    positionY: 0,
+  })
+  return created.id
+}
+
+export async function ensureBaselineParentConnections(
+  userId: string,
+  nodes: StoredMindNode[],
+  edges: StoredMindEdge[],
+): Promise<StoredMindEdge[]> {
+  const rootNode = nodes.find(n => n.nodeType === 'root')
+  if (!rootNode) return []
+
+  const structuralEdgeTargets = new Set<string>()
+  edges.forEach(e => {
+    if (e.edgeType === 'parent_child') {
+      structuralEdgeTargets.add(e.targetNodeId)
+    }
+  })
+
+  const orphanDocNodes = nodes.filter(n =>
+    n.nodeType === 'document' && !structuralEdgeTargets.has(n.id)
+  )
+
+  const created: StoredMindEdge[] = []
+  for (const orphan of orphanDocNodes) {
+    const edge = await upsertMindEdge({
+      userId,
+      sourceNodeId: rootNode.id,
+      targetNodeId: orphan.id,
+      edgeType: 'parent_child',
+      strength: 0.3,
+      source: 'system',
+      confidence: 0.5,
+      reason: 'baseline-auto-connect',
+    })
+    created.push(edge)
+  }
+  return created
+}
+
 export function useMindGraph(userId: string) {
   const [nodes, setNodes] = useState<StoredMindNode[]>([])
   const [edges, setEdges] = useState<StoredMindEdge[]>([])
@@ -38,12 +92,22 @@ export function useMindGraph(userId: string) {
       return;
     }
     try {
-      const [mindNodes, mindEdges] = await Promise.all([
+      const [mindNodes] = await Promise.all([
         listMindNodes(userId),
         listMindEdges(userId),
       ])
-      setNodes(mindNodes)
-      setEdges(mindEdges)
+
+      await ensureRootNode(userId, mindNodes)
+
+      const [updatedNodes, updatedEdges] = await Promise.all([
+        listMindNodes(userId),
+        listMindEdges(userId),
+      ])
+
+      const baselineEdges = await ensureBaselineParentConnections(userId, updatedNodes, updatedEdges)
+
+      setNodes(updatedNodes)
+      setEdges([...updatedEdges, ...baselineEdges])
     } catch {
     } finally {
       setLoading(false)
@@ -99,6 +163,12 @@ export function useMindGraph(userId: string) {
     setRefreshKey((k) => k + 1)
   }, [])
 
+  const handleDeleteEdge = useCallback(async (edgeId: string) => {
+    setEdges((prev) => prev.filter((e) => e.id !== edgeId))
+    await deleteMindEdge(userId, edgeId)
+    emit({ type: 'mind_edge_deleted', edgeId })
+  }, [userId])
+
   return {
     nodes,
     edges,
@@ -107,5 +177,6 @@ export function useMindGraph(userId: string) {
     isEmpty,
     refresh: forceRefresh,
     onNodeDragEnd: handleNodeDragEnd,
+    onDeleteEdge: handleDeleteEdge,
   }
 }

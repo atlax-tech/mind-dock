@@ -435,7 +435,7 @@ const ToolboxView = () => {
 // ==========================================
 
 const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId: string; onToast: (msg: string) => void, onSelectionChange: (selected: boolean) => void, onOpenEditor?: (documentId: number, sourceType: 'draft' | 'document') => void }) => {
-  const { nodes: mindNodes, edges: mindEdges, loading, onNodeDragEnd, refresh: refreshMindGraph } = useMindGraph(userId);
+  const { nodes: mindNodes, edges: mindEdges, loading, onNodeDragEnd, onDeleteEdge, refresh: refreshMindGraph } = useMindGraph(userId);
   const interaction = useMindGraphInteraction();
   const { state: ixState, actions: ixActions } = interaction;
 
@@ -625,6 +625,7 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
           }}
           onToast={onToast}
           onNodeDragEnd={onNodeDragEnd}
+          onDeleteEdge={onDeleteEdge}
           activeModule="mind"
         />
       </div>

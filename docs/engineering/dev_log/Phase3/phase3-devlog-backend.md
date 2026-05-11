@@ -9,6 +9,32 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：MIND-REAL-003 Round 1 (Mind 图谱布局持久化 + Root/Parent 连接基线) -->
+<!-- ============================================ -->
+
+## MIND-REAL-003 Round 1 devlog -- Mind 图谱布局持久化 + Root/Parent 连接基线
+
+**时间戳**: 2026-05-10
+
+**任务起止时间**: 16:20 - 17:30 CST
+
+**工时**: 70 分钟
+
+**任务目标**: Mind 图谱节点位置持久化、Root/Parent 基线连接策略
+
+**改动文件名及行数**:
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/lib/repository.ts` | +0/-0 | 无直接改动，但 `upsertMindEdge` 被 `useMindGraph.ts` 的 `ensureBaselineParentConnections` 调用 |
+
+**数据模型变更**: 无
+
+**说明**: 本轮后端改动极小，核心变更在前端。`ensureBaselineParentConnections` 调用已有的 `upsertMindEdge` 创建 root → document 的 parent_child 基线连接，reason 为 `baseline-auto-connect`，source 为 `system`。
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：MIND-REAL-002 Round 7 (Bug Fix: MindNode ID 空间碰撞 - findMindNodeByDocumentId 不区分 sourceType) -->
 <!-- ============================================ -->
 

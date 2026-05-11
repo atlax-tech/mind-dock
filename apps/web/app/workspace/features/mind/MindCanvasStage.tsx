@@ -18,6 +18,7 @@ interface MindCanvasStageProps {
   onOpenInDock?: (dockItemId: number) => void
   onToast: (msg: string) => void
   onNodeDragEnd?: (nodeId: string, x: number, y: number) => void
+  onDeleteEdge?: (edgeId: string) => void
   activeModule?: string
 }
 
@@ -31,6 +32,7 @@ export default function MindCanvasStage({
   onSelectNode,
   onToast,
   onNodeDragEnd,
+  onDeleteEdge,
   activeModule,
 }: MindCanvasStageProps) {
   if (loading) {
@@ -71,6 +73,7 @@ export default function MindCanvasStage({
         onSelectNode={onSelectNode}
         onToast={onToast}
         onNodeDragEnd={onNodeDragEnd}
+        onDeleteEdge={onDeleteEdge}
         activeModule={activeModule}
       />
     )

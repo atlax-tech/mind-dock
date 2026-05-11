@@ -1,7 +1,7 @@
 'use client'
 
 import React from 'react'
-import { Link2, ArrowRight, ExternalLink, Archive, X } from 'lucide-react'
+import { ArrowRight, ExternalLink, Archive, X, Clock } from 'lucide-react'
 
 interface MindNodeActionBarProps {
   selectedNodeId: string | null
@@ -14,7 +14,7 @@ interface MindNodeActionBarProps {
 
 export default function MindNodeActionBar({
   selectedNodeId,
-  onConnect,
+  onConnect: _onConnect,
   onMove,
   onOpen,
   onArchive,
@@ -31,13 +31,15 @@ export default function MindNodeActionBar({
         boxShadow: '0 20px 50px -12px rgba(0,0,0,0.7)'
       }}
     >
-      {/* Primary Action: Connect */}
+      {/* Primary Action: Connect (Planned - disabled) */}
       <button 
-        onClick={onConnect}
-        className="flex items-center gap-2 px-6 h-11 rounded-xl bg-[#86d7ff] text-[#0b0f11] font-bold text-[13px] hover:bg-[#b3eaff] transition-all shadow-[0_0_20px_rgba(134,215,255,0.3)] group"
+        disabled
+        className="flex items-center gap-2 px-6 h-11 rounded-xl bg-white/5 text-[#8d989f] font-bold text-[13px] cursor-not-allowed opacity-60 border border-white/5 group"
+        title="Connect feature is coming soon"
       >
-        <Link2 size={16} className="group-hover:rotate-12 transition-transform" />
+        <Clock size={16} className="group-hover:rotate-12 transition-transform" />
         Connect
+        <span className="text-[9px] font-semibold tracking-wider uppercase bg-[#c8a0f0]/20 text-[#c8a0f0] px-1.5 py-0.5 rounded">Planned</span>
       </button>
 
       <div className="w-px h-6 bg-white/10 mx-1" />

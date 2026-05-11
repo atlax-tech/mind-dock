@@ -9,6 +9,7 @@ import { useMindCanvasRenderer } from './useMindCanvasRenderer'
 import MindFilterPanel from './MindFilterPanel'
 import MindScopeCapsule from './MindScopeCapsule'
 import MindNodeActionBar from './MindNodeActionBar'
+import MindNodeHoverCard from './MindNodeHoverCard'
 
 interface MindGraphViewProps {
   snapshot: MindGraphSnapshot
@@ -17,6 +18,7 @@ interface MindGraphViewProps {
   onSelectNode?: (nodeId: string | null) => void
   onToast: (msg: string) => void
   onNodeDragEnd?: (nodeId: string, x: number, y: number) => void
+  onDeleteEdge?: (edgeId: string) => void
   activeModule?: string
 }
 
@@ -27,6 +29,8 @@ export default function MindGraphView({
   onSelectNode: _onSelectNode,
   onToast: _onToast,
   onNodeDragEnd,
+  onDeleteEdge,
+  activeModule: _activeModule,
 }: MindGraphViewProps) {
   const { state: ixState, actions: ixActions } = interaction
 
@@ -128,7 +132,6 @@ export default function MindGraphView({
           onPointerMove={renderer.handlePointerMove}
           onPointerUp={renderer.handlePointerUp}
           onPointerLeave={renderer.handlePointerUp}
-          onWheel={renderer.handleWheel}
           style={{ cursor: 'default', touchAction: 'none' }}
         >
           <canvas ref={canvasRef} className="absolute inset-0" />
@@ -143,7 +146,6 @@ export default function MindGraphView({
 
         <MindNodeActionBar 
           selectedNodeId={ixState.selectedNodeId}
-          onConnect={() => _onToast('Connecting...')}
           onMove={() => _onToast('Moving to cluster...')}
           onOpen={() => {
             if (ixState.selectedNodeId) {
@@ -159,6 +161,16 @@ export default function MindGraphView({
           onArchive={() => _onToast('Archiving...')}
           onClose={() => handleSelectNode(null)}
         />
+
+        {/* Hover Preview Card */}
+        {ixState.hoveredNodeId && renderer.hoverScreenPos && onDeleteEdge && (
+          <MindNodeHoverCard
+            nodeId={ixState.hoveredNodeId}
+            snapshot={snapshot}
+            screenPos={renderer.hoverScreenPos}
+            onUnlinkEdge={onDeleteEdge}
+          />
+        )}
 
         {/* Zoom controls - bottom right */}
         <div className="absolute bottom-6 right-6 rounded-full p-1.5 flex flex-col gap-1 shadow-2xl z-20 pointer-events-auto"
