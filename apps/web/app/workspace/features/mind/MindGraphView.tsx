@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useCallback } from 'react'
+import { useRef, useCallback, useState } from 'react'
 import { Plus, Minus, Crosshair, ChevronRight, ChevronDown, Brain, Filter } from 'lucide-react'
 import type { MindGraphSnapshot } from './types'
 import { BG_COLOR } from './mindGraphStyle'
@@ -10,6 +10,8 @@ import MindFilterPanel from './MindFilterPanel'
 import MindScopeCapsule from './MindScopeCapsule'
 import MindNodeActionBar from './MindNodeActionBar'
 import MindNodeHoverCard from './MindNodeHoverCard'
+
+const HOVER_LEAVE_DELAY = 150
 
 interface MindGraphViewProps {
   snapshot: MindGraphSnapshot
@@ -40,6 +42,38 @@ export default function MindGraphView({
 
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const hoverLeaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [hoverCardActive, setHoverCardActive] = useState(false)
+
+  const handleHoverNode = useCallback((nodeId: string | null) => {
+    if (hoverLeaveTimeoutRef.current) {
+      clearTimeout(hoverLeaveTimeoutRef.current)
+      hoverLeaveTimeoutRef.current = null
+    }
+    if (nodeId) {
+      ixActions.setHoveredNode(nodeId)
+    } else {
+      hoverLeaveTimeoutRef.current = setTimeout(() => {
+        if (!hoverCardActive) {
+          ixActions.setHoveredNode(null)
+        }
+        hoverLeaveTimeoutRef.current = null
+      }, HOVER_LEAVE_DELAY)
+    }
+  }, [ixActions, hoverCardActive])
+
+  const handleHoverCardEnter = useCallback(() => {
+    if (hoverLeaveTimeoutRef.current) {
+      clearTimeout(hoverLeaveTimeoutRef.current)
+      hoverLeaveTimeoutRef.current = null
+    }
+    setHoverCardActive(true)
+  }, [])
+
+  const handleHoverCardLeave = useCallback(() => {
+    setHoverCardActive(false)
+    ixActions.setHoveredNode(null)
+  }, [ixActions])
 
   const handleSelectNode = useCallback((nodeId: string | null) => {
     if (ixState.connectMode && nodeId && ixState.connectSourceId && onCreateEdge) {
@@ -80,7 +114,7 @@ export default function MindGraphView({
     ixState.selectedNodeId,
     ixState.hoveredNodeId,
     handleSelectNode,
-    ixActions.setHoveredNode,
+    handleHoverNode,
     onNodeDragEnd,
   )
 
@@ -196,6 +230,8 @@ export default function MindGraphView({
             snapshot={snapshot}
             screenPos={renderer.hoverScreenPos}
             onUnlinkEdge={onDeleteEdge}
+            onMouseEnter={handleHoverCardEnter}
+            onMouseLeave={handleHoverCardLeave}
           />
         )}
 

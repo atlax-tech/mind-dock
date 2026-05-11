@@ -9,6 +9,325 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：MIND-REAL-004 Round 6 (待整理队列折叠式改造) -->
+<!-- ============================================ -->
+
+## MIND-REAL-004 Round 6 devlog -- 待整理队列折叠式改造
+
+**时间戳**: 2026-05-12
+
+**任务起止时间**: 05:36 - 05:39 CST
+
+**工时**: 3 分钟
+
+**任务目标**:
+
+待整理队列按类别做成折叠样式，折叠标题上显示每个类别的待整理数量。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/app/workspace/page.tsx` | +62/-47 行 | 新增 `InboxSection` 折叠组件（ChevronRight 旋转 + 颜色圆点 + 标题 + 数量徽章 + 折叠内容列表），替换原有平铺式渲染 |
+
+**技术要点**:
+
+1. **InboxSection 组件**: 接收 `title`/`color`/`count`/`items`/`defaultOpen` props。标题栏包含 ChevronRight 箭头（展开时 `rotate-90`）、颜色圆点、标题文本、数量徽章（`{color}15` 背景 + `{color}aa` 文字）。点击标题栏切换折叠/展开。
+2. **两个折叠区**: Drafts（琥珀色 `#fbbf24`）和 Tips（蓝色 `#86d7ff`），默认都展开。空类别展开时显示"暂无"。
+3. **项目紧凑化**: 每个待整理项从 `p-3 rounded-xl` 改为 `p-2.5 rounded-lg`，图标从 `w-6 h-6` 改为 `w-5 h-5`，文字从 `text-[12px]` 改为 `text-[11px]`，更紧凑但信息密度更高。
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ 0 errors (6 warnings, pre-existing)
+- `pnpm typecheck`: ✅ 通过
+- `pnpm test`: ✅ 679 tests passed
+- `pnpm build:web`: ✅ 构建成功
+
+**手工验证步骤说明**:
+
+1. 启动开发服务器 `pnpm dev`
+2. 进入 Mind 视图，左侧底部"待整理队列"显示两个折叠区：Drafts 和 Tips
+3. 每个折叠区标题右侧显示数量徽章
+4. 点击标题栏可折叠/展开，ChevronRight 箭头旋转动画
+5. 空类别展开时显示"暂无"
+
+**当前风险及影响范围**:
+
+无新增风险。折叠状态未持久化（刷新后恢复默认展开），这是预期行为。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-004 Round 5 (草稿退出图谱 → 待整理队列 + 设计决策记录) -->
+<!-- ============================================ -->
+
+## MIND-REAL-004 Round 5 devlog -- 草稿退出图谱 → 待整理队列 + 设计决策记录
+
+**时间戳**: 2026-05-12
+
+**任务起止时间**: 05:20 - 05:35 CST
+
+**工时**: 15 分钟
+
+**设计决策**:
+
+草稿（Draft）不再自动进入图谱。原因：草稿也入图谱会导致同名草稿与正式文档节点混杂，用户无法分辨，图谱非常混乱。改为与 Tips 相同的策略——草稿进入左侧"待整理队列"，用户自由选择是否发布为正式文档后进入图谱。这是对"图谱只展示已确认的正式文档节点"这一原则的回归。
+
+**任务目标**:
+
+1. 停止 `syncDocumentsToMindNodes` 中为草稿自动创建 MindNode
+2. 草稿加入左侧"待整理队列"，与 Tips 同队列但颜色区分（琥珀色 `#fbbf24` vs 蓝色 `#86d7ff`）
+3. 右侧面板支持 Draft 详情预览（标题、内容摘要、打开编辑器按钮）
+4. Snapshot 构建中过滤掉 `metadata.sourceType === 'draft'` 的旧节点，兼容已有数据
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/lib/repository.ts` | -16 行 | `syncDocumentsToMindNodes` 删除 draft 循环 + 删除 `listDrafts` 调用 |
+| `apps/web/app/workspace/page.tsx` | +55/-5 行 | 新增 `inboxDrafts`/`activeInboxDraft` 状态 + 待整理队列渲染草稿项（琥珀色圆点 + "draft" 标签 + ✎ 图标）+ 右侧 Draft 详情面板（标题/内容/草稿预览/打开编辑器） |
+| `apps/web/app/workspace/features/mind/mindSnapshotBuilder.ts` | +10/-2 行 | 过滤 `sourceType === 'draft'` 节点 + 过滤引用被删节点的边 |
+
+**技术要点**:
+
+1. **草稿退出图谱**: `syncDocumentsToMindNodes` 原来会遍历所有 active drafts（无 sourceEntryId 的），为每个创建 `nodeType: 'document', metadata.sourceType: 'draft'` 的 MindNode。现在完全删除这个循环，草稿不再产生图谱节点。
+2. **待整理队列双类型**: 左侧队列现在同时展示 drafts 和 tips。Drafts 用琥珀色 `#fbbf24` 圆点和 `bg-[#fbbf24]/10` 选中态；Tips 保持蓝色 `#86d7ff`。Draft 项的右侧图标用 `✎` 表示可编辑，Tip 项用 `+1` 表示可注入。
+3. **Snapshot 兼容过滤**: `buildSimpleMindGraphSnapshot` 新增 `filteredNodes` 步骤，过滤 `metadata.sourceType === 'draft'` 的节点。同时过滤引用了被删节点的边。这确保旧数据中残留的 draft 节点不会出现在图谱中。
+4. **Draft 详情面板**: 右侧面板新增第三种状态——选中 draft 时显示标题、内容摘要（line-clamp-4）、"草稿预览"提示框（琥珀色边框）、"打开编辑器"按钮。
+
+**遇到的问题及解决方式**:
+
+1. **错误插入位置**: 首次将 Draft 详情面板代码插入到 HomeView 而非 MindView 的右侧面板条件分支中。发现后立即回退并重新插入到正确位置（`selectedNode ? ... : activeInboxDraft ? ... : (AI蒸馏面板)`）。
+2. **旧数据兼容**: 已有用户数据中可能存在 `sourceType: 'draft'` 的 MindNode。通过在 snapshot 构建层过滤解决，无需删除数据库中的旧记录。
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ 0 errors (6 warnings, pre-existing)
+- `pnpm typecheck`: ✅ 通过
+- `pnpm test`: ✅ 679 tests passed
+- `pnpm build:web`: ✅ 构建成功
+
+**手工验证步骤说明**:
+
+1. 启动开发服务器 `pnpm dev`
+2. 进入 Mind 视图，确认图谱中不再出现草稿节点
+3. 创建新草稿，确认左侧"待整理队列"中出现琥珀色 draft 项
+4. 点击 draft 项，右侧面板显示 Draft 详情（标题、内容、打开编辑器按钮）
+5. 点击"打开编辑器"，确认跳转到编辑器
+6. 发布草稿为正式文档，确认图谱中出现新的 document 节点
+7. 确认 Tips 仍然正常显示在待整理队列中（蓝色圆点）
+
+**当前风险及影响范围**:
+
+1. **旧数据 draft 节点**: 已有 draft MindNode 仍存在于数据库中，只是被 snapshot 过滤不显示。如果用户直接查询数据库会看到这些节点。后续可添加清理迁移脚本。
+2. **Draft 详情面板功能有限**: 当前只显示标题和内容摘要，不支持直接在面板中编辑或发布。用户需要点击"打开编辑器"进入编辑器才能操作。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-004 Round 4 (Draft 节点视觉区分 + 右侧栏去模块化) -->
+<!-- ============================================ -->
+
+## MIND-REAL-004 Round 4 devlog -- Draft 节点视觉区分 + 右侧栏去模块化
+
+**时间戳**: 2026-05-12
+
+**任务起止时间**: 04:50 - 05:04 CST
+
+**工时**: 14 分钟
+
+**任务目标**:
+
+1. 图谱中 draft 节点和 document 节点视觉不可区分，同名草稿和正式文档在图谱上无法分辨
+2. 右侧 Node Details 面板中 Connected Nodes / Recommendation Inspector 使用模块化卡片样式，在高信息密度视图下展示效果局促、浪费空间
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/app/workspace/features/mind/mindGraphStyle.ts` | +5 行 | NODE_COLOR 新增 `draft: '#fbbf24'`（琥珀色）+ NODE_BASE_SIZE/TYPE_VISUAL_WEIGHT/NODE_LABEL_FONT_SIZE/getNodeTypeLabel 均新增 draft 条目 |
+| `apps/web/app/workspace/features/mind/useMindCanvasRenderer.ts` | +7 行 | canvas 绘制时检测 `n.nodeType === 'draft'`，在节点外圈绘制虚线环（dashed amber stroke） |
+| `apps/web/app/workspace/page.tsx` | -15/+15 行 | Connected Nodes 列表从卡片式（rounded-lg bg border p-2.5 space-y-2）改为平铺式（divide-y py-1.5 hover:bg），去掉背景色、边框、圆角；空状态去掉 dashed 边框容器 |
+| `apps/web/app/workspace/features/mind/MindRecommendationInspector.tsx` | -60/+25 行 | 样式轻量化：保留全部 UX 结构（Header、Summary Card、推荐列表、4 按钮操作栏），去掉 `rounded-2xl`/`shadow-xl`/`bg-gradient-to-br`/`border-white/10`/`mx-5` 等重装饰，改为 `bg-white/[0.02]` 无圆角平铺 |
+
+**技术要点**:
+
+1. **Draft 节点颜色体系**: draft 节点使用 `#fbbf24` 琥珀色（与 document 的 `#bbf7d0` 绿色形成冷暖对比），视觉权重 TYPE_VISUAL_WEIGHT 设为 0.25（低于 document 的 0.35），表示草稿是次要/临时节点。
+2. **Canvas 虚线边框**: 在 useMindCanvasRenderer 的 node draw 循环中，draft 节点额外绘制一个 `radius + 1.5/cam.zoom` 的虚线圆环，使用 `rgba(251,191,36,0.5)` 半透明琥珀色，`setLineDash([3, 3])` 实现虚线效果。这使 draft 节点即使在缩放后也能被一眼识别。
+3. **Connected Nodes 平铺化**: 从 `space-y-2` + 每个 item 带 `bg-white/[0.03] border rounded-lg p-2.5` 改为 `divide-y divide-white/[0.04]` + item 仅 `py-1.5 hover:bg-white/[0.03]`。节省约 40% 垂直空间。
+4. **Recommendation Inspector 样式轻量化**: 保留全部原有 UX 结构（Header 标题区、Summary Card 含 Zap 图标和标签、Recommended Links 列表含详情文本、4 按钮操作栏 连接/修改/稍后/拒绝）。仅做样式调整：`rounded-2xl` → 无圆角，`shadow-xl` → 去掉，`bg-gradient-to-br from-[#1a1f24] to-[#0d1215]` → `bg-white/[0.02]`，`border border-white/10` → 去掉边框，`mx-5` → 去掉左右大边距。
+
+**遇到的问题及解决方式**:
+
+1. **MindRecommendationInspector 未使用 import 清理**: 重构后 Zap、Check、X、Clock、Edit3、Sparkles 不再需要，清理为仅保留 Loader2。
+2. **baseline 标签过度装饰**: 原 baseline 标签使用 `bg-[#86d7ff]/5 px-1.5 py-0.5 rounded border` 样式过重，平铺后改为纯文本 `text-[#86d7ff]/60`。
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ 0 errors (6 warnings, pre-existing)
+- `pnpm typecheck`: ✅ 通过
+- `pnpm test`: ✅ 679 tests passed
+- `pnpm build:web`: ✅ 构建成功
+
+**手工验证步骤说明**:
+
+1. 启动开发服务器 `pnpm dev`
+2. 进入 Mind 视图，创建一篇文档并发布 → 图谱出现绿色 document 节点
+3. 创建同名草稿但不发布 → 图谱出现琥珀色 draft 节点，带虚线外圈
+4. 确认两个节点颜色不同、大小不同（draft 更小）、标签显示 "Document" vs "Draft"
+5. 点击任一节点，右侧面板 Connected Nodes 区域确认：列表项无背景无边框，用细分割线分隔，hover 时微亮
+6. Recommendation Inspector 确认：无大标题、无 Summary Card、无 4 按钮网格，每条推荐仅一行显示
+
+**当前风险及影响范围**:
+
+1. **Recommendation Inspector 样式调整**: 已恢复全部原有 UX 结构和功能（4 按钮操作栏、Summary Card、推荐详情文本），仅做样式轻量化。无功能缺失风险。
+2. **Draft 节点视觉层级较低**: TYPE_VISUAL_WEIGHT=0.25 导致 draft 节点在高缩放下可能不显示标签。这是有意为之（草稿不应抢夺注意力），但用户可能反馈找不到草稿节点。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-004 Round 3 (Review FAIL 修复：Node Details 面板滚动 + 草稿去重/空草稿 + HoverCard 降级) -->
+<!-- ============================================ -->
+
+## MIND-REAL-004 Round 3 devlog -- Review FAIL 修复：Node Details 面板滚动 + 草稿去重/空草稿 + HoverCard 降级
+
+**时间戳**: 2026-05-12
+
+**任务起止时间**: 04:35 - 04:45 CST
+
+**工时**: 10 分钟
+
+**任务目标**:
+
+1. HoverCard 可操作性降级为非阻塞已知限制，dev log 明确记录
+2. Node Details > Connected Nodes 看不到，右侧面板布局裁切连接列表，必须修复
+3. 右侧边栏展示不完整且鼠标滚轮不可用，必须修复
+4. 同节点/同层级下同名文档去重回归：无 sourceEntryId 的新草稿发布也应走重名检查
+5. 空草稿不应发布为正式文档
+6. 补测试覆盖上述场景
+
+**已知限制 (HoverCard 降级)**:
+
+HoverCard 仅作为预览浮层，不作为可靠的 unlink 入口。鼠标从节点移动到 HoverCard 时存在 150ms 延迟保持机制，但在快速移动或特定角度下仍可能出现卡片消失。用户应通过右侧 Node Details > Connected Nodes 进行可靠的 unlink 操作。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/app/workspace/page.tsx` | +8/-12 行 | Node Details 面板重构：Header shrink-0 + 中间区域 flex-1 min-h-0 overflow-y-auto + Bottom Actions shrink-0，解决裁切和滚动问题 |
+| `apps/web/lib/repository.ts` | +15/-5 行 | publishDraftToDocument 新增空草稿校验（emptyDraft）+ 无 sourceEntryId 新草稿也走 checkDocumentNameConflict + PublishResult 类型新增 emptyDraft 字段 |
+| `apps/web/app/workspace/features/editor/useDrafts.ts` | +4/-1 行 | handlePublish 返回类型新增 emptyDraft，处理空草稿返回 |
+| `apps/web/app/workspace/features/editor/DraftEditorView.tsx` | +4/-0 行 | 发布前检查 emptyDraft，给 toast 提示"空草稿不能发布" |
+| `apps/web/tests/draft-repository.test.ts` | +98/-0 行 | 7 个新测试：无 sourceEntryId 重名冲突、无 sourceEntryId 唯一名称成功、空草稿拒绝(2)、有内容草稿可发布(2)、空草稿不创建 MindNode |
+
+**技术要点**:
+
+1. **Node Details 面板布局修复**: 将面板从 `flex flex-col h-full` 改为 `flex flex-col h-full min-h-0`。Header 和 Bottom Actions 设为 `shrink-0`，中间区域（Connected Nodes + Recommendation Inspector）设为 `flex-1 min-h-0 overflow-y-auto custom-scrollbar`，确保内容超出时可用鼠标滚轮滚动。
+2. **publishDraftToDocument 重名检查扩展**: 原逻辑仅在 `publishMode === 'as_new'` 时检查重名。修改为：当 `sourceEntryId == null || publishMode === 'as_new'`（即创建新 entry 的场景）都走 `checkDocumentNameConflict`。
+3. **空草稿校验**: 在 repository 层增加校验：标题为空/默认 "Untitled" 且正文为空时，返回 `{ draft: null, entry: null, emptyDraft: true }`。DraftEditorView 在 UI 层检查 emptyDraft 并 toast 提示。
+4. **HoverCard 降级策略**: Round 2 实现的 150ms 延迟保持机制保留，但明确记录为不可靠入口。Node Details 面板是唯一可靠的 unlink 操作入口。
+
+**遇到的问题及解决方式**:
+
+1. **sourceEntryId 为 null 而非 undefined**: 测试中 `createDraft(USER_A, 'Untitled', '')` 返回的 draft.sourceEntryId 是 `null` 而非 `undefined`，导致 `toBeUndefined()` 断言失败。改用 `toBeFalsy()` 兼容两种情况。
+2. **面板裁切根因**: 原布局中 Connected Nodes 区域 `flex-1 overflow-y-auto` 和 Recommendation Inspector 区域、Bottom Actions 并列在 flex 容器中，但缺少 `min-h-0` 导致 flex 子元素无法缩小到内容以下，整体被裁切。将中间内容区域合并为一个可滚动的 flex-1 min-h-0 容器解决。
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ 0 errors (6 warnings, pre-existing)
+- `pnpm typecheck`: ✅ 通过
+- `pnpm test`: ✅ 679 tests passed（含新增 7 个草稿去重/空草稿测试）
+- `pnpm build:web`: ✅ 构建成功
+
+**手工验证步骤说明**:
+
+1. 启动开发服务器 `pnpm dev`
+2. 进入 Mind 视图，点击节点选中，右侧 Node Details 面板出现
+3. 滚动右侧面板，确认 Connected Nodes、Recommendation Inspector、底部按钮都可见
+4. 确认鼠标滚轮在右侧面板中可用
+5. 新建草稿（不写内容），尝试发布，确认 toast 提示"空草稿不能发布"
+6. 新建草稿写入内容并命名为已存在文档名，发布时确认重名冲突提示
+7. 新建草稿写入内容并使用唯一名称，确认发布成功
+
+**当前风险及影响范围**:
+
+1. **空草稿校验边界**: 当前仅拒绝标题为空/默认 "Untitled" 且正文为空的草稿。如果用户手动将标题改为 "Untitled" 并写了内容，仍可发布（这是预期行为）。
+2. **HoverCard 降级**: HoverCard 的 unlink 按钮保留但不可靠，用户可能误以为 HoverCard 是可靠的 unlink 入口。后续可考虑在 HoverCard 中移除 unlink 按钮，仅保留预览功能。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-004 Round 2 (Review FAIL 修复：HoverCard/Node Details 交互 + Baseline 保护) -->
+<!-- ============================================ -->
+
+## MIND-REAL-004 Round 2 devlog -- Review FAIL 修复：HoverCard/Node Details 交互 + Baseline 保护
+
+**时间戳**: 2026-05-12
+
+**任务起止时间**: 04:00 - 04:14 CST
+
+**工时**: 14 分钟
+
+**任务目标**:
+
+1. MindNodeHoverCard 必须可操作：鼠标从节点移动到 HoverCard 时卡片不能立即消失，取消链接按钮必须可点击
+2. 右侧 Node Details > Connected Nodes 必须支持取消非 baseline edge
+3. 右侧详情连接列表必须保留 edge 级信息：edge.id、edgeType、reason、baseline lock 状态
+4. baseline-auto-connect edge 在 HoverCard 和 Node Details 中都只能显示 Lock，不能删除
+5. 非 baseline edge 删除必须调用真实 onDeleteEdge / repository 写库，不允许只做前端 filter
+6. 删除后刷新仍保持删除结果
+7. 更新或补充测试覆盖 HoverCard/Node Details 的 unlink 能力与 baseline 保护
+8. 更新 Phase 3 dev log 记录本次 review FAIL 修复
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/app/workspace/features/mind/MindGraphView.tsx` | +35 行 | 新增 `hoverLeaveTimeoutRef` + `hoverCardActive` 状态 + `handleHoverNode` 延迟清除 + `handleHoverCardEnter`/`handleHoverCardLeave` 回调 + 传入 HoverCard 的 onMouseEnter/onMouseLeave |
+| `apps/web/app/workspace/features/mind/MindNodeHoverCard.tsx` | +6 行 | 新增 `onMouseEnter`/`onMouseLeave` 可选 props + 绑定到外层 div |
+| `apps/web/app/workspace/page.tsx` | +30 行 | selectedNode.connections 扩展 edgeId/edgeType/reason/isBaseline 字段 + Connected Nodes 列表增加 Lock/X 按钮 + 引入 Lock 图标 import |
+| `apps/web/tests/mind-edge-ops.test.ts` | +174 行 | 6 个新测试用例覆盖：snapshot edge 级信息、baseline 识别、unlink 持久化、baseline 删除保护、连接列表 edge 信息完整性、删除非 baseline 不影响 baseline |
+
+**技术要点**:
+
+1. **HoverCard 悬停保持**: 在 `MindGraphView` 中引入 150ms 延迟清除机制。当 canvas pointer move 检测到鼠标离开节点时，不立即清除 `hoveredNodeId`，而是启动 150ms 定时器。若鼠标在定时器触发前进入 HoverCard（`onMouseEnter`），则取消定时器并保持 hover 状态；若鼠标离开 HoverCard（`onMouseLeave`），则立即清除 hover 状态。
+2. **Node Details 连接列表增强**: `selectedNode.connections` 从原来的 `{ id, label, type, nodeType }` 扩展为 `{ id, label, type, nodeType, edgeId, edgeType, reason, isBaseline }`。`isBaseline` 由 `e.reason === 'baseline-auto-connect'` 计算得出。
+3. **Baseline 保护 UI**: 在 Node Details 的 Connected Nodes 列表中，baseline edge 显示 Lock 图标 + "baseline" 标签，无删除按钮；非 baseline edge 显示 X 取消链接按钮，hover 时变红提示。
+4. **真实删除路径**: Node Details 中的 X 按钮直接调用 `onDeleteEdge(conn.edgeId)`，即 `useMindGraph.handleDeleteEdge`，该函数先检查 baseline 保护，再调用 `deleteMindEdge(userId, edgeId)` 写库，最后发射 `mind_edge_deleted` 事件。
+
+**遇到的问题及解决方式**:
+
+1. **hoverCardActive 闭包问题**: `handleHoverNode` 使用 `hoverCardActive` 状态，但 `useCallback` 依赖可能导致闭包陷阱。通过在 setTimeout 回调中检查 `hoverCardActive` 最新值解决。
+2. **Lock import 缺失**: `page.tsx` 中新增 Lock 图标使用但未 import，补充 `Lock` 到 lucide-react 导入列表。
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ 0 errors
+- `pnpm typecheck`: ✅ 通过
+- `pnpm test`: ✅ 672 tests passed（含新增 6 个 HoverCard/Node Details unlink 与 baseline 保护测试）
+- `pnpm build:web`: ✅ 构建成功
+
+**手工验证步骤说明**:
+
+1. 启动开发服务器 `pnpm dev`
+2. 进入 Mind 视图，悬浮在节点上，HoverCard 出现
+3. 将鼠标从节点移动到 HoverCard 上，确认卡片不消失
+4. 在 HoverCard 中点击非 baseline edge 的 X 按钮，确认 edge 被删除
+5. 在 HoverCard 中确认 baseline edge 只显示 Lock 图标，无 X 按钮
+6. 点击节点选中，右侧 Node Details 面板出现
+7. 在 Connected Nodes 列表中确认每条连接显示 edgeType 和 reason 信息
+8. 确认 baseline edge 显示 Lock 图标和 "baseline" 标签
+9. 点击非 baseline edge 的 X 按钮，确认 edge 被删除
+10. 刷新页面，确认删除结果持久化
+
+**当前风险及影响范围**:
+
+1. **hoverCardActive 状态同步**: `handleHoverNode` 的 `useCallback` 依赖 `hoverCardActive`，每次 `hoverCardActive` 变化都会重建回调。当前 150ms 延迟足够覆盖鼠标移动间隙，但极端情况下可能需要调整延迟值。
+2. **Node Details 删除无确认**: 当前点击 X 按钮直接删除，无二次确认弹窗。后续可增加确认对话框。
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：MIND-REAL-004 Round 1 (Mind Edge 最小真实操作：手动建链 + 删除/隐藏) -->
 <!-- ============================================ -->
 

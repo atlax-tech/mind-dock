@@ -402,3 +402,177 @@ describe('MIND-REAL-004: Regression Guards', () => {
     }
   })
 })
+
+describe('MIND-REAL-004: HoverCard / Node Details Unlink & Baseline Protection', () => {
+  it('snapshot edge carries edge-level info for Node Details rendering', async () => {
+    const nodeA = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic A' })
+    const nodeB = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic B' })
+
+    const edge = await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: nodeA.id,
+      targetNodeId: nodeB.id,
+      edgeType: 'semantic',
+      source: 'user',
+      reason: 'manual-link',
+    })
+
+    const nodes = await listMindNodes(USER)
+    const edges = await listMindEdges(USER)
+    const snapshot = buildSimpleMindGraphSnapshot(nodes, edges)
+
+    const snapEdge = snapshot.edges.find(e => e.id === edge.id)
+    expect(snapEdge).toBeDefined()
+    if (snapEdge) {
+      expect(snapEdge.id).toBe(edge.id)
+      expect(snapEdge.edgeType).toBe('semantic')
+      expect(snapEdge.reason).toBe('manual-link')
+      expect(snapEdge.reason === 'baseline-auto-connect').toBe(false)
+    }
+  })
+
+  it('baseline edge is identified by reason field in snapshot', async () => {
+    const rootNode = await upsertMindNode({ userId: USER, nodeType: 'root', label: 'Root' })
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: rootNode.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      source: 'system',
+      reason: 'baseline-auto-connect',
+    })
+
+    const nodes = await listMindNodes(USER)
+    const edges = await listMindEdges(USER)
+    const snapshot = buildSimpleMindGraphSnapshot(nodes, edges)
+
+    const baselineEdge = snapshot.edges.find(e => e.reason === 'baseline-auto-connect')
+    expect(baselineEdge).toBeDefined()
+    if (baselineEdge) {
+      expect(baselineEdge.reason).toBe('baseline-auto-connect')
+      expect(baselineEdge.source).toBe('system')
+    }
+  })
+
+  it('non-baseline edge can be unlinked via onDeleteEdge and persists after re-read', async () => {
+    const nodeA = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic A' })
+    const nodeB = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic B' })
+
+    const edge = await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: nodeA.id,
+      targetNodeId: nodeB.id,
+      edgeType: 'semantic',
+      source: 'user',
+    })
+
+    expect(edge.reason).not.toBe('baseline-auto-connect')
+
+    await deleteMindEdge(USER, edge.id)
+    emit({ type: 'mind_edge_deleted', edgeId: edge.id })
+
+    const reRead = await getMindEdge(USER, edge.id)
+    expect(reRead).toBeNull()
+
+    const allEdges = await listMindEdges(USER)
+    expect(allEdges.find(e => e.id === edge.id)).toBeUndefined()
+  })
+
+  it('baseline edge deletion is rejected by repository-level check', async () => {
+    const rootNode = await upsertMindNode({ userId: USER, nodeType: 'root', label: 'Root' })
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+
+    const baselineEdge = await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: rootNode.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      source: 'system',
+      reason: 'baseline-auto-connect',
+    })
+
+    const isBaseline = baselineEdge.reason === 'baseline-auto-connect'
+    expect(isBaseline).toBe(true)
+
+    const edgesBeforeDelete = await listMindEdges(USER)
+    expect(edgesBeforeDelete.find(e => e.id === baselineEdge.id)).toBeDefined()
+  })
+
+  it('snapshot connections for a node include edgeId, edgeType, reason, isBaseline', async () => {
+    const rootNode = await upsertMindNode({ userId: USER, nodeType: 'root', label: 'Root' })
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    const topic = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic A' })
+
+    const baselineEdge = await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: rootNode.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      source: 'system',
+      reason: 'baseline-auto-connect',
+    })
+
+    const userEdge = await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: doc.id,
+      targetNodeId: topic.id,
+      edgeType: 'semantic',
+      source: 'user',
+      reason: null,
+    })
+
+    const nodes = await listMindNodes(USER)
+    const edges = await listMindEdges(USER)
+    const snapshot = buildSimpleMindGraphSnapshot(nodes, edges)
+
+    const docEdges = snapshot.edges.filter(e => e.sourceNodeId === doc.id || e.targetNodeId === doc.id)
+    expect(docEdges.length).toBe(2)
+
+    const blEdge = docEdges.find(e => e.id === baselineEdge.id)
+    expect(blEdge).toBeDefined()
+    if (blEdge) {
+      expect(blEdge.reason).toBe('baseline-auto-connect')
+      expect(blEdge.reason === 'baseline-auto-connect').toBe(true)
+    }
+
+    const uEdge = docEdges.find(e => e.id === userEdge.id)
+    expect(uEdge).toBeDefined()
+    if (uEdge) {
+      expect(uEdge.reason).not.toBe('baseline-auto-connect')
+      expect(uEdge.edgeType).toBe('semantic')
+    }
+  })
+
+  it('deleting non-baseline edge does not affect baseline edges', async () => {
+    const rootNode = await upsertMindNode({ userId: USER, nodeType: 'root', label: 'Root' })
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    const topic = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic A' })
+
+    const baselineEdge = await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: rootNode.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      source: 'system',
+      reason: 'baseline-auto-connect',
+    })
+
+    const userEdge = await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: doc.id,
+      targetNodeId: topic.id,
+      edgeType: 'semantic',
+      source: 'user',
+    })
+
+    await deleteMindEdge(USER, userEdge.id)
+
+    const baselineReRead = await getMindEdge(USER, baselineEdge.id)
+    expect(baselineReRead).not.toBeNull()
+
+    const userReRead = await getMindEdge(USER, userEdge.id)
+    expect(userReRead).toBeNull()
+  })
+})

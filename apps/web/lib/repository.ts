@@ -2124,6 +2124,7 @@ export interface PublishResult {
   draft: PersistedEditorDraft | null
   entry: PersistedEntry | null
   nameConflict?: { hasConflict: boolean; conflictingParentIds: string[] }
+  emptyDraft?: boolean
 }
 
 export async function publishDraftToDocument(
@@ -2136,10 +2137,20 @@ export async function publishDraftToDocument(
     return { draft: null, entry: null }
   }
 
-  const title = draft.title || 'Untitled'
+  const title = (draft.title || '').trim()
+  const content = (draft.content || '').trim()
+  const isDefaultTitle = !title || title.toLowerCase() === 'untitled'
+  const isEmptyContent = !content
 
-  if (publishMode === 'as_new') {
-    const conflict = await checkDocumentNameConflict(userId, title)
+  if (isDefaultTitle && isEmptyContent) {
+    return { draft: null, entry: null, emptyDraft: true }
+  }
+
+  const effectiveTitle = title || 'Untitled'
+
+  const isCreatingNew = draft.sourceEntryId == null || publishMode === 'as_new'
+  if (isCreatingNew) {
+    const conflict = await checkDocumentNameConflict(userId, effectiveTitle)
     if (conflict.hasConflict) {
       return { draft: null, entry: null, nameConflict: conflict }
     }
@@ -2152,7 +2163,7 @@ export async function publishDraftToDocument(
     const existing = await entriesTable.get(draft.sourceEntryId)
     if (existing && existing.userId === userId) {
       await entriesTable.update(draft.sourceEntryId, {
-        title: draft.title || 'Untitled',
+        title: effectiveTitle,
         content: draft.content,
         archivedAt: now,
       })
@@ -2164,7 +2175,7 @@ export async function publishDraftToDocument(
     const entryId = await entriesTable.add({
       userId,
       sourceDockItemId: draft.sourceEntryId ?? 0,
-      title: draft.title || 'Untitled',
+      title: effectiveTitle,
       content: draft.content,
       type: 'note',
       tags: [],
@@ -2195,7 +2206,7 @@ export async function publishDraftToDocument(
     const entryNode = await findMindNodeBySourceType(userId, draft.sourceEntryId, 'document')
     if (entryNode) {
       await mindNodesTable.update(entryNode.id, {
-        label: title,
+        label: effectiveTitle,
         documentId: entryId,
         metadata: { sourceType: 'document', entryId },
         updatedAt: now,
@@ -2204,7 +2215,7 @@ export async function publishDraftToDocument(
       await upsertMindNode({
         userId,
         nodeType: 'document',
-        label: title,
+        label: effectiveTitle,
         documentId: entryId,
         state: 'drifting',
         metadata: { sourceType: 'document', entryId },
@@ -2214,7 +2225,7 @@ export async function publishDraftToDocument(
     await upsertMindNode({
       userId,
       nodeType: 'document',
-      label: title,
+      label: effectiveTitle,
       documentId: entryId,
       state: 'drifting',
       metadata: { sourceType: 'document', entryId },
@@ -3814,8 +3825,7 @@ export async function syncDocumentsToMindNodes(
   userId: string,
 ): Promise<number> {
   try {
-    const [drafts, documents, existingMindNodes] = await Promise.all([
-      listDrafts(userId),
+    const [documents, existingMindNodes] = await Promise.all([
       listArchivedEntries(userId),
       listMindNodes(userId),
     ])
@@ -3827,22 +3837,6 @@ export async function syncDocumentsToMindNodes(
     )
 
     let createdCount = 0
-
-    for (const draft of drafts) {
-      if (draft.status !== 'active') continue
-      if (existingDocIds.has(draft.id)) continue
-      if (draft.sourceEntryId != null) continue
-
-      await upsertMindNode({
-        userId,
-        nodeType: 'document',
-        label: draft.title || draft.content.slice(0, 60),
-        state: 'anchored',
-        documentId: draft.id,
-        metadata: { sourceType: 'draft', draftId: draft.id },
-      })
-      createdCount++
-    }
 
     for (const doc of documents) {
       if (existingDocIds.has(doc.id)) continue

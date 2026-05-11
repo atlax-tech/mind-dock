@@ -17,7 +17,9 @@ import {
   listActiveTips,
   convertTipToMindNode,
   syncDocumentsToMindNodes,
+  listDrafts,
 } from '@/lib/repository';
+import type { StoredDraft } from '@/lib/repository'
 import { emit } from '@/lib/events';
 import {
   Home,
@@ -70,6 +72,7 @@ import {
   Wand2,
   Timer,
   LayoutGrid,
+  Lock,
 } from 'lucide-react';
 
 // ==========================================
@@ -434,6 +437,68 @@ const ToolboxView = () => {
 // 使用 MindCanvasStage + MindGraphView 渲染中心图谱
 // ==========================================
 
+interface InboxItem {
+  key: string
+  label: string
+  color: string
+  badge: string
+  badgeIcon: string
+  isSelected: boolean
+  selectedBg: string
+  hoverGroupBg: string
+  hoverGroupText: string
+  selectedText: string
+  onClick: () => void
+}
+
+function InboxSection({ title, color, count, items, defaultOpen = true }: {
+  title: string
+  color: string
+  count: number
+  items: InboxItem[]
+  defaultOpen?: boolean
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-2 py-1.5 rounded-lg hover:bg-white/[0.03] transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <ChevronRight className={`w-3 h-3 text-[#6b7280] transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
+          <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: color }} />
+          <span className="text-[10px] font-bold text-white/50 uppercase tracking-wider">{title}</span>
+        </div>
+        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ backgroundColor: `${color}15`, color: `${color}aa` }}>{count}</span>
+      </button>
+      {open && count > 0 && (
+        <div className="space-y-1 pl-2 mt-1">
+          {items.map(item => (
+            <div key={item.key} onClick={item.onClick}
+              className={`p-2.5 rounded-lg border cursor-pointer transition-all group ${item.isSelected ? item.selectedBg : 'bg-white/[0.02] border-white/5 hover:bg-white/5 hover:border-white/10'}`}>
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-1.5">
+                  <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: item.color }} />
+                  <span className="text-[9px] font-bold text-white/30 uppercase tracking-tight">{item.badge}</span>
+                </div>
+                <div className={`w-5 h-5 rounded flex items-center justify-center bg-white/5 border border-white/10 ${item.hoverGroupBg} ${item.hoverGroupText} transition-all`}>
+                  <span className="text-[9px] font-bold text-[#8d989f]">{item.badgeIcon}</span>
+                </div>
+              </div>
+              <h4 className={`text-[11px] font-medium leading-tight line-clamp-2 ${item.isSelected ? item.selectedText : 'text-white/70'}`}>{item.label}</h4>
+            </div>
+          ))}
+        </div>
+      )}
+      {open && count === 0 && (
+        <div className="pl-6 py-2 text-[10px] text-white/20">暂无</div>
+      )}
+    </div>
+  )
+}
+
 const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId: string; onToast: (msg: string) => void, onSelectionChange: (selected: boolean) => void, onOpenEditor?: (documentId: number, sourceType: 'draft' | 'document') => void }) => {
   const { nodes: mindNodes, edges: mindEdges, loading, onNodeDragEnd, onDeleteEdge, onCreateEdge, refresh: refreshMindGraph } = useMindGraph(userId);
   const interaction = useMindGraphInteraction();
@@ -453,12 +518,15 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
   }, [userId]);
   
   const [unlinkedThoughts, setUnlinkedThoughts] = useState<StoredTip[]>([]);
+  const [inboxDrafts, setInboxDrafts] = useState<StoredDraft[]>([]);
   const [activeThought, setActiveThought] = useState<StoredTip | null>(null);
+  const [activeInboxDraft, setActiveInboxDraft] = useState<StoredDraft | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!userId) return;
     listActiveTips(userId).then(tips => setUnlinkedThoughts(tips)).catch(() => {});
+    listDrafts(userId).then(drafts => setInboxDrafts(drafts.filter(d => !d.sourceEntryId))).catch(() => {});
     syncDocumentsToMindNodes(userId).then((count) => {
       if (count > 0) {
         emit({ type: 'mind_node_created', nodeId: `sync-${Date.now()}` });
@@ -493,7 +561,16 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
       .map(e => {
         const otherId = e.sourceNodeId === selectedNodeId ? e.targetNodeId : e.sourceNodeId;
         const otherNode = snapshot.nodes.find(n => n.id === otherId);
-        return { id: otherId, label: otherNode?.label ?? '', type: e.edgeType, nodeType: otherNode?.nodeType ?? '' };
+        return {
+          id: otherId,
+          label: otherNode?.label ?? '',
+          type: e.edgeType,
+          nodeType: otherNode?.nodeType ?? '',
+          edgeId: e.id,
+          edgeType: e.edgeType,
+          reason: e.reason,
+          isBaseline: e.reason === 'baseline-auto-connect',
+        };
       });
     return { ...node, connections };
   }, [selectedNodeId, snapshot]);
@@ -573,37 +650,54 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
           </div>
         </div>
 
-        {/* Lower Section: QUEUE (Inbox) */}
-        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        {/* Lower Section: QUEUE (Inbox) — 折叠式 */}
+        <div className="flex flex-col min-h-0 overflow-hidden">
           <div className="px-4 py-3 flex items-center justify-between shrink-0">
             <span className="text-[10px] font-bold text-[#4a5568] uppercase tracking-widest">待整理队列</span>
-            <span className="text-[10px] text-[#4a5568]">{unlinkedThoughts.length} items</span>
+            <span className="text-[10px] text-[#4a5568]">{unlinkedThoughts.length + inboxDrafts.length}</span>
           </div>
-          
-          <div className="flex-1 overflow-y-auto custom-scrollbar px-2 pb-4 space-y-1.5">
-            {unlinkedThoughts.map(thought => {
-              const isSelected = activeThought?.id === thought.id;
-              const colorMap: Record<string, string> = { text: '#86d7ff', manual: '#9cf4d4', 'quick-capture': '#c8a0f0' };
-              const thoughtColor = colorMap[thought.sourceType] || '#86d7ff';
-              return (
-                <div key={thought.id} onClick={() => {
-                  setActiveThought(thought);
-                  setSelectedNodeId(null);
-                }}
-                  className={`p-3 rounded-xl border cursor-pointer transition-all group ${isSelected ? 'bg-[#86d7ff]/10 border-[#86d7ff]/30 shadow-[inset_0_1px_1px_rgba(134,215,255,0.1)]' : 'bg-white/[0.02] border-white/5 hover:bg-white/5 hover:border-white/10'}`}>
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: thoughtColor }}></div>
-                      <span className="text-[10px] font-bold text-white/40 uppercase tracking-tight">{thought.sourceType} · Just now</span>
-                    </div>
-                    <div className="w-6 h-6 rounded flex items-center justify-center bg-white/5 border border-white/10 group-hover:bg-[#86d7ff]/20 group-hover:border-[#86d7ff]/30 transition-all">
-                      <span className="text-[10px] font-bold text-[#8d989f] group-hover:text-[#86d7ff]">+ 1</span>
-                    </div>
-                  </div>
-                  <h4 className={`text-[12px] font-medium leading-tight line-clamp-2 ${isSelected ? 'text-[#86d7ff]' : 'text-white/80'}`}>{thought.content}</h4>
-                </div>
-              );
-            })}
+
+          <div className="flex-1 overflow-y-auto custom-scrollbar px-2 pb-4 space-y-1">
+            <InboxSection
+              title="Drafts"
+              color="#fbbf24"
+              count={inboxDrafts.length}
+              items={inboxDrafts.map(d => ({
+                key: `draft-${d.id}`,
+                label: d.title || 'Untitled',
+                color: '#fbbf24',
+                badge: 'draft',
+                badgeIcon: '✎',
+                isSelected: activeInboxDraft?.id === d.id,
+                selectedBg: 'bg-[#fbbf24]/10 border-[#fbbf24]/30',
+                hoverGroupBg: 'group-hover:bg-[#fbbf24]/20 group-hover:border-[#fbbf24]/30',
+                hoverGroupText: 'group-hover:text-[#fbbf24]',
+                selectedText: 'text-[#fbbf24]',
+                onClick: () => { setActiveInboxDraft(d); setActiveThought(null); setSelectedNodeId(null) },
+              }))}
+            />
+            <InboxSection
+              title="Tips"
+              color="#86d7ff"
+              count={unlinkedThoughts.length}
+              items={unlinkedThoughts.map(t => {
+                const colorMap: Record<string, string> = { text: '#86d7ff', manual: '#9cf4d4', 'quick-capture': '#c8a0f0' };
+                const c = colorMap[t.sourceType] || '#86d7ff';
+                return {
+                  key: `tip-${t.id}`,
+                  label: t.content,
+                  color: c,
+                  badge: t.sourceType,
+                  badgeIcon: '+1',
+                  isSelected: activeThought?.id === t.id,
+                  selectedBg: 'bg-[#86d7ff]/10 border-[#86d7ff]/30',
+                  hoverGroupBg: 'group-hover:bg-[#86d7ff]/20 group-hover:border-[#86d7ff]/30',
+                  hoverGroupText: 'group-hover:text-[#86d7ff]',
+                  selectedText: 'text-[#86d7ff]',
+                  onClick: () => { setActiveThought(t); setActiveInboxDraft(null); setSelectedNodeId(null) },
+                };
+              })}
+            />
           </div>
         </div>
       </div>
@@ -632,15 +726,13 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
       </div>
 
       {/* Right Pane: 节点详情面板 (图五) 或 AI 蒸馏面板 */}
-      {(selectedNode || activeThought) && (
+      {(selectedNode || activeThought || activeInboxDraft) && (
         <div className="w-[300px] bg-[#0d1215] flex flex-col shrink-0 relative overflow-hidden border-l border-white/[0.07] animate-in slide-in-from-right duration-300">
           <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-[#86d7ff] to-[#c8a0f0]"></div>
 
           {selectedNode ? (
-            /* 点击后的详情面板 (图五) */
-            <div className="flex flex-col h-full">
-              {/* Header */}
-              <div className="p-5 border-b border-white/[0.07]">
+            <div className="flex flex-col h-full min-h-0">
+              <div className="shrink-0 p-5 border-b border-white/[0.07]">
                 <div className="flex items-center justify-between mb-3">
                   <div className="text-[10px] font-semibold text-[#8d989f] uppercase tracking-wider flex items-center gap-1.5">
                     <FileText className="w-3.5 h-3.5" /> Node Details
@@ -657,46 +749,95 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
                 </div>
               </div>
 
-              {/* Connected Nodes 列表 */}
-              <div className="flex-1 overflow-y-auto custom-scrollbar p-5">
-                <h4 className="text-[10px] font-semibold text-[#8d989f] uppercase tracking-wider mb-3">Connected Nodes</h4>
-                {selectedNode.connections.length > 0 ? (
-                  <div className="space-y-2">
-                    {selectedNode.connections.map(conn => (
-                      <div key={conn.id} className="group flex items-center gap-3 p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.05] hover:bg-white/[0.06] hover:border-white/10 transition-all">
-                        <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: getNodeColor(conn.nodeType) }}></div>
-                        <div className="flex-1 min-w-0">
-                          <div className="text-[12px] text-white font-medium truncate">{conn.label}</div>
-                          <div className="text-[9px] text-[#6b7280] capitalize">{conn.type.replace('_', '-')}</div>
+              <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+                <div className="px-5 pt-4 pb-2">
+                  <h4 className="text-[10px] font-semibold text-[#8d989f] uppercase tracking-wider mb-2">Connected Nodes</h4>
+                  {selectedNode.connections.length > 0 ? (
+                    <div className="divide-y divide-white/[0.04]">
+                      {selectedNode.connections.map(conn => (
+                        <div key={conn.edgeId} className="group flex items-center gap-2.5 py-1.5 hover:bg-white/[0.03] transition-colors -mx-1 px-1 rounded">
+                          <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: getNodeColor(conn.nodeType) }}></div>
+                          <div className="flex-1 min-w-0">
+                            <span className="text-[12px] text-[#e0e3e6] truncate block">{conn.label}</span>
+                            <div className="flex items-center gap-1.5 mt-px">
+                              <span className="text-[9px] text-[#6b7280] capitalize">{conn.edgeType.replace('_', '-')}</span>
+                              {conn.isBaseline && (
+                                <span className="text-[8px] text-[#86d7ff]/60">baseline</span>
+                              )}
+                            </div>
+                          </div>
+                          {conn.isBaseline ? (
+                            <Lock className="w-3 h-3 text-white/10 shrink-0" />
+                          ) : (
+                            <button
+                              onClick={() => {
+                                if (onDeleteEdge) {
+                                  onDeleteEdge(conn.edgeId)
+                                }
+                              }}
+                              className="p-0.5 rounded text-white/0 group-hover:text-white/30 hover:!text-[#ffb4ab] transition-colors shrink-0"
+                              title="取消链接"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          )}
                         </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-[11px] text-[#8d989f] text-center py-8 bg-white/[0.02] rounded-lg border border-dashed border-white/10">
-                    此节点暂无连接
-                  </div>
-                )}
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-[#8d989f] py-4">暂无连接</div>
+                  )}
+                </div>
+
+                <div className="px-5 pt-3 pb-4">
+                  <MindRecommendationInspector
+                    userId={userId}
+                    nodeId={selectedNode.id}
+                    onToast={onToast}
+                    onRefreshGraph={refreshMindGraph}
+                  />
+                </div>
               </div>
 
-              {/* Recommendation Inspector Section */}
-              <div className="border-t border-white/[0.07] pt-6 pb-6">
-                <MindRecommendationInspector 
-                  userId={userId}
-                  nodeId={selectedNode.id}
-                  onToast={onToast}
-                  onRefreshGraph={refreshMindGraph}
-                />
-              </div>
-
-              {/* Bottom Actions */}
-              <div className="p-5 border-t border-white/[0.07] space-y-2">
+              <div className="shrink-0 p-5 border-t border-white/[0.07] space-y-2">
                 <button onClick={() => { if (selectedNode?.documentId != null) { const st = (selectedNode.metadata?.sourceType as 'draft' | 'document') ?? 'document'; onOpenEditor?.(selectedNode.documentId, st) } }} className="w-full h-[36px] rounded-lg bg-white text-[#0b0f11] text-[12px] font-semibold hover:bg-gray-200 transition-colors flex items-center justify-center gap-2">
                   <PenTool className="w-4 h-4" /> Open in Editor
                 </button>
                 <button onClick={() => setSelectedNodeId(null)} className="w-full h-[32px] rounded-lg bg-white/5 text-[#8d989f] text-[11px] font-medium hover:bg-white/10 transition-colors">
                   Close Details
                 </button>
+              </div>
+            </div>
+          ) : activeInboxDraft ? (
+            <div className="flex flex-col h-full p-5 overflow-y-auto custom-scrollbar">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#fbbf24' }}></div>
+                  <span className="text-[10px] font-semibold text-[#8d989f] uppercase tracking-wider">Draft</span>
+                </div>
+                <button onClick={() => setActiveInboxDraft(null)} className="w-6 h-6 rounded-full bg-white/5 flex items-center justify-center hover:bg-white/10 transition-colors">
+                  <X className="w-3.5 h-3.5 text-[#8d989f]" />
+                </button>
+              </div>
+
+              <h3 className="text-[16px] font-semibold text-white leading-tight mb-2">{activeInboxDraft.title || 'Untitled'}</h3>
+              {activeInboxDraft.content && (
+                <p className="text-[12px] text-[#8d989f] leading-relaxed mb-4 line-clamp-4">{activeInboxDraft.content.slice(0, 200)}</p>
+              )}
+
+              <div className="bg-[#fbbf24]/[0.05] border border-[#fbbf24]/20 rounded-[12px] p-4 mb-4">
+                <h4 className="text-[10px] font-bold text-[#fbbf24] uppercase tracking-wider mb-2">草稿预览</h4>
+                <p className="text-[11px] text-[#e0e3e6] leading-relaxed mb-4">
+                  此草稿尚未发布为正式文档。发布后将自动在图谱中生成对应节点。
+                </p>
+                <button onClick={() => { if (activeInboxDraft) { onOpenEditor?.(activeInboxDraft.id, 'draft'); setActiveInboxDraft(null) } }}
+                  className="w-full h-[32px] rounded-[8px] bg-[#fbbf24]/20 border border-[#fbbf24]/30 text-white text-[12px] font-medium hover:bg-[#fbbf24]/30 transition-all flex items-center justify-center gap-1.5">
+                  <PenTool className="w-3.5 h-3.5" /> 打开编辑器
+                </button>
+              </div>
+
+              <div className="text-[11px] text-[#8d989f] leading-relaxed bg-[#151a1e] p-3 rounded-lg border border-white/5">
+                提示：草稿不会出现在图谱中，发布为正式文档后才会生成图谱节点。您可以在编辑器中继续编写后发布。
               </div>
             </div>
           ) : (

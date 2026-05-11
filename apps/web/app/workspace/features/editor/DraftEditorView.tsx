@@ -138,6 +138,10 @@ export default function DraftEditorView({
     try {
       await flushSave()
       const result = await handlePublishDraft(draftId, publishMode)
+      if (result.emptyDraft) {
+        onToast?.('空草稿不能发布，请先编写内容')
+        return
+      }
       if (result.nameConflict) {
         onToast?.('同名文档已存在于当前层级，请修改标题后重试')
         return

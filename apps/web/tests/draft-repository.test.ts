@@ -829,4 +829,102 @@ describe('draft repository', () => {
       expect(unwrap(draftNode).id).not.toBe(unwrap(docNode).id)
     })
   })
+
+  describe('MIND-REAL-004 Round 3: name conflict for new drafts without sourceEntryId', () => {
+    it('new draft without sourceEntryId published as update_original also checks name conflict', async () => {
+      const existingEntryId = await db.table('entries').add({
+        userId: USER_A,
+        sourceDockItemId: 0,
+        title: 'Untitled',
+        content: 'existing content',
+        type: 'note',
+        tags: [],
+        project: null,
+        actions: [],
+        createdAt: new Date(),
+        archivedAt: new Date(),
+      })
+
+      await upsertMindNode({
+        userId: USER_A,
+        nodeType: 'document',
+        label: 'Untitled',
+        documentId: existingEntryId as number,
+        state: 'anchored',
+      })
+
+      const draft = unwrap(await createDraft(USER_A, 'Untitled', 'new content'))
+      expect(draft.sourceEntryId).toBeFalsy()
+
+      const result = await publishDraftToDocument(USER_A, draft.id, 'update_original')
+
+      expect(result.nameConflict).toBeDefined()
+      expect(result.nameConflict?.hasConflict).toBe(true)
+      expect(result.draft).toBeNull()
+      expect(result.entry).toBeNull()
+    })
+
+    it('new draft without sourceEntryId and unique name publishes successfully', async () => {
+      const draft = unwrap(await createDraft(USER_A, 'Unique New Doc', 'some content'))
+      expect(draft.sourceEntryId).toBeFalsy()
+
+      const result = await publishDraftToDocument(USER_A, draft.id, 'update_original')
+
+      expect(result.nameConflict).toBeUndefined()
+      expect(result.entry).not.toBeNull()
+      expect(result.entry?.title).toBe('Unique New Doc')
+    })
+  })
+
+  describe('MIND-REAL-004 Round 3: empty draft rejection', () => {
+    it('draft with default title and empty content cannot be published', async () => {
+      const draft = unwrap(await createDraft(USER_A, 'Untitled', ''))
+
+      const result = await publishDraftToDocument(USER_A, draft.id, 'update_original')
+
+      expect(result.emptyDraft).toBe(true)
+      expect(result.draft).toBeNull()
+      expect(result.entry).toBeNull()
+    })
+
+    it('draft with empty title and empty content cannot be published', async () => {
+      const draft = unwrap(await createDraft(USER_A, '', ''))
+
+      const result = await publishDraftToDocument(USER_A, draft.id, 'update_original')
+
+      expect(result.emptyDraft).toBe(true)
+      expect(result.draft).toBeNull()
+      expect(result.entry).toBeNull()
+    })
+
+    it('draft with default title but has content can be published', async () => {
+      const draft = unwrap(await createDraft(USER_A, 'Untitled', 'some real content'))
+
+      const result = await publishDraftToDocument(USER_A, draft.id, 'update_original')
+
+      expect(result.emptyDraft).toBeUndefined()
+      expect(result.entry).not.toBeNull()
+      expect(result.entry?.title).toBe('Untitled')
+    })
+
+    it('draft with custom title but empty content can be published', async () => {
+      const draft = unwrap(await createDraft(USER_A, 'My Custom Title', ''))
+
+      const result = await publishDraftToDocument(USER_A, draft.id, 'update_original')
+
+      expect(result.emptyDraft).toBeUndefined()
+      expect(result.entry).not.toBeNull()
+      expect(result.entry?.title).toBe('My Custom Title')
+    })
+
+    it('empty draft does not create MindNode', async () => {
+      const draft = unwrap(await createDraft(USER_A, 'Untitled', ''))
+
+      await publishDraftToDocument(USER_A, draft.id, 'update_original')
+
+      const nodes = await db.table('mindNodes').where('userId').equals(USER_A).toArray()
+      const docNodes = nodes.filter(n => n.nodeType === 'document')
+      expect(docNodes.length).toBe(0)
+    })
+  })
 })

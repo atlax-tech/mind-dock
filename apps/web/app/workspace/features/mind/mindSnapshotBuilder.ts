@@ -5,7 +5,12 @@ export function buildSimpleMindGraphSnapshot(
   nodes: StoredMindNode[],
   edges: StoredMindEdge[],
 ): MindGraphSnapshot {
-  const snapshotNodes: MindGraphSnapshotNode[] = nodes.map(n => ({
+  const filteredNodes = nodes.filter(n => {
+    const src = (n.metadata as Record<string, unknown> | null)?.sourceType
+    return src !== 'draft'
+  })
+
+  const snapshotNodes: MindGraphSnapshotNode[] = filteredNodes.map(n => ({
     id: n.id,
     nodeType: n.nodeType,
     label: n.label,
@@ -21,7 +26,13 @@ export function buildSimpleMindGraphSnapshot(
     metadata: n.metadata as Record<string, unknown> | null,
   }))
 
-  const snapshotEdges: MindGraphSnapshotEdge[] = edges.map(e => ({
+  const snapshotEdges: MindGraphSnapshotEdge[] = edges
+    .filter(e => {
+      const srcId = e.sourceNodeId
+      const tgtId = e.targetNodeId
+      return filteredNodes.some(n => n.id === srcId) && filteredNodes.some(n => n.id === tgtId)
+    })
+    .map(e => ({
     id: e.id,
     sourceNodeId: e.sourceNodeId,
     targetNodeId: e.targetNodeId,
@@ -32,7 +43,7 @@ export function buildSimpleMindGraphSnapshot(
     reason: e.reason ?? null,
   }))
 
-  const rootNodeId = nodes.find(n => n.nodeType === 'root')?.id || null
+  const rootNodeId = filteredNodes.find(n => n.nodeType === 'root')?.id || null
 
   return {
     nodes: snapshotNodes,

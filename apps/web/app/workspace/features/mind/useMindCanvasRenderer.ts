@@ -438,6 +438,13 @@ export function useMindCanvasRenderer(
         ctx.beginPath(); ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2)
         ctx.fillStyle = n.color; ctx.fill()
 
+        if (n.nodeType === 'draft') {
+          ctx.beginPath(); ctx.arc(n.x, n.y, n.radius + 1.5 / cam.zoom, 0, Math.PI * 2)
+          ctx.setLineDash([3 / cam.zoom, 3 / cam.zoom])
+          ctx.strokeStyle = 'rgba(251,191,36,0.5)'; ctx.lineWidth = 0.8 / cam.zoom; ctx.stroke()
+          ctx.setLineDash([])
+        }
+
         // selected ring
         if (n.id === selId) {
           ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 2 / cam.zoom; ctx.stroke()

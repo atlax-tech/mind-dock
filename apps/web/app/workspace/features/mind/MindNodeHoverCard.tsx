@@ -16,6 +16,8 @@ interface MindNodeHoverCardProps {
   snapshot: MindGraphSnapshot
   screenPos: { x: number; y: number }
   onUnlinkEdge: (edgeId: string) => void
+  onMouseEnter?: () => void
+  onMouseLeave?: () => void
 }
 
 export default function MindNodeHoverCard({
@@ -23,6 +25,8 @@ export default function MindNodeHoverCard({
   snapshot,
   screenPos,
   onUnlinkEdge,
+  onMouseEnter,
+  onMouseLeave,
 }: MindNodeHoverCardProps) {
   const node = snapshot.nodes.find(n => n.id === nodeId)
 
@@ -70,6 +74,8 @@ export default function MindNodeHoverCard({
         boxShadow: '0 16px 48px -8px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.04)',
         overflow: 'hidden',
       }}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
     >
       <div className="px-3.5 pt-3 pb-2 border-b border-white/[0.06]">
         <div className="flex items-center gap-2 mb-1.5">

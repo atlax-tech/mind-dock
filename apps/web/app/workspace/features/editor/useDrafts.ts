@@ -63,9 +63,12 @@ export function useDrafts(userId: string) {
     return draft
   }, [userId])
 
-  const handlePublish = useCallback(async (draftId: number, publishMode: PublishMode = 'update_original'): Promise<{ draft: StoredDraft | null; entryId: number | null; nameConflict?: { hasConflict: boolean; conflictingParentIds: string[] } }> => {
+  const handlePublish = useCallback(async (draftId: number, publishMode: PublishMode = 'update_original'): Promise<{ draft: StoredDraft | null; entryId: number | null; nameConflict?: { hasConflict: boolean; conflictingParentIds: string[] }; emptyDraft?: boolean }> => {
     if (!userId) return { draft: null, entryId: null }
     const result = await publishDraftToDocument(userId, draftId, publishMode)
+    if (result.emptyDraft) {
+      return { draft: null, entryId: null, emptyDraft: true }
+    }
     if (result.nameConflict) {
       return { draft: null, entryId: null, nameConflict: result.nameConflict }
     }
