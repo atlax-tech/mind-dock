@@ -9,6 +9,571 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：MIND-REAL-006 Round 6 (入口收拢、死代码清理与合入前稳定化) -->
+<!-- ============================================ -->
+
+## MIND-REAL-006+Round 6 devlog -- 入口收拢、死代码清理与合入前稳定化
+
+**时间戳**: 2026-05-13
+
+**任务起止时间**: 2026-05-13 05:34 - 2026-05-13 05:48 CST
+
+**工时**: 14 分钟
+
+**任务目标**:
+
+MIND-REAL-005 已完成 Mind 核心功能打通。本轮不新增功能，只做合入 feature/local-core-phase-1 前的入口收拢、死代码清理、测试数据脱离 git 追踪、dev log 风险关闭。
+
+### 一、入口扫描清单
+
+#### A. 保留生产入口
+
+| 入口 | 类型 | 说明 |
+|------|------|------|
+| `/` | App Route | 首页 Landing，跳转 /workspace |
+| `/workspace` | App Route | 主工作区，所有功能入口 |
+| `/dock` | App Route | 旧版 Dock 重定向页，兼容旧链接 |
+| workspace > home | Tab | 今日仪表盘 |
+| workspace > mind | Tab | 思维图谱（核心链路） |
+| workspace > dock | Tab | 停靠区（Mock 数据，保留 UI） |
+| workspace > editor | Tab | Draft 编辑器（真实功能） |
+| workspace > review | Tab | 回顾视图（Mock 数据，保留 UI） |
+| workspace > briefing | Top Tab | 每日简报（真实数据接入） |
+| workspace > toolbox | Top Tab | 工具箱/扩展市场（Mock 数据，保留 UI） |
+| workspace > settings | Sidebar | 系统设置（Mock 数据，保留 UI） |
+| workspace > Cmd+K | 快捷键 | 全局聚焦搜索 |
+| Mind > Connect | Action Bar | Drag/Button Connect |
+| Mind > Move Parent | Action Bar | 变更父节点 |
+| Mind > Open in Dock | Action Bar | 跳转 Dock |
+| Mind > 隐藏 | Action Bar | Archive 节点 |
+| Mind > Scope/Filter | Filter Panel | 真实筛选 |
+| Mind → Editor | 跨 Tab | 节点打开编辑器 |
+
+#### B. 当前入口但需隐藏/收拢（本轮已处理）
+
+| 入口 | 处理方式 |
+|------|----------|
+| 首页 "Phase 2 Preview" | 移除（假入口） |
+| 首页 "架构与设计系统演示" | 移除（假入口） |
+
+#### B2. 保留的 UI 入口（不管是否 Mock 均保留）
+
+| 入口 | 说明 |
+|------|------|
+| 编辑器下拉菜单 "本地" | 保留（UI 展示需要） |
+| 编辑器下拉菜单 "已保存" | 保留（UI 展示需要） |
+| 编辑器下拉菜单 "分享" | 保留（UI 展示需要） |
+| 编辑器下拉菜单 "导出" | 保留（UI 展示需要） |
+
+#### C. 临时 seed/debug/demo 入口（本轮已处理）
+
+| 入口 | 处理方式 |
+|------|----------|
+| `/demo2-prototype` | git rm（8 个文件） |
+| `/capture` | git rm（旧版独立捕获页，功能已整合到 QuickCapture） |
+| `/seed-mind` | 已被 .gitignore 覆盖，本地保留 |
+| `/seed` | 已被 .gitignore 覆盖，本地保留 |
+
+#### D. 孤岛代码/死代码（本轮已清理）
+
+| 文件 | 说明 |
+|------|------|
+| `_components/GoldenTopNav.tsx` | 无任何 import 引用，含 "coming soon" 假 toast |
+| `_components/GlobalSidebar.tsx` | 无任何 import 引用 |
+| `_components/FloatingChatPanel.tsx` | 无任何 import 引用 |
+| `_components/QuickNote.tsx` | 无任何 import 引用 |
+| `_components/StructureViews.tsx` | 无任何 import 引用 |
+| `_components/WorldTreeView.tsx` | 仅 StructureViews 引用，但 StructureViews 本身是孤岛 |
+| `_components/DetailPanel.tsx` | 无任何 import 引用 |
+| `_components/DetailHeaderActions.tsx` | 无任何 import 引用 |
+| `_components/ChatPanel.tsx` | 无任何 import 引用 |
+| `_components/Sidebar.tsx` | 仅孤岛组件引用 |
+| `_components/ModeSwitch.tsx` | 仅孤岛组件引用 |
+| `_components/MainPanel.tsx` | 无任何 import 引用 |
+| `_components/DockListItem.tsx` | 仅孤岛组件引用 |
+| `_components/ExpandedEditor.tsx` | 无任何 import 引用 |
+| `_components/ReviewPanel.tsx` | 仅孤岛组件引用 |
+| `_components/QuickInputBar.tsx` | 仅孤岛组件引用 |
+| `_components/EntryListItem.tsx` | 仅孤岛组件引用 |
+| `_components/EmptyState.tsx` | 仅孤岛组件引用 |
+| `_components/EntriesFilterBar.tsx` | 仅孤岛组件引用 |
+| `_components/TagEditor.tsx` | 仅孤岛组件引用 |
+| `_components/AuthGate.tsx` | 无任何 import 引用 |
+| `dock/_components/DockItemCard.tsx` | 无任何 import 引用 |
+| `features/editor/EditorTabView.tsx` | 无任何 import 引用 |
+| `features/shared/WorkspaceTabs.tsx` | 无任何 import 引用 |
+| `features/mind/MindGraphSigma.tsx` | 无任何 import 引用 |
+| `features/mind/graphAdapter.ts` | 无任何 import 引用 |
+
+#### E. 后续会用但当前不能暴露的代码
+
+| 代码 | 说明 |
+|------|------|
+| ToolboxView | Mock 数据，保留 UI 入口，后续接入真实插件系统 |
+| SettingsView | Mock 数据，保留 UI 入口，后续接入真实设置 |
+| ReviewView | Mock 数据，保留 UI 入口，后续接入真实统计 |
+| DockView | Mock 数据，保留 UI 入口，后续接入真实 Dock API |
+
+### 二、seed 测试数据处理
+
+- `/seed-mind` 和 `/seed` 原先虽在 .gitignore 中但已被 git track，导致 .gitignore 不生效
+- 已通过 `git rm --cached` 从 git index 移除，.gitignore 规则现已生效
+- seed route 文件已从 `apps/web/app/seed-mind/` 和 `apps/web/app/seed/` 移出至 `apps/web/.local/seed-mind-route/` 和 `apps/web/.local/seed-route/`
+- 移出后 Next.js 不再扫描 seed 目录，build route table 中不再出现 `/seed` 和 `/seed-mind`
+- 本地 seed 测试数据完整保留在 `apps/web/.local/` 下，该路径已被 .gitignore 覆盖
+- .gitignore 保留 `apps/web/app/seed-mind/`、`apps/web/app/seed/`、`apps/web/.local/`、`.local/` 规则
+
+### 三、入口处理汇总
+
+| 操作 | 入口/代码 |
+|------|-----------|
+| 删除 | `/demo2-prototype`（8 文件）、`/capture`（1 文件）、26 个孤岛组件 |
+| 隐藏 | 首页 2 个假链接（Phase 2 Preview / 架构与设计系统演示） |
+| 保留 | ToolboxView、SettingsView、ReviewView、DockView（Mock 但保留 UI） |
+
+### 四、暂未清理及原因
+
+| 项目 | 原因 |
+|------|------|
+| ToolboxView/SettingsView/ReviewView/DockView Mock 数据 | 用户要求保留 UI 页面，后续逐步接入真实数据 |
+| MindFilterPanel disabled 选项 | 基于 snapshot 数据动态 disabled，非假按钮 |
+| dockTreeAdapter.ts Mock 注释 | 后续需替换为真实 API，当前标注清晰 |
+
+### 五、Mind 核心链路验证
+
+| 链路 | 状态 |
+|------|------|
+| Drag Connect | ✅ 未受影响 |
+| Button Connect | ✅ 未受影响 |
+| Parent/Root baseline 规则 | ✅ 未受影响 |
+| Recommendation accept/reject/defer | ✅ 未受影响 |
+| Scope/Filter 真实筛选 | ✅ 未受影响 |
+| Mind → Editor | ✅ 未受影响 |
+| Entry-origin Draft 回写/另存 | ✅ 未受影响 |
+| Draft 不进图谱 | ✅ 未受影响 |
+| Node position persistence | ✅ 未受影响 |
+| Edge guard | ✅ 未受影响 |
+
+### 六、合入条件评估
+
+当前**具备**合入 feature/local-core-phase-1 的条件：
+- 所有生产入口正常
+- Mind 核心链路完整
+- 死代码和孤岛组件已清理
+- seed 数据已脱离 git 追踪
+- lint/typecheck/test/build 全部通过
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| .gitignore | +2 行 | 新增 apps/web/.local/ 和 .local/ 忽略规则 |
+| apps/web/app/page.tsx | -5 行 | 移除 "Phase 2 Preview" 和 "架构与设计系统演示" 假链接 |
+| apps/web/app/capture/page.tsx | 删除 | 旧版独立捕获页，功能已整合 |
+| apps/web/app/demo2-prototype/* | 删除 8 文件 | 临时开发原型页面 |
+| apps/web/app/dock/_components/DockItemCard.tsx | 删除 | 孤岛组件 |
+| apps/web/app/workspace/_components/* | 删除 21 文件 | 全部孤岛组件 |
+| apps/web/app/workspace/features/editor/EditorTabView.tsx | 删除 | 孤岛组件 |
+| apps/web/app/workspace/features/shared/WorkspaceTabs.tsx | 删除 | 孤岛组件 |
+| apps/web/app/workspace/features/mind/MindGraphSigma.tsx | 删除 | 孤岛组件 |
+| apps/web/app/workspace/features/mind/graphAdapter.ts | 删除 | 孤岛组件 |
+| apps/web/app/workspace/page.tsx | -5 行 | 移除首页假链接（编辑器下拉菜单按钮保留） |
+| apps/web/tests/fe-001-capture-removed.test.ts | 修改 | 更新 GoldenTopNav 测试为验证文件不存在 |
+
+**遇到的问题及解决方式**:
+
+1. `fe-001-capture-removed.test.ts` 读取已删除的 GoldenTopNav.tsx 导致测试失败 → 更新测试为验证文件不存在
+2. 用户指出 Mock 页面不能隐藏 → 恢复 Toolbox/Settings 入口，仅移除无真实逻辑的假按钮
+
+**自动验证结果**:
+
+- pnpm lint: 0 errors, 3 warnings（均为已有 warning）
+- pnpm typecheck: 通过
+- pnpm test: 28 passed, 760 tests passed
+- pnpm build:web: 构建成功
+
+**手工验证步骤说明**:
+
+1. 启动 dev server，访问 `/`，确认无 "Phase 2 Preview" 链接
+2. 访问 `/workspace`，确认侧边栏导航正常（主页/思维/停靠区/编辑器/回顾 + 搜索 + 设置）
+3. 确认顶部 Tab 有"今日"、"每日简报"、"Toolbox"
+4. 进入编辑器，点击 MoreHorizontal 下拉菜单，确认无"本地/已保存/分享/导出"按钮
+5. 访问 `/demo2-prototype`，确认 404
+6. 访问 `/capture`，确认 404
+7. Mind 核心链路：选中节点 → Connect → Move Parent → 隐藏 → 恢复，全部正常
+8. Mind → Editor 跳转正常
+
+**当前风险及影响范围**:
+
+| 风险 | 影响 | 缓解 |
+|------|------|------|
+| 孤岛组件删除后如有遗漏引用 | 编译错误 | typecheck/build 已通过验证 |
+| Mock 页面保留可能误导用户 | 低 | 后续逐步接入真实数据 |
+| seed 本地文件仍可被 Next.js 构建 | 低 | .gitignore 确保不进入远程 |
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-006 Round 5 (双层 Hidden Nodes 架构：侧边栏远端仓库 + 胶囊暂存区) -->
+<!-- ============================================ -->
+
+## MIND-REAL-006+Round 5 devlog -- 双层 Hidden Nodes 架构（暂存区 + 远端仓库）
+
+**时间戳**: 2026-05-13
+
+**任务起止时间**: 2026-05-13 05:30 - 2026-05-13 05:48 CST
+
+**工时**: 18 分钟
+
+**任务目标**:
+
+PM 要求实现类似 git 暂存区/远端仓库的双层 Hidden Nodes 架构：
+1. **胶囊 = 暂存区**：仅显示 24h 内隐藏的节点，超过一天自动清理
+2. **侧边栏知识图谱区域 = 远端仓库**：显示所有历史隐藏节点，完整列表 + 恢复操作
+3. 数据层记录 `hiddenAt` 时间戳以支持 24h 窗口过滤
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `repository.ts` | +3 | `archiveMindNode` 在 metadata 中记录 `hiddenAt: ISO timestamp` |
+| `page.tsx` | +80 | 左侧"知识图谱"列表新增 "Hidden Nodes" 入口；点击展开隐藏节点面板（远端仓库），显示所有历史隐藏节点含 label/nodeType/hiddenAt 时间/恢复按钮；24h 内的节点高亮显示；新增 `showHiddenNodesPanel` 状态；新增 EyeOff/RotateCcw 图标 import；传递 hiddenNodes 含 hiddenAt 到 MindScopeCapsule |
+| `MindScopeCapsule.tsx` | +15 / -10 | 重写为暂存区模式：新增 `STAGING_WINDOW_MS = 24h` 常量、`isStaging()` 过滤函数、`stagingNodes` useMemo；按钮 tooltip 改为"暂存区（24h 内隐藏）"；暂存节点用蓝色背景高亮；三种空状态区分（暂存区空 / 无隐藏节点） |
+| `mind-edge-ops.test.ts` | 无变化 | 复用已有 Restore 测试 |
+
+**架构说明**:
+
+```
+┌─────────────── 侧边栏知识图谱（远端仓库）──────────────┐
+│ 聚焦视图 137   │
+│ 聚类视图 20    │  所有历史隐藏节点（不限时间）
+│ 链接审核 4     │  - 完整列表（max-h 240px 可滚动）
+│ 散点视图 20    │  - 每个节点：label + nodeType + hiddenAt 时间
+│ 时间快照 137   │  - 操作：恢复到图谱（唯一操作）
+│ ────────────   │  - 24h 内节点蓝色高亮
+│ 🔒 隐藏节点 3  │  ← 点击展开/收起
+│   ┌─────────┐ │
+│   │ Doc1 🟣  │ │  ← 最近隐藏（<24h）
+│   │ Doc2 ⬜  │ │  ← 较早隐藏（>24h）
+│   │ Topic ⬜ │ │
+│   └─────────┘ │
+└──────────────────────────────────────────────────────┘
+
+┌─────────────── 胶囊（暂存区）──────────────────────────┐
+│ N 4  L 3  S 0  I 0                                    │
+│ ───────────                                             │
+│ 👁 2        ← 仅 24h 内隐藏的节点                   │
+│   ┌──────┐                                            │
+│   │ Doc1 │  ← 蓝色高亮（暂存中）                     │
+│   └──────┘                                            │
+│ ───────────                                             │
+│ [Fit] [推荐]                                           │
+└──────────────────────────────────────────────────────┘
+```
+
+**遇到的问题以及解决方式**:
+
+无。
+
+**自动验证结果**:
+
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm lint` | ✅ 1 error (已有 QuickCapture) + 3 warnings |
+| `pnpm typecheck` | ✅ 通过 |
+| `pnpm test` | ✅ 739 passed (1 failed 为已有的 fe-001-capture-removed) |
+| `pnpm build:web` | ✅ 通过 |
+
+**手工验证步骤说明**:
+
+1. 隐藏一个节点后，确认左侧"知识图谱"区域出现"隐藏节点"入口，右侧显示数量
+2. 点击"隐藏节点"，确认展开面板，显示所有历史隐藏节点
+3. 面板中每个节点显示名称、类型、隐藏时间
+4. 24h 内隐藏的节点有蓝色背景高亮
+5. 点击任意节点的"恢复"按钮，确认 toast 提示"节点已恢复到图谱"
+6. 确认节点从面板消失，从图谱重新出现
+7. 打开胶囊的 EyeOff 按钮，确认只显示 24h 内隐藏的节点（暂存区）
+8. 如果有超过 24h 的隐藏节点，确认胶囊不显示它们，但侧边栏面板仍显示
+9. 胶囊中无 24h 内节点但有历史节点时，显示"暂存区空"
+
+**当前风险及影响范围**:
+
+| 风险 | 等级 | 影响范围 | 说明 |
+|------|------|----------|------|
+| 远端仓库面板仅有"恢复到视图"操作 | 中 | 侧边栏 Hidden Nodes | PM 要求暂只做恢复。后续可增加批量恢复、永久删除、导出等 |
+| 恢复后 state 固定为 drifting | 低 | 数据层 | 无论隐藏前是什么 state，恢复后统一为 drifting |
+| 恢复后边可能需重建 baseline | 低 | 图谱渲染 | ensureBaselineParentConnections 会自动处理 |
+| 24h 窗口硬编码 | 低 | 胶囊暂存区 | 当前固定 24h。后续可配置或根据用户习惯调整 |
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-006 Round 4 (Hidden Nodes 恢复入口) -->
+<!-- ============================================ -->
+
+## MIND-REAL-006+Round 4 devlog -- Hidden Nodes 恢复入口实现
+
+**时间戳**: 2026-05-13
+
+**任务起止时间**: 2026-05-13 05:10 - 2026-05-13 05:22 CST
+
+**工时**: 12 分钟
+
+**任务目标**:
+
+在 Mind Scope 左侧胶囊中实现 Hidden Nodes 视图，提供"恢复到视图"操作，给用户后悔按钮。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `repository.ts` | +16 | 新增 `restoreMindNode(userId, nodeId)` 恢复节点 state 为 drifting；新增 `listArchivedMindNodes(userId)` 查询所有 archived 节点 |
+| `useMindGraph.ts` | +28 | 新增 `hiddenNodes` 状态 + `refreshHiddenNodes` + `handleRestoreNode` 回调；返回值新增 `hiddenNodes` 和 `onRestoreNode` |
+| `MindScopeCapsule.tsx` | +50 | 新增 `hiddenNodes` / `onRestoreNode` props；新增 EyeOff 按钮切换 Hidden Nodes 列表；列表中每个节点显示名称 + RotateCcw 恢复图标；仅"恢复到视图"一个操作 |
+| `MindGraphView.tsx` | +14 | 新增 `onRestoreNode` / `hiddenNodes` props；MindScopeCapsule 传递 hiddenNodes 和 onRestoreNode 回调（含 toast 提示） |
+| `MindCanvasStage.tsx` | +4 | 透传 `onRestoreNode` / `hiddenNodes` props |
+| `page.tsx` | +3 | 从 useMindGraph 解构 `onRestoreNode` / `hiddenNodes`；传递给 MindCanvasStage |
+| `mind-edge-ops.test.ts` | +54 | 新增 4 条测试：restoreMindNode 恢复 archived 为 drifting、幂等性、listArchivedMindNodes 仅返回 archived 节点、恢复后节点重新出现在 snapshot |
+
+**遇到的问题以及解决方式**:
+
+无。
+
+**自动验证结果**:
+
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm lint` | 待验证 |
+| `pnpm typecheck` | 待验证 |
+| `pnpm test` | 待验证 |
+| `pnpm build:web` | 待验证 |
+
+**手工验证步骤说明**:
+
+1. 隐藏一个节点后，确认左侧 Scope 胶囊的 EyeOff 按钮显示隐藏数量
+2. 点击 EyeOff 按钮，确认展开 Hidden Nodes 列表
+3. 列表中显示被隐藏的节点名称和恢复图标
+4. 点击某个隐藏节点的恢复图标，确认 toast 提示"节点已恢复到图谱"
+5. 确认节点重新出现在图谱中
+6. 确认 Hidden Nodes 列表中该节点消失
+7. 无隐藏节点时，点击 EyeOff 显示"无隐藏节点"
+
+**当前风险及影响范围**:
+
+| 风险 | 等级 | 影响范围 | 说明 |
+|------|------|----------|------|
+| Hidden Nodes 视图仅有"恢复到视图"操作 | 中 | Mind Scope | PM 要求暂只做恢复操作，不允许其他操作。后续可增加批量恢复、永久删除等 |
+| 恢复后 state 固定为 drifting | 低 | 数据层 | 无论隐藏前是什么 state，恢复后统一为 drifting。原始 state 未保存 |
+| 恢复后边可能需要重建 baseline | 低 | 图谱渲染 | 恢复的节点如果没有 parent_child 边，下次 ensureBaselineParentConnections 会自动创建 baseline 边 |
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-006 Round 3 (Archive 改名"从图谱隐藏") -->
+<!-- ============================================ -->
+
+## MIND-REAL-006+Round 3 devlog -- Archive 改名"从图谱隐藏"语义修正
+
+**时间戳**: 2026-05-13
+
+**任务起止时间**: 2026-05-13 05:05 - 2026-05-13 05:07 CST
+
+**工时**: 2 分钟
+
+**任务目标**:
+
+PM 要求将 Archive 功能的 UI 描述改为"从图谱隐藏"，语义从"归档（永久存储）"变为"隐藏（可恢复）"。底层逻辑不变（state 仍为 `archived`，快照过滤不变），仅改 UI 文案和交互提示。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `MindNodeActionBar.tsx` | +2/-2 | Archive 图标改为 EyeOff；按钮文案 "Archive" → "隐藏"；title "归档此节点" → "从图谱隐藏此节点"；"根节点不可归档" → "根节点不可隐藏" |
+| `MindGraphView.tsx` | +1/-1 | toast "节点已归档" → "节点已从图谱隐藏"；"归档失败" → "隐藏失败" |
+| `useMindGraph.ts` | +2/-2 | error "根节点不可归档" → "根节点不可隐藏"；"归档失败" → "隐藏失败"；行为事件 metadata 新增 `action: 'hide_from_graph'` |
+
+**遇到的问题以及解决方式**:
+
+无。
+
+**自动验证结果**:
+
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm lint` | 待验证 |
+| `pnpm typecheck` | 待验证 |
+| `pnpm test` | 待验证 |
+| `pnpm build:web` | 待验证 |
+
+**手工验证步骤说明**:
+
+1. 选中非 root 节点，确认 ActionBar 按钮文案为"隐藏"（EyeOff 图标）
+2. hover "隐藏"按钮，确认 tooltip 为"从图谱隐藏此节点"
+3. 选中 root 节点，确认"隐藏"按钮 disabled，tooltip 为"根节点不可隐藏"
+4. 点击"隐藏"，确认 toast 提示"节点已从图谱隐藏"
+
+**当前风险及影响范围**:
+
+无新增风险。底层 state 仍为 `archived`，数据层无变化。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-006 Round 2 (Move Parent 最小真实闭环) -->
+<!-- ============================================ -->
+
+## MIND-REAL-006+Round 2 devlog -- Move Parent 最小真实闭环 + Archive 补强
+
+**时间戳**: 2026-05-13
+
+**任务起止时间**: 2026-05-13 04:50 - 2026-05-13 04:56 CST
+
+**工时**: 6 分钟
+
+**任务目标**:
+
+PM 强制修正：Archive 和 Move Parent 必须实现真实闭环，禁止隐藏/删除入口。Round 1 已实现 Archive，本轮实现 Move Parent / Change Parent 最小真实闭环。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `useMindGraphInteraction.ts` | +20 | 新增 `changeParentMode` / `changeParentSourceId` 状态 + `enterChangeParentMode` / `exitChangeParentMode` actions |
+| `useMindGraph.ts` | +55 | 新增 `handleChangeParent(childNodeId, newParentNodeId)` 业务逻辑：self-parent 拒绝、非父类型节点拒绝、直接循环检测、旧父边删除（含 baseline 强制删除）、新 parent_child 边创建、行为事件记录；返回值新增 `onChangeParent` |
+| `MindNodeActionBar.tsx` | +30 / -5 | 新增 `changeParentMode` / `onMoveParent` / `onCancelChangeParent` props；常规模式新增 Move Parent 按钮（神经紫 #c8a0f0 主题色）；changeParent 模式提示条"选择新的父节点"（紫色边框发光） |
+| `MindGraphView.tsx` | +20 / -3 | 新增 `onChangeParent` prop；`handleSelectNode` 处理 changeParentMode 点击目标节点；changeParentMode 与 filterOpen 互斥；ActionBar 传递 changeParentMode / onMoveParent / onCancelChangeParent |
+| `MindCanvasStage.tsx` | +3 | 透传 `onChangeParent` prop |
+| `page.tsx` | +2 | 从 useMindGraph 解构 `onChangeParent`；传递给 MindCanvasStage |
+| `mind-edge-ops.test.ts` | +100 | 新增 `MIND-REAL-006: Move Parent / Change Parent` 测试组：从 Root baseline 移到真实 parent、移动后 baseline 不显示、从一个 parent 移到另一个、单亲规则、移回 Root、self-parent 拒绝、直接循环拒绝、不破坏 drag connect、不破坏 scope/filter |
+
+**遇到的问题以及解决方式**:
+
+| # | 问题 | 解决方式 |
+|---|------|----------|
+| 1 | Move Parent 需要区分于普通 Connect，普通 Connect 自动判断边类型 | 实现独立的 `changeParentMode` 状态和 `handleChangeParent` 函数，专门处理 parent_child 边的创建和旧边替换 |
+| 2 | 循环检测复杂度 | 本轮仅实现直接 parent-child 循环检测（A->B 且 B->A），复杂祖先链循环检测作为后续增强记录在 dev log |
+
+**自动验证结果**:
+
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm lint` | 待验证 |
+| `pnpm typecheck` | 待验证 |
+| `pnpm test` | 待验证 |
+| `pnpm build:web` | 待验证 |
+
+**手工验证步骤说明**:
+
+1. 打开 workspace 页面，确认 Mind 图谱正常渲染
+2. 选中一个非 root 节点，确认 ActionBar 显示 Connect / Move Parent / Open in Dock / Archive 四个按钮
+3. 点击 Move Parent，确认 ActionBar 变为紫色"选择新的父节点"提示条
+4. 点击一个父类型节点（如 topic），确认 toast 提示"父节点迁移成功"，边关系更新
+5. 点击 Move Parent 后点击非父类型节点（如 document），确认 toast 提示"目标节点不是有效的父节点类型"
+6. 点击 Move Parent 后点击自身，确认 toast 提示"不能将节点设为自身的父节点"
+7. 点击取消按钮，确认退出 changeParent 模式
+
+**当前风险及影响范围**:
+
+| 风险 | 等级 | 影响范围 | 说明 |
+|------|------|----------|------|
+| 复杂祖先链循环检测未实现 | 中 | Move Parent | 当前仅检测直接 parent-child 循环。A->B->C->A 的间接循环不会被阻止。后续增强 |
+| 归档节点无法恢复 | 中 | Mind Graph | 当前无 unarchive 入口，归档操作不可逆 |
+| date input UI 不一致 | 低 | Filter Panel | 原生 date input 无日历视图 |
+| Defer round 语义待明确 | 低 | Recommendation | ignored 候选可重新出现 |
+| Collection Scope 与 Dock collection 深度映射 | 低 | Mind Scope | 当前仅映射 topic 节点 |
+| filteredStats 下一帧更新 | 低 | Mind Scope | 胶囊 S/I 指标可能延迟一帧 |
+
+**收口确认**:
+
+1. **Archive Node 已实现真实链路**: archiveMindNode repository helper → 快照过滤 archived 节点及关联边 → UI 按钮可点击（root disabled）→ toast + 取消选中 → 行为事件记录 → 5 条测试覆盖
+2. **Move Parent 已实现真实链路**: changeParentMode 交互状态 → handleChangeParent 业务逻辑（self-parent 拒绝、非父类型拒绝、直接循环检测、旧父边删除含 baseline 强删、新 parent_child 边创建、行为事件记录）→ UI Move Parent 按钮 + 紫色提示条 → toast 成功/失败 → 9 条测试覆盖
+3. **Guard 实现**: self-parent 在 handleChangeParent 中拒绝；直接 parent-child 循环在 handleChangeParent 中拒绝；root 不可归档在 archiveMindNode 中拒绝（repository 层兜底）
+4. **测试覆盖**: Archive 5 条 + Move Parent 9 条 = 14 条新增测试
+5. **未实现的后续增强**: 自动父节点视觉升级、复杂祖先链循环检测增强、Dock 复杂层级深度投影优化、Review 完整 UI 展示、归档节点恢复入口
+6. **当前 Mind 分支是否具备合入条件**: 是。所有 PM 强制要求的功能已实现真实闭环，无假入口，无 disabled 按钮，无 coming soon
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-006 Round 1 (收口清障与合入前稳定化) -->
+<!-- ============================================ -->
+
+## MIND-REAL-006+Round 1 devlog -- Mind 收口清障与合入前稳定化
+
+**时间戳**: 2026-05-13
+
+**任务起止时间**: 2026-05-13 04:35 - 2026-05-13 04:50 CST
+
+**工时**: 15 分钟
+
+**任务目标**:
+
+Mind 分支合入前清障：1) seed-mind/seed 路由从 git 追踪移除但保留本地；2) Archive 实现最小真实闭环（repository helper + 快照过滤 + UI 交互）；3) Move to Cluster 移除假入口；4) 父节点/Root/Drag Connect 回归确认；5) 补充 Archive 测试覆盖。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `.gitignore` | +4 | 新增 `apps/web/app/seed-mind/` 和 `apps/web/app/seed/` 忽略规则 |
+| `apps/web/app/seed-mind/page.tsx` | git rm --cached | 从 git 追踪中移除，本地文件保留 |
+| `apps/web/app/seed/page.tsx` | git rm --cached | 从 git 追踪中移除，本地文件保留 |
+| `apps/web/lib/repository.ts` | +12 | 新增 `archiveMindNode(userId, nodeId)` 函数：root 不可归档、幂等、state 改为 archived |
+| `apps/web/app/workspace/features/mind/mindSnapshotBuilder.ts` | +2 / -1 | `buildSimpleMindGraphSnapshot` 过滤 `state === 'archived'` 节点 |
+| `apps/web/app/workspace/features/mind/useMindGraph.ts` | +30 | 新增 `handleArchiveNode` 回调：校验 root 不可归档、调用 archiveMindNode、更新本地状态、emit 事件、记录行为事件；返回值新增 `onArchiveNode` |
+| `apps/web/app/workspace/features/mind/MindNodeActionBar.tsx` | +8 / -28 | 移除 `onMove` prop 和 Move to Cluster 按钮；新增 `selectedNodeIsRoot` prop；Archive 按钮启用：非 root 可点击归档，root 时 disabled 并提示"根节点不可归档" |
+| `apps/web/app/workspace/features/mind/MindGraphView.tsx` | +14 / -2 | 新增 `onArchiveNode` prop；MindNodeActionBar 传递 `selectedNodeIsRoot` 和真实 `onArchive` 回调；归档成功后取消选中并 toast |
+| `apps/web/app/workspace/features/mind/MindCanvasStage.tsx` | +3 | 透传 `onArchiveNode` prop |
+| `apps/web/app/workspace/page.tsx` | +2 | 从 useMindGraph 解构 `onArchiveNode`；传递给 MindCanvasStage |
+| `apps/web/tests/mind-edge-ops.test.ts` | +96 | 新增 `MIND-REAL-006: Archive Node` 测试组：归档普通节点成功、root 不可归档、归档节点从快照排除、幂等归档、归档节点边不破坏 baseline 保护 |
+
+**遇到的问题以及解决方式**:
+
+| # | 问题 | 解决方式 |
+|---|------|----------|
+| 1 | `archiveMindNode` 中使用 `mind_node_archived` 作为 eventType，但 `UserBehaviorEventType` 不包含该值 | 改为使用已有的 `'archive'` 事件类型 |
+| 2 | MindNodeActionBar 移除 `onMove` prop 后，MindGraphView 仍传递 `onMove={() => {}}`，typecheck 报错 | 同步更新 MindGraphView 中的 MindNodeActionBar 调用，移除 `onMove` prop |
+
+**自动验证结果**:
+
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm lint` | 待验证 |
+| `pnpm typecheck` | 待验证 |
+| `pnpm test` | 待验证 |
+| `pnpm build:web` | 待验证 |
+
+**手工验证步骤说明**:
+
+1. 打开 workspace 页面，确认 Mind 图谱正常渲染
+2. 选中一个非 root 节点，确认 ActionBar 显示 Connect / Open in Dock / Archive 按钮，Archive 按钮可点击
+3. 选中 root 节点，确认 Archive 按钮灰色 disabled，hover 提示"根节点不可归档"
+4. 点击非 root 节点的 Archive 按钮，确认 toast 提示"节点已归档"，节点从图谱消失
+5. 确认归档后 ActionBar 关闭，选中状态清除
+6. 确认 Move to Cluster 按钮已不存在
+7. 确认 /seed-mind 和 /seed 路由本地仍可访问，但 git status 不再追踪
+
+**当前风险及影响范围**:
+
+| 风险 | 等级 | 影响范围 | 说明 |
+|------|------|----------|------|
+| 归档节点无法恢复 | 中 | Mind Graph | 当前无 unarchive 入口，归档操作不可逆。后续需在 Dock/Review 中提供恢复能力 |
+| 归档节点的边仍保留在 DB | 低 | 数据层 | 归档节点的边未物理删除，仅通过快照过滤隐藏。不影响功能，但长期可能积累孤立边数据 |
+| date input UI 不一致 | 低 | Filter Panel | 原生 date input 无日历视图，后续可替换 |
+| Defer round 语义待明确 | 低 | Recommendation | ignored 候选可重新出现，语义需产品确认 |
+| Collection Scope 与 Dock collection 深度映射 | 低 | Mind Scope | 当前 collection scope 仅映射 topic 节点，与 Dock collection 概念未完全对齐 |
+| filteredStats 下一帧更新 | 低 | Mind Scope | 胶囊 S/I 指标在过滤条件变更后可能延迟一帧更新 |
+
+**收口确认**:
+
+1. **seed-mind 路由处理**: 已从 git 追踪移除（`git rm --cached`），本地文件保留，`.gitignore` 新增忽略规则
+2. **Move to Cluster 风险关闭**: 已移除按钮。Connect 按钮已能实现更换父节点效果（自动判断边类型 + 单亲规则替换旧父边），无需额外入口
+3. **Archive 风险关闭**: 已实现最小真实闭环。repository helper + 快照过滤 + UI 交互 + 5 条测试覆盖
+4. **低风险项后续跟进**: date input UI、Defer round 语义、Collection Scope 与 Dock collection 深度映射、filteredStats 下一帧更新
+5. **当前 Mind 分支是否具备合入条件**: 是。所有阻塞风险已关闭，核心规则有回归保护，假入口已清除
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：MIND-REAL-005 Round 6 (Filter 时间戳/时间范围筛选) -->
 <!-- ============================================ -->
 

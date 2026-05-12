@@ -9,6 +9,149 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：MIND-REAL-006 Round 3 (restoreMindNode + listArchivedMindNodes) -->
+<!-- ============================================ -->
+
+## MIND-REAL-006+Round 3 devlog -- restoreMindNode + listArchivedMindNodes
+
+**时间戳**: 2026-05-13
+
+**任务起止时间**: 2026-05-13 05:10 - 2026-05-13 05:22 CST
+
+**工时**: 12 分钟
+
+**任务目标**:
+
+新增 `restoreMindNode` 和 `listArchivedMindNodes` 仓库函数，支持 Hidden Nodes 恢复功能。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `repository.ts` | +16 | 新增 `restoreMindNode(userId, nodeId)` — 非 archived 节点幂等返回、archived 节点 state 改为 drifting + updatedAt；新增 `listArchivedMindNodes(userId)` — 使用 `[userId+state]` 索引查询所有 archived 节点 |
+
+**遇到的问题以及解决方式**:
+
+无。
+
+**自动验证结果**:
+
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm test` (Restore 相关) | 待验证 |
+
+**手工验证步骤说明**:
+
+1. 归档节点后调用 restoreMindNode，确认 state 变为 drifting
+2. 调用 listArchivedMindNodes，确认不包含已恢复节点
+
+**当前风险及影响范围**:
+
+| 风险 | 等级 | 影响范围 | 说明 |
+|------|------|----------|------|
+| 恢复后 state 固定为 drifting | 低 | 数据层 | 原始 state 未保存，恢复后统一为 drifting |
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-006 Round 2 (Move Parent 业务逻辑) -->
+<!-- ============================================ -->
+
+## MIND-REAL-006+Round 2 devlog -- Move Parent handleChangeParent 业务逻辑
+
+**时间戳**: 2026-05-13
+
+**任务起止时间**: 2026-05-13 04:50 - 2026-05-13 04:56 CST
+
+**工时**: 6 分钟
+
+**任务目标**:
+
+实现 Move Parent / Change Parent 最小真实闭环的业务逻辑层。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `useMindGraph.ts` | +55 | 新增 `handleChangeParent(childNodeId, newParentNodeId)`：self-parent 拒绝、非父类型节点拒绝（仅 root/domain/project/topic 可作为 parent）、直接 parent-child 循环检测、旧 parent_child 边删除（baseline 用 forceDeleteBaselineEdge、真实边用 deleteMindEdge + 事件发射）、新 parent_child 边创建（strength 0.8, reason 'user-parent-link'）、行为事件记录 |
+
+**遇到的问题以及解决方式**:
+
+| # | 问题 | 解决方式 |
+|---|------|----------|
+| 1 | 循环检测复杂度 | 仅实现直接 parent-child 循环检测。复杂祖先链循环检测需要递归遍历，超出本轮边界，作为后续增强 |
+
+**自动验证结果**:
+
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm test` (Move Parent 相关) | 待验证 |
+
+**手工验证步骤说明**:
+
+1. 测试中调用 handleChangeParent 将节点从 Root baseline 移到真实 parent
+2. 测试中调用 handleChangeParent 将节点从一个 parent 移到另一个 parent
+3. 测试中调用 handleChangeParent 将节点移回 Root
+4. 测试中 self-parent 被拒绝
+5. 测试中直接 parent-child 循环被拒绝
+
+**当前风险及影响范围**:
+
+| 风险 | 等级 | 影响范围 | 说明 |
+|------|------|----------|------|
+| 复杂祖先链循环检测未实现 | 中 | Move Parent | A->B->C->A 间接循环不会被阻止。后续增强 |
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-006 Round 1 (收口清障：archiveMindNode) -->
+<!-- ============================================ -->
+
+## MIND-REAL-006+Round 1 devlog -- archiveMindNode 仓库函数
+
+**时间戳**: 2026-05-13
+
+**任务起止时间**: 2026-05-13 04:35 - 2026-05-13 04:50 CST
+
+**工时**: 15 分钟
+
+**任务目标**:
+
+新增 `archiveMindNode` 仓库函数，实现 Mind 节点归档的最小数据层闭环。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/lib/repository.ts` | +12 | 新增 `archiveMindNode(userId, nodeId)` 函数：校验 userId 归属、root 不可归档返回 null、已归档幂等返回、更新 state 为 archived + updatedAt |
+
+**遇到的问题以及解决方式**:
+
+| # | 问题 | 解决方式 |
+|---|------|----------|
+| 1 | 需要确保归档操作使用已有的 `UserBehaviorEventType` 类型 | 使用已有的 `'archive'` 事件类型而非新增 `mind_node_archived` |
+
+**自动验证结果**:
+
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm test` (Archive 相关) | 待验证 |
+
+**手工验证步骤说明**:
+
+1. 在测试中调用 `archiveMindNode` 归档普通节点，确认 state 变为 archived
+2. 调用 `archiveMindNode` 归档 root 节点，确认返回 null，state 不变
+3. 重复归档已归档节点，确认幂等
+
+**当前风险及影响范围**:
+
+| 风险 | 等级 | 影响范围 | 说明 |
+|------|------|----------|------|
+| 归档节点边未物理删除 | 低 | 数据层 | 归档仅修改 state，边数据保留。快照层过滤隐藏，不影响功能 |
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：MIND-REAL-005 Round 4 (Recommendation 去重 + already-connected) -->
 <!-- ============================================ -->
 

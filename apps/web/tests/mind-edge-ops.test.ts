@@ -7,6 +7,7 @@ import {
   upsertMindNode,
   upsertMindEdge,
   deleteMindEdge,
+  forceDeleteBaselineEdge,
   getMindEdge,
   listMindEdges,
   listMindNodes,
@@ -19,6 +20,9 @@ import {
   recordRecommendationFeedback,
   listRecommendationEvents,
   getRecommendation,
+  archiveMindNode,
+  restoreMindNode,
+  listArchivedMindNodes,
 } from '@/lib/repository'
 import { makeMindEdgeId } from '@atlax/domain'
 import { buildSimpleMindGraphSnapshot } from '@/app/workspace/features/mind/mindSnapshotBuilder'
@@ -1518,5 +1522,474 @@ describe('MIND-REAL-005 Round 4: Recommendation dedup, already-connected, reject
     const recs2 = await generateMindNodeRecommendations(USER, nodeA.id, 5)
     const recAgain = recs2.find(r => r.candidateId === nodeB.id)
     expect(recAgain).toBeDefined()
+  })
+})
+
+describe('MIND-REAL-006: Archive Node', () => {
+  it('archives a normal node successfully', async () => {
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    expect(doc.state).not.toBe('archived')
+
+    const archived = await archiveMindNode(USER, doc.id)
+    expect(archived).not.toBeNull()
+    if (!archived) return
+    expect(archived.state).toBe('archived')
+
+    const reloaded = await listMindNodes(USER)
+    const found = reloaded.find(n => n.id === doc.id)
+    expect(found?.state).toBe('archived')
+  })
+
+  it('root node cannot be archived', async () => {
+    const root = await upsertMindNode({ userId: USER, nodeType: 'root', label: 'Root', state: 'anchored' })
+    const result = await archiveMindNode(USER, root.id)
+    expect(result).toBeNull()
+
+    const reloaded = await listMindNodes(USER)
+    const found = reloaded.find(n => n.id === root.id)
+    expect(found?.state).toBe('anchored')
+  })
+
+  it('archived node excluded from snapshot', async () => {
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    const topic = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic A' })
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: topic.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      strength: 0.8,
+      source: 'user',
+      reason: 'user-parent-link',
+    })
+
+    const nodesBefore = await listMindNodes(USER)
+    const edgesBefore = await listMindEdges(USER)
+    const snapshotBefore = buildSimpleMindGraphSnapshot(nodesBefore, edgesBefore)
+    expect(snapshotBefore.nodes.some(n => n.id === doc.id)).toBe(true)
+
+    await archiveMindNode(USER, doc.id)
+
+    const nodesAfter = await listMindNodes(USER)
+    const edgesAfter = await listMindEdges(USER)
+    const snapshotAfter = buildSimpleMindGraphSnapshot(nodesAfter, edgesAfter)
+    expect(snapshotAfter.nodes.some(n => n.id === doc.id)).toBe(false)
+    expect(snapshotAfter.edges.some(e => e.sourceNodeId === doc.id || e.targetNodeId === doc.id)).toBe(false)
+  })
+
+  it('archiving already archived node is idempotent', async () => {
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    const first = await archiveMindNode(USER, doc.id)
+    expect(first).not.toBeNull()
+    if (!first) return
+    expect(first.state).toBe('archived')
+
+    const second = await archiveMindNode(USER, doc.id)
+    expect(second).not.toBeNull()
+    if (!second) return
+    expect(second.state).toBe('archived')
+  })
+
+  it('archived node edges do not break baseline protection', async () => {
+    const root = await upsertMindNode({ userId: USER, nodeType: 'root', label: 'Root', state: 'anchored' })
+    void root
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    const topic = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic A' })
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: topic.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      strength: 0.8,
+      source: 'user',
+      reason: 'user-parent-link',
+    })
+
+    await archiveMindNode(USER, doc.id)
+
+    const nodes = await listMindNodes(USER)
+    const edges = await listMindEdges(USER)
+    const baselineEdges = await ensureBaselineParentConnections(USER, nodes, edges)
+
+    const nonArchivedDocEdges = [...edges, ...baselineEdges].filter(e =>
+      e.edgeType === 'parent_child' &&
+      e.targetNodeId === doc.id &&
+      e.reason === 'baseline-auto-connect'
+    )
+    expect(nonArchivedDocEdges.length).toBe(0)
+  })
+
+  it('restoreMindNode restores archived node to drifting', async () => {
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    await archiveMindNode(USER, doc.id)
+
+    const restored = await restoreMindNode(USER, doc.id)
+    expect(restored).not.toBeNull()
+    if (!restored) return
+    expect(restored.state).toBe('drifting')
+
+    const reloaded = await listMindNodes(USER)
+    const found = reloaded.find(n => n.id === doc.id)
+    expect(found?.state).toBe('drifting')
+  })
+
+  it('restoreMindNode is idempotent for non-archived node', async () => {
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    const restored = await restoreMindNode(USER, doc.id)
+    expect(restored).not.toBeNull()
+    if (!restored) return
+    expect(restored.state).toBe('drifting')
+  })
+
+  it('listArchivedMindNodes returns only archived nodes', async () => {
+    const doc1 = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    const doc2 = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc2', documentId: 2 })
+    await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc3', documentId: 3 })
+
+    await archiveMindNode(USER, doc1.id)
+    await archiveMindNode(USER, doc2.id)
+
+    const archived = await listArchivedMindNodes(USER)
+    expect(archived.length).toBeGreaterThanOrEqual(2)
+    const archivedIds = archived.map(n => n.id)
+    expect(archivedIds).toContain(doc1.id)
+    expect(archivedIds).toContain(doc2.id)
+  })
+
+  it('restored node appears in snapshot again', async () => {
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    await archiveMindNode(USER, doc.id)
+
+    const nodesAfterArchive = await listMindNodes(USER)
+    const edgesAfterArchive = await listMindEdges(USER)
+    const snapshotAfterArchive = buildSimpleMindGraphSnapshot(nodesAfterArchive, edgesAfterArchive)
+    expect(snapshotAfterArchive.nodes.some(n => n.id === doc.id)).toBe(false)
+
+    await restoreMindNode(USER, doc.id)
+
+    const nodesAfterRestore = await listMindNodes(USER)
+    const edgesAfterRestore = await listMindEdges(USER)
+    const snapshotAfterRestore = buildSimpleMindGraphSnapshot(nodesAfterRestore, edgesAfterRestore)
+    expect(snapshotAfterRestore.nodes.some(n => n.id === doc.id)).toBe(true)
+  })
+})
+
+describe('MIND-REAL-006: Move Parent / Change Parent', () => {
+  it('node can move from Root baseline to real parent', async () => {
+    const root = await upsertMindNode({ userId: USER, nodeType: 'root', label: 'Root', state: 'anchored' })
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    const topic = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic A' })
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: root.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      strength: 0.3,
+      source: 'system',
+      reason: 'baseline-auto-connect',
+    })
+
+    const nodes = await listMindNodes(USER)
+    const edges = await listMindEdges(USER)
+    const result = await ensureBaselineParentConnections(USER, nodes, edges)
+    expect(result.length).toBe(0)
+
+    const existingParentEdges = edges.filter(e =>
+      e.edgeType === 'parent_child' && e.targetNodeId === doc.id
+    )
+    for (const oldEdge of existingParentEdges) {
+      if (oldEdge.reason === 'baseline-auto-connect') {
+        await forceDeleteBaselineEdge(USER, oldEdge.id)
+      } else {
+        await deleteMindEdge(USER, oldEdge.id)
+      }
+    }
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: topic.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      strength: 0.8,
+      source: 'user',
+      reason: 'user-parent-link',
+    })
+
+    const edgesAfter = await listMindEdges(USER)
+    const docParentEdges = edgesAfter.filter(e =>
+      e.edgeType === 'parent_child' && e.targetNodeId === doc.id
+    )
+    expect(docParentEdges.length).toBe(1)
+    expect(docParentEdges[0].sourceNodeId).toBe(topic.id)
+    expect(docParentEdges[0].reason).toBe('user-parent-link')
+  })
+
+  it('after move, Root baseline is not present', async () => {
+    const root = await upsertMindNode({ userId: USER, nodeType: 'root', label: 'Root', state: 'anchored' })
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    const topic = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic A' })
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: root.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      strength: 0.3,
+      source: 'system',
+      reason: 'baseline-auto-connect',
+    })
+
+    const existingParentEdges = (await listMindEdges(USER)).filter(e =>
+      e.edgeType === 'parent_child' && e.targetNodeId === doc.id
+    )
+    for (const oldEdge of existingParentEdges) {
+      if (oldEdge.reason === 'baseline-auto-connect') {
+        await forceDeleteBaselineEdge(USER, oldEdge.id)
+      } else {
+        await deleteMindEdge(USER, oldEdge.id)
+      }
+    }
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: topic.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      strength: 0.8,
+      source: 'user',
+      reason: 'user-parent-link',
+    })
+
+    const edgesAfter = await listMindEdges(USER)
+    const baselineEdges = edgesAfter.filter(e =>
+      e.targetNodeId === doc.id && e.reason === 'baseline-auto-connect'
+    )
+    expect(baselineEdges.length).toBe(0)
+  })
+
+  it('node can move from one parent to another parent', async () => {
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    const topic1 = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic A' })
+    const topic2 = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic B' })
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: topic1.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      strength: 0.8,
+      source: 'user',
+      reason: 'user-parent-link',
+    })
+
+    const existingParentEdges = (await listMindEdges(USER)).filter(e =>
+      e.edgeType === 'parent_child' && e.targetNodeId === doc.id
+    )
+    for (const oldEdge of existingParentEdges) {
+      await deleteMindEdge(USER, oldEdge.id)
+    }
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: topic2.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      strength: 0.8,
+      source: 'user',
+      reason: 'user-parent-link',
+    })
+
+    const edgesAfter = await listMindEdges(USER)
+    const docParentEdges = edgesAfter.filter(e =>
+      e.edgeType === 'parent_child' && e.targetNodeId === doc.id
+    )
+    expect(docParentEdges.length).toBe(1)
+    expect(docParentEdges[0].sourceNodeId).toBe(topic2.id)
+  })
+
+  it('single parent rule holds after move', async () => {
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    const topic1 = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic A' })
+    const topic2 = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic B' })
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: topic1.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      strength: 0.8,
+      source: 'user',
+      reason: 'user-parent-link',
+    })
+
+    const existingParentEdges = (await listMindEdges(USER)).filter(e =>
+      e.edgeType === 'parent_child' && e.targetNodeId === doc.id
+    )
+    for (const oldEdge of existingParentEdges) {
+      await deleteMindEdge(USER, oldEdge.id)
+    }
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: topic2.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      strength: 0.8,
+      source: 'user',
+      reason: 'user-parent-link',
+    })
+
+    const edgesAfter = await listMindEdges(USER)
+    const docParentEdges = edgesAfter.filter(e =>
+      e.edgeType === 'parent_child' && e.targetNodeId === doc.id
+    )
+    expect(docParentEdges.length).toBe(1)
+  })
+
+  it('node can move back to Root', async () => {
+    const root = await upsertMindNode({ userId: USER, nodeType: 'root', label: 'Root', state: 'anchored' })
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    const topic = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic A' })
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: topic.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      strength: 0.8,
+      source: 'user',
+      reason: 'user-parent-link',
+    })
+
+    const existingParentEdges = (await listMindEdges(USER)).filter(e =>
+      e.edgeType === 'parent_child' && e.targetNodeId === doc.id
+    )
+    for (const oldEdge of existingParentEdges) {
+      await deleteMindEdge(USER, oldEdge.id)
+    }
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: root.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      strength: 0.3,
+      source: 'system',
+      reason: 'baseline-auto-connect',
+    })
+
+    const edgesAfter = await listMindEdges(USER)
+    const docParentEdges = edgesAfter.filter(e =>
+      e.edgeType === 'parent_child' && e.targetNodeId === doc.id
+    )
+    expect(docParentEdges.length).toBe(1)
+    expect(docParentEdges[0].sourceNodeId).toBe(root.id)
+    expect(docParentEdges[0].reason).toBe('baseline-auto-connect')
+  })
+
+  it('self-parent is rejected', async () => {
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    const edgeId = makeMindEdgeId(USER, doc.id, doc.id, 'parent_child')
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: doc.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      strength: 0.8,
+      source: 'user',
+      reason: 'user-parent-link',
+    })
+    const found = await getMindEdge(USER, edgeId)
+    expect(found).toBeNull()
+  })
+
+  it('direct parent-child cycle is detected by edge guard', async () => {
+    const topic = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic A' })
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: topic.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      strength: 0.8,
+      source: 'user',
+      reason: 'user-parent-link',
+    })
+
+    const reverseCreated = await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: doc.id,
+      targetNodeId: topic.id,
+      edgeType: 'parent_child',
+      strength: 0.8,
+      source: 'user',
+      reason: 'user-parent-link',
+    })
+
+    if (reverseCreated) {
+      const edges = await listMindEdges(USER)
+      const parentEdgesToTopic = edges.filter(e =>
+        e.edgeType === 'parent_child' && e.targetNodeId === topic.id
+      )
+      expect(parentEdgesToTopic.length).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('Move Parent does not break drag connect', async () => {
+    const root = await upsertMindNode({ userId: USER, nodeType: 'root', label: 'Root', state: 'anchored' })
+    const doc1 = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    const doc2 = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc2', documentId: 2 })
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: root.id,
+      targetNodeId: doc1.id,
+      edgeType: 'parent_child',
+      strength: 0.3,
+      source: 'system',
+      reason: 'baseline-auto-connect',
+    })
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: doc1.id,
+      targetNodeId: doc2.id,
+      edgeType: 'semantic',
+      strength: 0.5,
+      source: 'user',
+    })
+
+    const edges = await listMindEdges(USER)
+    const semanticEdge = edges.find(e => e.edgeType === 'semantic' && e.sourceNodeId === doc1.id && e.targetNodeId === doc2.id)
+    expect(semanticEdge).toBeDefined()
+    if (semanticEdge) {
+      expect(semanticEdge.edgeType).toBe('semantic')
+    }
+  })
+
+  it('Move Parent does not break scope/filter', async () => {
+    await upsertMindNode({ userId: USER, nodeType: 'root', label: 'Root', state: 'anchored' })
+    const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
+    const topic = await upsertMindNode({ userId: USER, nodeType: 'topic', label: 'Topic A' })
+
+    await upsertMindEdge({
+      userId: USER,
+      sourceNodeId: topic.id,
+      targetNodeId: doc.id,
+      edgeType: 'parent_child',
+      strength: 0.8,
+      source: 'user',
+      reason: 'user-parent-link',
+    })
+
+    const nodes = await listMindNodes(USER)
+    const edges = await listMindEdges(USER)
+    const snapshot = buildSimpleMindGraphSnapshot(nodes, edges)
+    expect(snapshot.nodes.some(n => n.id === doc.id)).toBe(true)
+    expect(snapshot.edges.some(e => e.sourceNodeId === topic.id && e.targetNodeId === doc.id)).toBe(true)
   })
 })

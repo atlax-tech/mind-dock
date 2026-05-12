@@ -10,6 +10,9 @@ import {
   deleteMindEdge,
   forceDeleteBaselineEdge,
   getMindEdge,
+  archiveMindNode,
+  restoreMindNode,
+  listArchivedMindNodes,
   recordUserBehaviorEvent,
   type StoredMindNode,
   type StoredMindEdge,
@@ -328,15 +331,148 @@ export function useMindGraph(userId: string) {
     return { success: true }
   }, [userId, nodes, edges])
 
+  const handleArchiveNode = useCallback(async (nodeId: string): Promise<{ success: boolean; error?: string }> => {
+    const node = nodes.find(n => n.id === nodeId)
+    if (!node) {
+      return { success: false, error: '节点不存在' }
+    }
+    if (node.nodeType === 'root') {
+      return { success: false, error: '根节点不可隐藏' }
+    }
+
+    const archived = await archiveMindNode(userId, nodeId)
+    if (!archived) {
+      return { success: false, error: '隐藏失败' }
+    }
+
+    setNodes(prev => prev.map(n => n.id === nodeId ? { ...n, state: 'archived' as const } : n))
+    emit({ type: 'mind_node_updated', nodeId })
+
+    await recordUserBehaviorEvent({
+      userId,
+      eventType: 'archive',
+      subjectType: 'mindNode',
+      subjectId: nodeId,
+      metadata: { action: 'hide_from_graph', nodeType: node.nodeType, label: node.label },
+    }).catch(() => {})
+
+    return { success: true }
+  }, [userId, nodes])
+
+  const [hiddenNodes, setHiddenNodes] = useState<StoredMindNode[]>([])
+
+  const refreshHiddenNodes = useCallback(async () => {
+    if (!userId) return
+    const archived = await listArchivedMindNodes(userId)
+    setHiddenNodes(archived)
+  }, [userId])
+
+  useEffect(() => {
+    refreshHiddenNodes()
+  }, [refreshHiddenNodes, refreshKey])
+
+  const handleRestoreNode = useCallback(async (nodeId: string): Promise<{ success: boolean; error?: string }> => {
+    const restored = await restoreMindNode(userId, nodeId)
+    if (!restored) {
+      return { success: false, error: '恢复失败' }
+    }
+
+    setNodes(prev => prev.map(n => n.id === nodeId ? { ...n, state: 'drifting' as const } : n))
+    setHiddenNodes(prev => prev.filter(n => n.id !== nodeId))
+    emit({ type: 'mind_node_updated', nodeId })
+
+    await recordUserBehaviorEvent({
+      userId,
+      eventType: 'archive',
+      subjectType: 'mindNode',
+      subjectId: nodeId,
+      metadata: { action: 'restore_to_graph', nodeType: restored.nodeType, label: restored.label },
+    }).catch(() => {})
+
+    return { success: true }
+  }, [userId])
+
+  const handleChangeParent = useCallback(async (childNodeId: string, newParentNodeId: string): Promise<{ success: boolean; error?: string }> => {
+    if (childNodeId === newParentNodeId) {
+      return { success: false, error: '不能将节点设为自身的父节点' }
+    }
+
+    const childNode = nodes.find(n => n.id === childNodeId)
+    const newParentNode = nodes.find(n => n.id === newParentNodeId)
+    if (!childNode || !newParentNode) {
+      return { success: false, error: '节点不存在' }
+    }
+
+    const PARENT_TYPES = ['root', 'domain', 'project', 'topic']
+    if (!PARENT_TYPES.includes(newParentNode.nodeType)) {
+      return { success: false, error: '目标节点不是有效的父节点类型' }
+    }
+
+    const directChildEdges = edges.filter(e =>
+      e.edgeType === 'parent_child' &&
+      e.sourceNodeId === newParentNodeId &&
+      e.targetNodeId === childNodeId
+    )
+    if (directChildEdges.length > 0) {
+      return { success: false, error: '不能形成父子循环' }
+    }
+
+    const existingParentEdges = edges.filter(e =>
+      e.edgeType === 'parent_child' && e.targetNodeId === childNodeId
+    )
+    for (const oldEdge of existingParentEdges) {
+      if (oldEdge.reason === 'baseline-auto-connect') {
+        await forceDeleteBaselineEdge(userId, oldEdge.id)
+        setEdges(prev => prev.filter(e => e.id !== oldEdge.id))
+      } else {
+        await deleteMindEdge(userId, oldEdge.id)
+        setEdges(prev => prev.filter(e => e.id !== oldEdge.id))
+        emit({ type: 'mind_edge_deleted', edgeId: oldEdge.id })
+      }
+    }
+
+    const created = await upsertMindEdge({
+      userId,
+      sourceNodeId: newParentNodeId,
+      targetNodeId: childNodeId,
+      edgeType: 'parent_child',
+      strength: 0.8,
+      source: 'user',
+      confidence: null,
+      reason: 'user-parent-link',
+    })
+
+    if (!created) {
+      return { success: false, error: '父节点迁移失败' }
+    }
+
+    setEdges(prev => [...prev, created])
+    emit({ type: 'mind_edge_created', edgeId: created.id })
+
+    await recordUserBehaviorEvent({
+      userId,
+      eventType: 'mind_edge_created',
+      subjectType: 'mindNode',
+      subjectId: created.id,
+      metadata: { action: 'change_parent', childNodeId, newParentNodeId, edgeType: 'parent_child' },
+    }).catch(() => {})
+
+    return { success: true }
+  }, [userId, nodes, edges])
+
   return {
     nodes,
     edges,
     snapshot,
     loading,
     isEmpty,
+    hiddenNodes,
     refresh: forceRefresh,
     onNodeDragEnd: handleNodeDragEnd,
     onDeleteEdge: handleDeleteEdge,
     onCreateEdge: handleCreateEdge,
+    onArchiveNode: handleArchiveNode,
+    onRestoreNode: handleRestoreNode,
+    onChangeParent: handleChangeParent,
   }
 }

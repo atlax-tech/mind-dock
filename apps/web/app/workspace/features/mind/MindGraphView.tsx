@@ -32,8 +32,12 @@ interface MindGraphViewProps {
   onNodeDragEnd?: (nodeId: string, x: number, y: number) => void
   onDeleteEdge?: (edgeId: string) => void
   onCreateEdge?: (sourceNodeId: string, targetNodeId: string) => Promise<{ success: boolean; error?: string }>
+  onArchiveNode?: (nodeId: string) => Promise<{ success: boolean; error?: string }>
+  onRestoreNode?: (nodeId: string) => Promise<{ success: boolean; error?: string }>
+  onChangeParent?: (childNodeId: string, newParentNodeId: string) => Promise<{ success: boolean; error?: string }>
   onSuggest?: () => void
   activeModule?: string
+  hiddenNodes?: { id: string; label: string; nodeType: string }[]
 }
 
 export default function MindGraphView({
@@ -45,8 +49,12 @@ export default function MindGraphView({
   onNodeDragEnd,
   onDeleteEdge,
   onCreateEdge,
+  onArchiveNode,
+  onRestoreNode,
+  onChangeParent,
   onSuggest,
   activeModule: _activeModule,
+  hiddenNodes,
 }: MindGraphViewProps) {
   const { state: ixState, actions: ixActions } = interaction
 
@@ -120,7 +128,10 @@ export default function MindGraphView({
     if (ixState.filterOpen && ixState.connectMode) {
       ixActions.exitConnectMode()
     }
-  }, [ixState.filterOpen, ixState.connectMode, ixActions])
+    if (ixState.filterOpen && ixState.changeParentMode) {
+      ixActions.exitChangeParentMode()
+    }
+  }, [ixState.filterOpen, ixState.connectMode, ixState.changeParentMode, ixActions])
 
   const handleSelectNode = useCallback((nodeId: string | null) => {
     if (ixState.connectMode && nodeId && ixState.connectSourceId && onCreateEdge) {
@@ -132,6 +143,18 @@ export default function MindGraphView({
         }
       })
       ixActions.exitConnectMode()
+      return
+    }
+
+    if (ixState.changeParentMode && nodeId && ixState.changeParentSourceId && onChangeParent) {
+      onChangeParent(ixState.changeParentSourceId, nodeId).then((result) => {
+        if (result.success) {
+          _onToast('父节点迁移成功')
+        } else {
+          _onToast(result.error || '父节点迁移失败')
+        }
+      })
+      ixActions.exitChangeParentMode()
       return
     }
 
@@ -149,7 +172,7 @@ export default function MindGraphView({
     } else {
       ixActions.clearFocus()
     }
-  }, [ixActions, ixState.connectMode, ixState.connectSourceId, ixState.scope, snapshot.nodes, onCreateEdge, _onSelectNode, _onToast])
+  }, [ixActions, ixState.connectMode, ixState.connectSourceId, ixState.changeParentMode, ixState.changeParentSourceId, ixState.scope, snapshot.nodes, onCreateEdge, onChangeParent, _onSelectNode, _onToast])
 
   const renderer = useMindCanvasRenderer(
     canvasRef,
@@ -293,20 +316,38 @@ export default function MindGraphView({
         <MindScopeCapsule 
           filteredCounts={filteredCounts}
           viewScope={ixState.viewScope}
+          hiddenNodes={hiddenNodes}
           onCenter={renderer.centerView}
           onSuggest={onSuggest}
+          onRestoreNode={(nodeId) => {
+            if (onRestoreNode) {
+              onRestoreNode(nodeId).then((result) => {
+                if (result.success) {
+                  _onToast('节点已恢复到图谱')
+                } else {
+                  _onToast(result.error || '恢复失败')
+                }
+              })
+            }
+          }}
         />
 
         {showActionBar && (
           <MindNodeActionBar 
             selectedNodeId={ixState.selectedNodeId}
+            selectedNodeIsRoot={ixState.selectedNodeId ? snapshot.nodes.find(n => n.id === ixState.selectedNodeId)?.nodeType === 'root' : false}
             connectMode={ixState.connectMode}
+            changeParentMode={ixState.changeParentMode}
             onConnect={() => {
               if (ixState.selectedNodeId) {
                 ixActions.enterConnectMode(ixState.selectedNodeId)
               }
             }}
-            onMove={() => {}}
+            onMoveParent={() => {
+              if (ixState.selectedNodeId) {
+                ixActions.enterChangeParentMode(ixState.selectedNodeId)
+              }
+            }}
             onOpen={() => {
               if (ixState.selectedNodeId) {
                 const node = snapshot.nodes.find(n => n.id === ixState.selectedNodeId)
@@ -318,15 +359,29 @@ export default function MindGraphView({
                 }
               }
             }}
-            onArchive={() => {}}
+            onArchive={() => {
+              if (ixState.selectedNodeId && onArchiveNode) {
+                onArchiveNode(ixState.selectedNodeId).then((result) => {
+                  if (result.success) {
+                    _onToast('节点已从图谱隐藏')
+                    ixActions.setSelectedNode(null)
+                  } else {
+                    _onToast(result.error || '隐藏失败')
+                  }
+                })
+              }
+            }}
             onClose={() => {
               if (ixState.connectMode) {
                 ixActions.exitConnectMode()
+              } else if (ixState.changeParentMode) {
+                ixActions.exitChangeParentMode()
               } else {
                 handleSelectNode(null)
               }
             }}
             onCancelConnect={() => ixActions.exitConnectMode()}
+            onCancelChangeParent={() => ixActions.exitChangeParentMode()}
           />
         )}
 

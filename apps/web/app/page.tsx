@@ -82,11 +82,6 @@ export default function Home() {
           </span>
         </button>
 
-        <div className="mt-8 text-sm text-[#8d989f] flex items-center gap-4">
-          <span className="hover:text-white cursor-pointer transition-colors">Phase 2 Preview</span>
-          <span className="w-1 h-1 rounded-full bg-white/20" />
-          <span className="hover:text-white cursor-pointer transition-colors">架构与设计系统演示</span>
-        </div>
       </div>
 
       <div

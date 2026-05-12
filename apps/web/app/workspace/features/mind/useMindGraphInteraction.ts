@@ -62,6 +62,8 @@ export interface MindInteractionState {
   viewScope: 'focusMap' | 'clusterMap' | 'linkReview' | 'driftInbox' | 'timelineSnapshot'
   connectMode: boolean
   connectSourceId: string | null
+  changeParentMode: boolean
+  changeParentSourceId: string | null
 }
 
 export interface MindInteractionActions {
@@ -81,6 +83,8 @@ export interface MindInteractionActions {
   setViewScope: (viewScope: MindInteractionState['viewScope']) => void
   enterConnectMode: (sourceId: string) => void
   exitConnectMode: () => void
+  enterChangeParentMode: (sourceId: string) => void
+  exitChangeParentMode: () => void
 }
 
 export function useMindGraphInteraction(): {
@@ -108,6 +112,8 @@ export function useMindGraphInteraction(): {
   const [viewScope, setViewScope] = useState<MindInteractionState['viewScope']>('focusMap')
   const [connectMode, setConnectMode] = useState(false)
   const [connectSourceId, setConnectSourceId] = useState<string | null>(null)
+  const [changeParentMode, setChangeParentMode] = useState(false)
+  const [changeParentSourceId, setChangeParentSourceId] = useState<string | null>(null)
 
   const clearFocus = useCallback(() => {
     setFocusedNode(null)
@@ -178,6 +184,16 @@ export function useMindGraphInteraction(): {
     setConnectSourceId(null)
   }, [])
 
+  const enterChangeParentMode = useCallback((sourceId: string) => {
+    setChangeParentMode(true)
+    setChangeParentSourceId(sourceId)
+  }, [])
+
+  const exitChangeParentMode = useCallback(() => {
+    setChangeParentMode(false)
+    setChangeParentSourceId(null)
+  }, [])
+
   const state: MindInteractionState = useMemo(() => ({
     hoveredNodeId,
     focusedNodeId,
@@ -195,7 +211,9 @@ export function useMindGraphInteraction(): {
     viewScope,
     connectMode,
     connectSourceId,
-  }), [hoveredNodeId, focusedNodeId, selectedNodeId, filterState, filterOpen, layoutPhase, layoutIterations, layoutMaxIterations, relayoutCounter, layoutMode, scope, scopeTargetId, chainRootId, viewScope, connectMode, connectSourceId])
+    changeParentMode,
+    changeParentSourceId,
+  }), [hoveredNodeId, focusedNodeId, selectedNodeId, filterState, filterOpen, layoutPhase, layoutIterations, layoutMaxIterations, relayoutCounter, layoutMode, scope, scopeTargetId, chainRootId, viewScope, connectMode, connectSourceId, changeParentMode, changeParentSourceId])
 
   const actions: MindInteractionActions = useMemo(() => ({
     setHoveredNode,
@@ -214,7 +232,9 @@ export function useMindGraphInteraction(): {
     setViewScope,
     enterConnectMode,
     exitConnectMode,
-  }), [clearFocus, toggleFilterPanel, updateFilter, resetFilters, setLayoutProgress, triggerRelayout, handleSetLayoutMode, enterConnectMode, exitConnectMode])
+    enterChangeParentMode,
+    exitChangeParentMode,
+  }), [clearFocus, toggleFilterPanel, updateFilter, resetFilters, setLayoutProgress, triggerRelayout, handleSetLayoutMode, enterConnectMode, exitConnectMode, enterChangeParentMode, exitChangeParentMode])
 
   return { state, actions }
 }

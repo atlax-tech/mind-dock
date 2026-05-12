@@ -1731,6 +1731,39 @@ export async function deleteMindNode(userId: string, id: string): Promise<boolea
   return true
 }
 
+export async function archiveMindNode(userId: string, id: string): Promise<PersistedMindNode | null> {
+  const existing = await mindNodesTable.get(id)
+  if (!existing || existing.userId !== userId) return null
+  if (existing.nodeType === 'root') return null
+  if (existing.state === 'archived') return toPersistedMindNode(existing)
+  const now = new Date()
+  await mindNodesTable.update(id, {
+    state: 'archived' as MindNodeState,
+    updatedAt: now,
+    metadata: { ...(existing.metadata as Record<string, unknown> | null), hiddenAt: now.toISOString() },
+  })
+  return toPersistedMindNode(await mindNodesTable.get(id))
+}
+
+export async function restoreMindNode(userId: string, id: string): Promise<PersistedMindNode | null> {
+  const existing = await mindNodesTable.get(id)
+  if (!existing || existing.userId !== userId) return null
+  if (existing.state !== 'archived') return toPersistedMindNode(existing)
+  await mindNodesTable.update(id, {
+    state: 'drifting' as MindNodeState,
+    updatedAt: new Date(),
+  })
+  return toPersistedMindNode(await mindNodesTable.get(id))
+}
+
+export async function listArchivedMindNodes(userId: string): Promise<PersistedMindNode[]> {
+  const nodes = await mindNodesTable
+    .where('[userId+state]')
+    .equals([userId, 'archived'])
+    .toArray()
+  return nodes.map(n => toPersistedMindNode(n)).filter((n): n is PersistedMindNode => n !== null)
+}
+
 export async function findMindNodeByDocumentId(
   userId: string,
   documentId: number,

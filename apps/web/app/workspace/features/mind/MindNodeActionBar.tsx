@@ -1,28 +1,34 @@
 'use client'
 
 import React from 'react'
-import { ArrowRight, ExternalLink, Archive, X, Link2, CornerDownLeft } from 'lucide-react'
+import { ExternalLink, EyeOff, X, Link2, CornerDownLeft, ArrowRightLeft } from 'lucide-react'
 
 interface MindNodeActionBarProps {
   selectedNodeId: string | null
+  selectedNodeIsRoot?: boolean
   connectMode?: boolean
+  changeParentMode?: boolean
   onConnect?: () => void
-  onMove?: () => void
+  onMoveParent?: () => void
   onOpen?: () => void
   onArchive?: () => void
   onClose?: () => void
   onCancelConnect?: () => void
+  onCancelChangeParent?: () => void
 }
 
 export default function MindNodeActionBar({
   selectedNodeId,
+  selectedNodeIsRoot = false,
   connectMode = false,
+  changeParentMode = false,
   onConnect,
-  onMove: _onMove,
+  onMoveParent,
   onOpen,
-  onArchive: _onArchive,
+  onArchive,
   onClose,
   onCancelConnect,
+  onCancelChangeParent,
 }: MindNodeActionBarProps) {
   if (!selectedNodeId) return null
 
@@ -53,6 +59,33 @@ export default function MindNodeActionBar({
     )
   }
 
+  if (changeParentMode) {
+    return (
+      <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 rounded-2xl shadow-2xl z-30 animate-in slide-in-from-bottom-4 duration-300 pointer-events-auto"
+        style={{
+          background: 'rgba(15,15,20,0.95)',
+          backdropFilter: 'blur(20px)',
+          border: '1px solid rgba(200,160,240,0.3)',
+          boxShadow: '0 20px 50px -12px rgba(0,0,0,0.7), 0 0 20px rgba(200,160,240,0.15)'
+        }}
+      >
+        <div className="flex items-center gap-3 px-5 h-11">
+          <ArrowRightLeft size={16} className="text-[#c8a0f0] animate-pulse" />
+          <span className="text-[13px] font-bold text-[#c8a0f0]">选择新的父节点</span>
+          <span className="text-[10px] text-[#8d989f]">点击目标节点完成迁移</span>
+        </div>
+        <div className="w-px h-6 bg-white/10 mx-1" />
+        <button
+          onClick={onCancelChangeParent}
+          className="flex items-center gap-2 px-4 h-11 rounded-xl bg-white/5 hover:bg-white/10 text-[#8d989f] hover:text-white font-medium text-[12px] transition-all border border-white/5"
+        >
+          <CornerDownLeft size={14} />
+          取消
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 rounded-2xl shadow-2xl z-30 animate-in slide-in-from-bottom-4 duration-300 pointer-events-auto"
       style={{
@@ -74,12 +107,11 @@ export default function MindNodeActionBar({
 
       <div className="flex items-center gap-1">
         <button
-          disabled
-          title="暂不支持移动到聚类"
-          className="flex items-center gap-2 px-4 h-11 rounded-xl bg-white/[0.02] text-[#4a5568] font-medium text-[12px] transition-all border border-white/[0.03] cursor-not-allowed"
+          onClick={onMoveParent}
+          className="flex items-center gap-2 px-4 h-11 rounded-xl bg-white/5 hover:bg-white/10 text-[#c8a0f0] hover:text-[#d4b4f8] font-medium text-[12px] transition-all border border-white/5 hover:border-[#c8a0f0]/20"
         >
-          <ArrowRight size={14} className="text-[#4a5568]" />
-          Move to Cluster
+          <ArrowRightLeft size={14} />
+          Move Parent
         </button>
 
         <button
@@ -91,12 +123,17 @@ export default function MindNodeActionBar({
         </button>
 
         <button
-          disabled
-          title="暂不支持归档节点"
-          className="flex items-center gap-2 px-4 h-11 rounded-xl bg-white/[0.02] text-[#4a5568] font-medium text-[12px] transition-all border border-white/[0.03] cursor-not-allowed"
+          onClick={onArchive}
+          disabled={selectedNodeIsRoot}
+          title={selectedNodeIsRoot ? '根节点不可隐藏' : '从图谱隐藏此节点'}
+          className={`flex items-center gap-2 px-4 h-11 rounded-xl font-medium text-[12px] transition-all border ${
+            selectedNodeIsRoot
+              ? 'bg-white/[0.02] text-[#4a5568] border-white/[0.03] cursor-not-allowed'
+              : 'bg-white/5 hover:bg-white/10 text-[#8d989f] hover:text-white border-white/5'
+          }`}
         >
-          <Archive size={14} className="text-[#4a5568]" />
-          Archive
+          <EyeOff size={14} className={selectedNodeIsRoot ? 'text-[#4a5568]' : ''} />
+          隐藏
         </button>
       </div>
 

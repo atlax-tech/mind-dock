@@ -7,7 +7,9 @@ export function buildSimpleMindGraphSnapshot(
 ): MindGraphSnapshot {
   const filteredNodes = nodes.filter(n => {
     const src = (n.metadata as Record<string, unknown> | null)?.sourceType
-    return src !== 'draft'
+    if (src === 'draft') return false
+    if (n.state === 'archived') return false
+    return true
   })
 
   const snapshotNodes: MindGraphSnapshotNode[] = filteredNodes.map(n => ({

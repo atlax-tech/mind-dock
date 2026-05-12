@@ -51,6 +51,12 @@ Thumbs.db
 *.temp
 node_modules
 
+# Dev seed routes (local-only, never push to remote)
+apps/web/app/seed-mind/
+apps/web/app/seed/
+apps/web/.local/
+.local/
+
 # Design reference (do not push)
 docs/product/Front_Design_by_Gemini(do-not-push-on-git)/
 docs/design_refs/

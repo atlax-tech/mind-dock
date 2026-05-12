@@ -8,30 +8,13 @@ function readSource(relativePath: string): string {
   return fs.readFileSync(path.resolve(WORKSPACE_DIR, relativePath), 'utf-8')
 }
 
-describe('FE-001: GoldenTopNav — Plus / Capture button removed', () => {
-  const src = readSource('_components/GoldenTopNav.tsx')
+function fileExists(relativePath: string): boolean {
+  return fs.existsSync(path.resolve(WORKSPACE_DIR, relativePath))
+}
 
-  it('does NOT declare onOpenRecorder prop', () => {
-    // The interface GoldenTopNavProps must not include onOpenRecorder
-    expect(src).not.toMatch(/\bonOpenRecorder\b/)
-  })
-
-  it('does NOT render any button with capture-related title', () => {
-    // No <button title="Capture"> or similar should exist
-    expect(src).not.toMatch(/title\s*=\s*\{\s*["']Capture["']/)
-  })
-
-  it('does NOT import Plus from lucide-react', () => {
-    // The word "Plus" must not appear in the whole file after removal
-    expect(src).not.toMatch(/\bPlus\b/)
-  })
-
-  it('lucide-react import contains only allowed icons', () => {
-    const afterImport = src.split("from 'lucide-react'")[0]
-    expect(afterImport).toContain('Home')
-    expect(afterImport).toContain('Library')
-    expect(afterImport).toContain('Network')
-    expect(afterImport).not.toContain('Plus')
+describe('FE-001: GoldenTopNav — removed as orphan code (MIND-REAL-006)', () => {
+  it('GoldenTopNav.tsx no longer exists in _components', () => {
+    expect(fileExists('_components/GoldenTopNav.tsx')).toBe(false)
   })
 })
 
@@ -55,7 +38,6 @@ describe('FE-001: page.tsx — FloatingRecorder / Classic-Chat removed', () => {
   })
 
   it('does NOT render Classic / Chat tab buttons', () => {
-    // No Classic or Chat tab labels in the old capture panel
     expect(src).not.toMatch(/>Classic</)
     expect(src).not.toMatch(/>Chat</)
   })
@@ -84,8 +66,6 @@ describe('FE-001: page.tsx — FloatingRecorder / Classic-Chat removed', () => {
   })
 
   it('onOpenRecorder fully removed (old DockFinderView replaced by DockView console)', () => {
-    // In the new design, DockFinderView no longer exists.
-    // The new DockView is a knowledge console that doesn't use onOpenRecorder.
     const matches = src.match(/onOpenRecorder/g)
     expect(matches).toBeNull()
   })

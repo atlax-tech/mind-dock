@@ -20,8 +20,12 @@ interface MindCanvasStageProps {
   onNodeDragEnd?: (nodeId: string, x: number, y: number) => void
   onDeleteEdge?: (edgeId: string) => void
   onCreateEdge?: (sourceNodeId: string, targetNodeId: string) => Promise<{ success: boolean; error?: string }>
+  onArchiveNode?: (nodeId: string) => Promise<{ success: boolean; error?: string }>
+  onRestoreNode?: (nodeId: string) => Promise<{ success: boolean; error?: string }>
+  onChangeParent?: (childNodeId: string, newParentNodeId: string) => Promise<{ success: boolean; error?: string }>
   onSuggest?: () => void
   activeModule?: string
+  hiddenNodes?: { id: string; label: string; nodeType: string }[]
 }
 
 export default function MindCanvasStage({
@@ -36,8 +40,12 @@ export default function MindCanvasStage({
   onNodeDragEnd,
   onDeleteEdge,
   onCreateEdge,
+  onArchiveNode,
+  onRestoreNode,
+  onChangeParent,
   onSuggest,
   activeModule,
+  hiddenNodes,
 }: MindCanvasStageProps) {
   if (loading) {
     return (
@@ -79,8 +87,12 @@ export default function MindCanvasStage({
         onNodeDragEnd={onNodeDragEnd}
         onDeleteEdge={onDeleteEdge}
         onCreateEdge={onCreateEdge}
+        onArchiveNode={onArchiveNode}
+        onRestoreNode={onRestoreNode}
+        onChangeParent={onChangeParent}
         onSuggest={onSuggest}
         activeModule={activeModule}
+        hiddenNodes={hiddenNodes}
       />
     )
   }

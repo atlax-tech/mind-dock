@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint app lib --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "seed:mount": "bash scripts/seed-mount.sh",
+    "seed:unmount": "bash scripts/seed-unmount.sh"
   },
   "dependencies": {
     "@atlax/domain": "workspace:*",

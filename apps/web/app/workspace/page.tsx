@@ -74,6 +74,8 @@ import {
   Timer,
   LayoutGrid,
   Lock,
+  EyeOff,
+  RotateCcw,
 } from 'lucide-react';
 
 // ==========================================
@@ -501,9 +503,10 @@ function InboxSection({ title, color, count, items, defaultOpen = true }: {
 }
 
 const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId: string; onToast: (msg: string) => void, onSelectionChange: (selected: boolean) => void, onOpenEditor?: (documentId: number, sourceType: 'draft' | 'document') => void }) => {
-  const { nodes: mindNodes, edges: mindEdges, loading, onNodeDragEnd, onDeleteEdge, onCreateEdge, refresh: refreshMindGraph } = useMindGraph(userId);
+  const { nodes: mindNodes, edges: mindEdges, loading, onNodeDragEnd, onDeleteEdge, onCreateEdge, onArchiveNode, onRestoreNode, onChangeParent, hiddenNodes, refresh: refreshMindGraph } = useMindGraph(userId);
   const interaction = useMindGraphInteraction();
   const { state: ixState, actions: ixActions } = interaction;
+  const [showHiddenNodesPanel, setShowHiddenNodesPanel] = useState(false);
 
   useEffect(() => {
     onSelectionChange(!!ixState.selectedNodeId);
@@ -695,6 +698,65 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
                 </div>
               );
             })}
+
+            <div
+              onClick={() => setShowHiddenNodesPanel(prev => !prev)}
+              className={`flex items-center justify-between px-3 h-9 rounded-lg cursor-pointer transition-all ${
+                showHiddenNodesPanel ? 'bg-[#8d989f]/10 text-[#8d989f] border border-[#8d989f]/20' : 'text-[#8d989f] hover:bg-white/5 border border-transparent'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <EyeOff size={14} />
+                <span className="text-[12px] font-medium">隐藏节点</span>
+              </div>
+              <span className="text-[10px] font-bold opacity-60">{hiddenNodes?.length ?? 0}</span>
+            </div>
+
+            {showHiddenNodesPanel && hiddenNodes && hiddenNodes.length > 0 && (
+              <div className="mt-1 space-y-0.5 max-h-[240px] overflow-y-auto custom-scrollbar rounded-lg bg-white/[0.02] border border-white/[0.05] p-1.5">
+                {hiddenNodes.map(node => {
+                  const hiddenAt = (node.metadata as Record<string, unknown> | null)?.hiddenAt as string | undefined
+                  const isRecent = hiddenAt ? (Date.now() - new Date(hiddenAt).getTime()) < 24 * 60 * 60 * 1000 : false
+                  return (
+                    <div key={node.id} className={`flex flex-col gap-1 px-2.5 py-2 rounded-lg transition-colors ${isRecent ? 'bg-[#86d7ff]/5' : ''}`}>
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] text-[#e0e3e6] truncate">{node.label}</span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onRestoreNode?.(node.id).then((result) => {
+                              if (result.success) onToast('节点已恢复到图谱')
+                              else onToast(result.error || '恢复失败')
+                            })
+                          }}
+                          className="flex items-center gap-1 px-2 py-1 rounded-md bg-[#86d7ff]/10 hover:bg-[#86d7ff]/20 text-[#86d7ff] transition-colors"
+                        >
+                          <RotateCcw size={10} />
+                          <span className="text-[9px] font-bold">恢复</span>
+                        </button>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className={`text-[9px] ${isRecent ? 'text-[#c8a0f0]' : 'text-[#4a5568]'}`}>
+                          {node.nodeType}
+                        </span>
+                        {hiddenAt && (
+                          <span className="text-[8px] text-[#4a5568]">
+                            {new Date(hiddenAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {showHiddenNodesPanel && (!hiddenNodes || hiddenNodes.length === 0) && (
+              <div className="mt-1 px-3 py-4 text-center">
+                <EyeOff size={16} className="mx-auto mb-2 text-[#4a5568]" />
+                <span className="text-[11px] text-[#4a5568]">暂无隐藏节点</span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -769,6 +831,10 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
           onNodeDragEnd={onNodeDragEnd}
           onDeleteEdge={onDeleteEdge}
           onCreateEdge={onCreateEdge}
+          onArchiveNode={onArchiveNode}
+          onRestoreNode={onRestoreNode}
+          onChangeParent={onChangeParent}
+          hiddenNodes={hiddenNodes?.map(n => ({ id: n.id, label: n.label, nodeType: n.nodeType, hiddenAt: (n.metadata as Record<string, unknown> | null)?.hiddenAt as string | undefined }))}
           onSuggest={handleSuggest}
           activeModule="mind"
         />
