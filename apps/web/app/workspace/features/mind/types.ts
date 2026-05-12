@@ -14,6 +14,8 @@ export interface MindGraphSnapshotNode {
   positionX: number | null
   positionY: number | null
   metadata: Record<string, unknown> | null
+  createdAt: number | null
+  updatedAt: number | null
 }
 
 export interface MindGraphSnapshotEdge {

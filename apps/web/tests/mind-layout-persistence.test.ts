@@ -193,7 +193,7 @@ describe('MIND-REAL-003: Root/Parent Baseline Connection', () => {
         confidence: 0.5,
         reason: 'baseline-auto-connect',
       })
-      baselineEdges.push(edge)
+      if (edge) baselineEdges.push(edge)
     }
 
     expect(baselineEdges).toHaveLength(1)
@@ -243,7 +243,7 @@ describe('MIND-REAL-003: Root/Parent Baseline Connection', () => {
     expect(rootNode).toBeFalsy()
   })
 
-  it('baseline-auto-connect edge is recreated after deletion on next ensure cycle', async () => {
+  it('baseline-auto-connect edge is protected from deletion', async () => {
     const rootNode = await upsertMindNode({ userId: USER, nodeType: 'root', label: 'Root' })
     const doc = await upsertMindNode({ userId: USER, nodeType: 'document', label: 'Doc1', documentId: 1 })
 
@@ -257,21 +257,17 @@ describe('MIND-REAL-003: Root/Parent Baseline Connection', () => {
       confidence: 0.5,
       reason: 'baseline-auto-connect',
     })
+    expect(baselineEdge).not.toBeNull()
+    if (!baselineEdge) return
 
     const edgesBeforeDelete = await listMindEdges(USER)
     expect(edgesBeforeDelete).toHaveLength(1)
 
-    await deleteMindEdge(USER, baselineEdge.id)
+    const deleted = await deleteMindEdge(USER, baselineEdge.id)
+    expect(deleted).toBe(false)
 
     const edgesAfterDelete = await listMindEdges(USER)
-    expect(edgesAfterDelete).toHaveLength(0)
-
-    const nodes = await listMindNodes(USER)
-    const edges = await listMindEdges(USER)
-    const structuralTargets = new Set<string>()
-    edges.forEach(e => { if (e.edgeType === 'parent_child') structuralTargets.add(e.targetNodeId) })
-    const orphans = nodes.filter(n => n.nodeType === 'document' && !structuralTargets.has(n.id))
-    expect(orphans).toHaveLength(1)
+    expect(edgesAfterDelete).toHaveLength(1)
   })
 
   it('snapshot preserves reason field for baseline-auto-connect edges', async () => {
@@ -321,6 +317,8 @@ describe('MIND-REAL-003: Root/Parent Baseline Connection', () => {
       strength: 0.8,
       source: 'user',
     })
+    expect(semanticEdge).not.toBeNull()
+    if (!semanticEdge) return
 
     await deleteMindEdge(USER, semanticEdge.id)
 

@@ -20,6 +20,7 @@ interface MindCanvasStageProps {
   onNodeDragEnd?: (nodeId: string, x: number, y: number) => void
   onDeleteEdge?: (edgeId: string) => void
   onCreateEdge?: (sourceNodeId: string, targetNodeId: string) => Promise<{ success: boolean; error?: string }>
+  onSuggest?: () => void
   activeModule?: string
 }
 
@@ -35,6 +36,7 @@ export default function MindCanvasStage({
   onNodeDragEnd,
   onDeleteEdge,
   onCreateEdge,
+  onSuggest,
   activeModule,
 }: MindCanvasStageProps) {
   if (loading) {
@@ -77,6 +79,7 @@ export default function MindCanvasStage({
         onNodeDragEnd={onNodeDragEnd}
         onDeleteEdge={onDeleteEdge}
         onCreateEdge={onCreateEdge}
+        onSuggest={onSuggest}
         activeModule={activeModule}
       />
     )

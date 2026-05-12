@@ -2,6 +2,9 @@
 
 import { useState, useCallback, useMemo } from 'react'
 
+export type TimeField = 'createdAt' | 'updatedAt'
+export type TimeQuickPreset = 'day' | 'week' | 'month' | 'year' | 'custom'
+
 export interface MindFilterState {
   search: string
   nodeTypes: Set<string>
@@ -14,6 +17,11 @@ export interface MindFilterState {
   showOrphans: boolean
   minConfidence: number
   minStrength: number
+  timeField: TimeField | null
+  timeRangeStart: number | null
+  timeRangeEnd: number | null
+  timeQuickPreset: TimeQuickPreset | null
+  timeAnchorDate: string | null
 }
 
 export const DEFAULT_FILTER_STATE: MindFilterState = {
@@ -28,7 +36,14 @@ export const DEFAULT_FILTER_STATE: MindFilterState = {
   showOrphans: true,
   minConfidence: 0,
   minStrength: 0,
+  timeField: null,
+  timeRangeStart: null,
+  timeRangeEnd: null,
+  timeQuickPreset: null,
+  timeAnchorDate: null,
 }
+
+export type MindScopeType = 'global' | 'domain' | 'project' | 'collection' | 'tag' | 'focusedNode'
 
 export interface MindInteractionState {
   hoveredNodeId: string | null
@@ -41,7 +56,8 @@ export interface MindInteractionState {
   layoutMaxIterations: number
   relayoutCounter: number
   layoutMode: 'force' | 'radial' | 'orbit'
-  scope: 'global' | 'currentChain'
+  scope: MindScopeType
+  scopeTargetId: string | null
   chainRootId: string | null
   viewScope: 'focusMap' | 'clusterMap' | 'linkReview' | 'driftInbox' | 'timelineSnapshot'
   connectMode: boolean
@@ -59,7 +75,8 @@ export interface MindInteractionActions {
   setLayoutProgress: (phase: MindInteractionState['layoutPhase'], iterations: number, maxIterations: number) => void
   triggerRelayout: () => void
   setLayoutMode: (mode: 'force' | 'radial' | 'orbit') => void
-  setScope: (scope: 'global' | 'currentChain') => void
+  setScope: (scope: MindScopeType) => void
+  setScopeTarget: (id: string | null) => void
   setChainRoot: (nodeId: string | null) => void
   setViewScope: (viewScope: MindInteractionState['viewScope']) => void
   enterConnectMode: (sourceId: string) => void
@@ -85,7 +102,8 @@ export function useMindGraphInteraction(): {
   const [layoutMaxIterations, setLayoutMaxIterations] = useState(0)
   const [relayoutCounter, setRelayoutCounter] = useState(0)
   const [layoutMode, setLayoutMode] = useState<'force' | 'radial' | 'orbit'>('force')
-  const [scope, setScope] = useState<'global' | 'currentChain'>('global')
+  const [scope, setScope] = useState<MindScopeType>('global')
+  const [scopeTargetId, setScopeTarget] = useState<string | null>(null)
   const [chainRootId, setChainRoot] = useState<string | null>(null)
   const [viewScope, setViewScope] = useState<MindInteractionState['viewScope']>('focusMap')
   const [connectMode, setConnectMode] = useState(false)
@@ -115,6 +133,11 @@ export function useMindGraphInteraction(): {
       if (patch.showOrphans !== undefined) next.showOrphans = patch.showOrphans
       if (patch.minConfidence !== undefined) next.minConfidence = patch.minConfidence
       if (patch.minStrength !== undefined) next.minStrength = patch.minStrength
+      if (patch.timeField !== undefined) next.timeField = patch.timeField
+      if (patch.timeRangeStart !== undefined) next.timeRangeStart = patch.timeRangeStart
+      if (patch.timeRangeEnd !== undefined) next.timeRangeEnd = patch.timeRangeEnd
+      if (patch.timeQuickPreset !== undefined) next.timeQuickPreset = patch.timeQuickPreset
+      if (patch.timeAnchorDate !== undefined) next.timeAnchorDate = patch.timeAnchorDate
       return next
     })
   }, [])
@@ -123,6 +146,11 @@ export function useMindGraphInteraction(): {
     const fs = { ...DEFAULT_FILTER_STATE }
     fs.nodeTypes = new Set(DEFAULT_FILTER_STATE.nodeTypes)
     fs.edgeTypes = new Set(DEFAULT_FILTER_STATE.edgeTypes)
+    fs.timeField = null
+    fs.timeRangeStart = null
+    fs.timeRangeEnd = null
+    fs.timeQuickPreset = null
+    fs.timeAnchorDate = null
     setFilterState(fs)
   }, [])
 
@@ -162,11 +190,12 @@ export function useMindGraphInteraction(): {
     relayoutCounter,
     layoutMode,
     scope,
+    scopeTargetId,
     chainRootId,
     viewScope,
     connectMode,
     connectSourceId,
-  }), [hoveredNodeId, focusedNodeId, selectedNodeId, filterState, filterOpen, layoutPhase, layoutIterations, layoutMaxIterations, relayoutCounter, layoutMode, scope, chainRootId, viewScope, connectMode, connectSourceId])
+  }), [hoveredNodeId, focusedNodeId, selectedNodeId, filterState, filterOpen, layoutPhase, layoutIterations, layoutMaxIterations, relayoutCounter, layoutMode, scope, scopeTargetId, chainRootId, viewScope, connectMode, connectSourceId])
 
   const actions: MindInteractionActions = useMemo(() => ({
     setHoveredNode,
@@ -180,6 +209,7 @@ export function useMindGraphInteraction(): {
     triggerRelayout,
     setLayoutMode: handleSetLayoutMode,
     setScope,
+    setScopeTarget,
     setChainRoot,
     setViewScope,
     enterConnectMode,

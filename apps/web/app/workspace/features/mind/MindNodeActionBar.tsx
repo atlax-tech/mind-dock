@@ -18,9 +18,9 @@ export default function MindNodeActionBar({
   selectedNodeId,
   connectMode = false,
   onConnect,
-  onMove,
+  onMove: _onMove,
   onOpen,
-  onArchive,
+  onArchive: _onArchive,
   onClose,
   onCancelConnect,
 }: MindNodeActionBarProps) {
@@ -74,10 +74,11 @@ export default function MindNodeActionBar({
 
       <div className="flex items-center gap-1">
         <button
-          onClick={onMove}
-          className="flex items-center gap-2 px-4 h-11 rounded-xl bg-white/5 hover:bg-white/10 text-white font-medium text-[12px] transition-all border border-white/5"
+          disabled
+          title="暂不支持移动到聚类"
+          className="flex items-center gap-2 px-4 h-11 rounded-xl bg-white/[0.02] text-[#4a5568] font-medium text-[12px] transition-all border border-white/[0.03] cursor-not-allowed"
         >
-          <ArrowRight size={14} className="text-[#c8a0f0]" />
+          <ArrowRight size={14} className="text-[#4a5568]" />
           Move to Cluster
         </button>
 
@@ -90,10 +91,11 @@ export default function MindNodeActionBar({
         </button>
 
         <button
-          onClick={onArchive}
-          className="flex items-center gap-2 px-4 h-11 rounded-xl bg-white/5 hover:bg-white/10 text-white font-medium text-[12px] transition-all border border-white/5"
+          disabled
+          title="暂不支持归档节点"
+          className="flex items-center gap-2 px-4 h-11 rounded-xl bg-white/[0.02] text-[#4a5568] font-medium text-[12px] transition-all border border-white/[0.03] cursor-not-allowed"
         >
-          <Archive size={14} className="text-[#8d989f]" />
+          <Archive size={14} className="text-[#4a5568]" />
           Archive
         </button>
       </div>

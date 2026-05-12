@@ -2,37 +2,28 @@
 
 import React from 'react'
 import { Timer, LayoutGrid, Network, Sparkles, AlertCircle, Maximize2 } from 'lucide-react'
-import type { MindGraphSnapshot } from './types'
-import type { MindInteractionState } from './useMindGraphInteraction'
+
+interface FilteredCounts {
+  nodeCount: number
+  edgeCount: number
+  suggestionCount: number
+  isolatedCount: number
+}
 
 interface MindScopeCapsuleProps {
-  snapshot: MindGraphSnapshot
-  viewScope: MindInteractionState['viewScope']
+  filteredCounts: FilteredCounts
+  viewScope: 'focusMap' | 'clusterMap' | 'linkReview' | 'driftInbox' | 'timelineSnapshot'
   onCenter?: () => void
+  onSuggest?: () => void
 }
 
 export default function MindScopeCapsule({
-  snapshot,
+  filteredCounts,
   viewScope,
   onCenter,
+  onSuggest,
 }: MindScopeCapsuleProps) {
   const [isExpanded, setIsExpanded] = React.useState(true)
-  
-  const nodeCount = snapshot.nodes.length
-  const edgeCount = snapshot.edges.length
-  const suggestionCount = snapshot.edges.filter(e => e.edgeType === 'suggested').length
-  const isolatedCount = snapshot.nodes.filter(n => !snapshot.edges.some(e => e.sourceNodeId === n.id || e.targetNodeId === n.id)).length
-
-  const getScopeLabel = () => {
-    switch (viewScope) {
-      case 'focusMap': return 'Focus Map'
-      case 'clusterMap': return 'Cluster Map'
-      case 'linkReview': return 'Link Review'
-      case 'driftInbox': return 'Drift Inbox'
-      case 'timelineSnapshot': return 'Timeline Snapshot'
-      default: return 'Active View'
-    }
-  }
 
   const getScopeIcon = () => {
     switch (viewScope) {
@@ -44,70 +35,73 @@ export default function MindScopeCapsule({
     }
   }
 
+  if (!isExpanded) {
+    return (
+      <button
+        onClick={() => setIsExpanded(true)}
+        className="absolute left-3 top-1/2 -translate-y-1/2 w-12 h-12 flex items-center justify-center rounded-2xl z-10 pointer-events-auto select-none hover:bg-white/[0.06] active:scale-95"
+        style={{
+          background: 'rgba(15,18,20,0.85)',
+          backdropFilter: 'blur(20px)',
+          border: '1px solid rgba(255,255,255,0.08)',
+          boxShadow: '0 20px 40px -10px rgba(0,0,0,0.6)',
+        }}
+      >
+        {getScopeIcon()}
+      </button>
+    )
+  }
+
   return (
-    <div className={`absolute top-6 left-6 flex items-center transition-all duration-300 ease-out z-20 pointer-events-auto select-none overflow-hidden ${isExpanded ? 'p-1 rounded-full' : 'p-0 rounded-2xl'}`}
-      style={{ 
-        background: 'rgba(15,18,20,0.85)', 
-        backdropFilter: 'blur(20px)', 
+    <div
+      className="absolute left-3 top-1/2 -translate-y-1/2 flex flex-col items-center z-10 pointer-events-auto select-none rounded-2xl py-2 px-1.5 gap-2 animate-in fade-in slide-in-from-left-3 duration-700 ease-out"
+      style={{
+        background: 'rgba(15,18,20,0.85)',
+        backdropFilter: 'blur(20px)',
         border: '1px solid rgba(255,255,255,0.08)',
         boxShadow: '0 20px 40px -10px rgba(0,0,0,0.6)',
-        width: isExpanded ? 'auto' : '48px',
-        height: isExpanded ? '44px' : '48px'
+        width: '56px',
       }}
     >
-      {/* Toggle Button / Main Icon */}
-      <button 
-        onClick={() => setIsExpanded(!isExpanded)}
-        className={`flex items-center justify-center shrink-0 transition-all duration-300 ${isExpanded ? 'w-10 h-10 rounded-full bg-white/5 border border-white/5 ml-0.5' : 'w-12 h-12 rounded-2xl hover:bg-white/5'}`}
+      <button
+        onClick={() => setIsExpanded(false)}
+        className="w-10 h-10 flex items-center justify-center rounded-full bg-white/5 border border-white/5 shrink-0 hover:bg-white/10 active:scale-95 transition-colors"
       >
         {getScopeIcon()}
       </button>
 
-      {/* Expanded Content */}
-      {isExpanded && (
-        <div className="flex items-center animate-in fade-in slide-in-from-left-2 duration-300">
-          <div className="flex flex-col ml-3 mr-4">
-            <span className="text-[8px] font-bold text-[#8d989f] uppercase tracking-[0.2em] leading-none mb-0.5">Scope</span>
-            <span className="text-[12px] font-bold text-white leading-none whitespace-nowrap">{getScopeLabel()}</span>
+      <div className="w-8 h-px bg-white/10" />
+
+      <div className="flex flex-col items-center gap-1">
+        {[
+          { label: 'N', value: filteredCounts.nodeCount, title: '节点' },
+          { label: 'L', value: filteredCounts.edgeCount, title: '链接' },
+          { label: 'S', value: filteredCounts.suggestionCount, color: '#c8a0f0', title: '建议' },
+          { label: 'I', value: filteredCounts.isolatedCount, color: '#ff9c9c', title: '孤立' },
+        ].map(stat => (
+          <div key={stat.title} className="flex items-center gap-1" title={stat.title}>
+            <span className="text-[9px] font-bold text-[#4a5568]">{stat.label}</span>
+            <span className="text-[11px] font-bold" style={{ color: stat.color || 'white' }}>{stat.value}</span>
           </div>
+        ))}
+      </div>
 
-          <div className="h-6 w-px bg-white/10 mx-1"></div>
+      <div className="w-8 h-px bg-white/10" />
 
-          {/* Stats */}
-          <div className="flex items-center gap-1.5 mx-3">
-            {[
-              { label: 'N', value: nodeCount, title: 'Nodes' },
-              { label: 'L', value: edgeCount, title: 'Links' },
-              { label: 'S', value: suggestionCount, color: '#c8a0f0', title: 'Suggestions' },
-              { label: 'I', value: isolatedCount, color: '#ff9c9c', title: 'Isolated' },
-            ].map(stat => (
-              <div key={stat.title} className="flex items-center gap-1.5" title={stat.title}>
-                <span className="text-[9px] font-bold text-[#4a5568]">{stat.label}</span>
-                <span className="text-[11px] font-bold" style={{ color: stat.color || 'white' }}>{stat.value}</span>
-              </div>
-            ))}
-          </div>
+      <button
+        onClick={(e) => { e.stopPropagation(); onCenter?.() }}
+        className="w-full h-7 flex items-center justify-center gap-1 rounded-lg bg-white/5 hover:bg-white/10 text-[9px] font-bold text-[#8d989f] hover:text-white transition-colors border border-white/5 active:scale-95"
+      >
+        <Maximize2 size={10} />
+        Fit
+      </button>
 
-          <div className="h-6 w-px bg-white/10 mx-1"></div>
-
-          {/* Actions */}
-          <div className="flex items-center gap-1 ml-2 mr-1">
-            <button 
-              onClick={(e) => { e.stopPropagation(); onCenter?.() }}
-              className="h-8 px-3 flex items-center gap-1.5 rounded-full bg-white/5 hover:bg-white/10 text-[10px] font-bold text-[#8d989f] hover:text-white transition-all border border-white/5"
-            >
-              <Maximize2 size={12} />
-              Fit
-            </button>
-            <button 
-              onClick={(e) => e.stopPropagation()}
-              className="h-8 px-3 flex items-center gap-1.5 rounded-full bg-[#86d7ff]/10 hover:bg-[#86d7ff]/20 text-[10px] font-bold text-[#86d7ff] transition-all border border-[#86d7ff]/20 shadow-[0_0_15px_rgba(134,215,255,0.1)]"
-            >
-              Suggest
-            </button>
-          </div>
-        </div>
-      )}
+      <button
+        onClick={(e) => { e.stopPropagation(); onSuggest?.() }}
+        className="w-full h-7 flex items-center justify-center gap-1 rounded-lg bg-[#86d7ff]/10 hover:bg-[#86d7ff]/20 text-[9px] font-bold text-[#86d7ff] transition-colors border border-[#86d7ff]/20 active:scale-95"
+      >
+        推荐
+      </button>
     </div>
   )
 }

@@ -9,6 +9,269 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：MIND-REAL-005 Round 6 (Filter 时间戳/时间范围筛选) -->
+<!-- ============================================ -->
+
+## MIND-REAL-005+Round 6 devlog -- Filter 时间戳/时间范围筛选 + Review 修复
+
+**时间戳**: 2026-05-13
+
+**任务起止时间**: 2026-05-13 03:35 - 2026-05-13 04:15 CST
+
+**工时**: 40 分钟
+
+**任务目标**:
+
+Mind Filter 增加"时间戳/时间范围筛选"功能：支持 createdAt/updatedAt 互斥选择、快速预设（日/周/月/年）、自定义范围、原生 date input MVP。Review 后修复：快速选择不生效、自定义日期时区问题、胶囊 S/I 指标仍显示全量 snapshot。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/app/workspace/features/mind/useMindGraphInteraction.ts` | +15 | 新增 `TimeField`/`TimeQuickPreset` 类型；`MindFilterState` 增加 `timeField`/`timeRangeStart`/`timeRangeEnd`/`timeQuickPreset`/`timeAnchorDate` 5 个字段；`DEFAULT_FILTER_STATE` 增加默认值；`updateFilter` 处理时间字段；`resetFilters` 清空时间字段 |
+| `apps/web/app/workspace/features/mind/useMindCanvasRenderer.ts` | +25 / -2 | `CanvasRenderNode` 增加 `createdAt`；`buildRenderNodes` 从 snapshot node 拷贝；`applyFilterState` 增加时间过滤逻辑并导出；新增 `filteredStats` 返回 `suggestionCount`/`isolatedCount` |
+| `apps/web/app/workspace/features/mind/MindFilterPanel.tsx` | +180 | 导入 `Clock`/`TimeField`/`TimeQuickPreset`；新增 `parseLocalDateStart`/`parseLocalDateEnd` 本地时间解析 helper；新增 `computePresetRange` 函数（日/周/月/年/自定义）；新增"时间筛选"UI 模块；选择时间字段默认 day preset；自定义范围使用本地时间解析 |
+| `apps/web/app/workspace/features/mind/MindGraphView.tsx` | +4 / -7 | `filteredCounts` 的 `suggestionCount`/`isolatedCount` 改为从 renderer 过滤后数据计算，不再使用全量 snapshot |
+| `apps/web/tests/mind-time-filter.test.ts` | +370 | 新增测试文件：`applyFilterState` 时间过滤 8 条 + `computePresetRange` 预设计算 7 条 + 默认 day preset 5 条 + 本地时间解析 3 条 + S/I 指标过滤后 2 条 |
+| `docs/engineering/dev_log/Phase3/phase3-devlog-frontend.md` | +1 | Round 6 dev log |
+
+**遇到的问题以及解决方式**:
+
+| # | 问题 | 解决方式 |
+|---|------|----------|
+| 1 | `applyFilterState` 中 `filteredNodes` 声明为 `const`，无法在时间过滤阶段重新赋值 | 改为 `let filteredNodes`，在类型/搜索过滤后追加时间过滤逻辑 |
+| 2 | `CanvasRenderNode` 缺少 `createdAt` 字段，时间过滤只能用 `updatedAt` | `CanvasRenderNode` 增加 `createdAt` 字段，`buildRenderNodes` 从 snapshot node 拷贝 |
+| 3 | `MindFilterPanel.tsx` 中 `computePresetRange` 调用使用 `filterState.timeField!` 非空断言，lint 报错 `no-non-null-assertion` | 在调用前增加 `filterState.timeField` 的 null guard 条件判断 |
+| 4 | 测试文件导入 `computePresetRange` 从 `useMindGraphInteraction` 而非 `MindFilterPanel`，typecheck 报错 | 修正导入路径：`computePresetRange` 从 `MindFilterPanel.tsx` 导入 |
+| 5 | 测试文件导入未使用的 `TimeField`/`TimeQuickPreset` 类型，lint 报 `no-unused-vars` | 移除未使用的类型导入 |
+| 6 | 选择"创建时间/更新时间"后 timeQuickPreset 为 null，选日期只写 timeAnchorDate 不写 timeRangeStart/End，画布不过滤 | 选择时间字段时默认设置 `timeQuickPreset = 'day'`；日期输入 onChange 在 timeQuickPreset 为 null 时也按 day 计算范围 |
+| 7 | 自定义开始日期 `new Date(dateStr).getTime()` 按 UTC 解析，Asia/Shanghai 下漏掉开始日凌晨数据 | 新增 `parseLocalDateStart`/`parseLocalDateEnd` helper，使用 `new Date(y, m-1, d, ...)` 本地解析；快速 preset 和自定义范围共用同一套本地时间解析 |
+| 8 | 胶囊 S/I 指标从全量 snapshot 计算，时间过滤后 S/I 不变 | renderer 新增 `filteredStats` 返回过滤后的 `suggestionCount`/`isolatedCount`；`MindGraphView.tsx` 改为从 renderer 读取 |
+
+**自动验证结果**:
+
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm lint` | ✅ 通过 (0 errors, 6 warnings) |
+| `pnpm typecheck` | ✅ 通过 |
+| `pnpm test` | ✅ 745 tests passed |
+| `pnpm build:web` | ✅ 通过 |
+
+**手工验证步骤说明**:
+
+1. 打开 workspace 页面，确认 Mind 图谱正常渲染，无控制台报错
+2. 点击 Filter 抽屉按钮，确认"时间筛选"模块显示在"可见性"模块下方
+3. 点击"创建时间"按钮，确认"某一天"预设默认高亮，确认下方出现日期选择器
+4. 选择一个日期，确认图谱节点按创建时间过滤，只显示当天创建的节点
+5. 切换到"周"预设，确认范围扩展到锚点日期所在周一到周日
+6. 切换到"更新时间"，确认过滤字段切换但 preset 和 anchorDate 保留
+7. 切换到"自定义范围"，选择开始和结束日期，确认过滤使用本地全天范围（开始 00:00:00，结束 23:59:59）
+8. 确认胶囊 S/I 指标随时间过滤变化，不再显示全量 snapshot 数据
+9. 点击"不启用"，确认时间筛选关闭，所有节点恢复显示
+10. 点击重置按钮，确认时间筛选字段全部清空
+11. 确认 Filter 展开时底部操作栏和右下角 camera/zoom 不被遮挡
+
+**当前风险及影响范围**:
+
+| 风险 | 等级 | 影响范围 | 说明 |
+|------|------|----------|------|
+| 原生 date input 无日历视图 | 低 | Filter Panel | MVP 使用原生 `<input type="date">`，不同浏览器渲染不一致，后续可替换为自定义日历组件 |
+| Move to Cluster 无真实模型 | 高 | ActionBar | 当前 disabled，需后续实现 cluster move 模型后打通 |
+| Archive 无真实逻辑 | 高 | ActionBar | 当前 disabled，需后续实现 Mind node archive/state helper 后打通 |
+| renderer filteredStats 依赖 ref 值 | 低 | MindGraphView | `suggestionCount`/`isolatedCount` 依赖 `nodesRef.current`/`edgesRef.current`，在 filter 变更后需等待下一帧渲染才能更新 |
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-005 Round 4 (Review Findings 修复 + 收口) -->
+<!-- ============================================ -->
+
+## MIND-REAL-005 Round 4 devlog -- Review Findings 修复与收口：Recommendation 去重/闭环/批量审核 / Capsule 位置 / Filter 遮挡 / 汉化 / Collection Scope
+
+**时间戳**: 2026-05-13
+
+**任务起止时间**: 01:40 - 01:50 CST
+
+**工时**: 10 分钟
+
+**任务目标**:
+
+修复 MIND-REAL-005 review findings 和手测问题，使 MIND-REAL-005 进入收口。涵盖：Recommendation 去重与状态语义闭环、批量审核 MVP、Capsule 位置与遮挡、Filter 遮挡处理、Scope 视图汉化、Collection Scope 补齐。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/lib/repository.ts` | +38/-3 | `generateMindNodeRecommendations` 增加 existingRecs 去重（generated/shown/accepted/rejected 跳过，ignored 允许重新生成）；`applyRecommendation` mindNode→mindNode 增加 `findMindEdgeBetweenNodes` 检查已存在边，返回 `already_connected` 而非抛错；新增 `findMindEdgeBetweenNodes` 辅助函数 |
+| `apps/web/app/workspace/features/mind/MindRecommendationInspector.tsx` | +280/-242 | 批量审核 MVP：多选 checkbox + 全选 + 批量连接/稍后/拒绝操作栏；移除"修改"按钮（Edit3）；handleApply 处理 already_connected toast；topK 从 3 改为 5；移除硬编码 Summary 区和假标签；移除 Zap 未使用导入 |
+| `apps/web/app/workspace/features/mind/MindScopeCapsule.tsx` | +18/-30 | 位置从 `top-6 left-6` 改为 `left-4 top-1/2 -translate-y-1/2`（左侧垂直居中）；移除 Scope eyebrow 和视图标题文本；z-index 从 20 降为 10；N/L/S/I title 汉化 |
+| `apps/web/app/workspace/features/mind/MindGraphView.tsx` | +35/-20 | Filter 展开时隐藏 zoom controls 和 node action bar（`showActionBar`/`showZoomControls`）；Filter 展开时自动退出 connectMode；scopeOptions 增加 topicNodes → collection 映射；Scope label 汉化（全局/领域/项目/集合/标签/聚焦节点）；Filters 按钮文案汉化"筛选"；zoom controls title 汉化 |
+| `apps/web/app/workspace/features/mind/MindFilterPanel.tsx` | +45/-35 | scopeOptions 增加 topicNodes → collection 映射（FolderOpen 图标）；所有文案汉化（搜索与筛选/类型筛选/布局引擎/视图范围/可见性/最低置信度等）；布局引擎标签汉化（力导向/径向/轨道）；Empty 文案汉化 |
+| `apps/web/tests/mind-edge-ops.test.ts` | +146/-0 | 新增 5 个测试：连续调用不产生重复 active 推荐；已存在 edge 的 candidate 不再生成推荐；已存在 edge 时 apply 不抛错返回 already_connected；rejected candidate 不会被再次生成；ignored candidate 在再次 Suggest 时可重新出现（Defer MVP） |
+
+**技术要点**:
+
+1. **Recommendation 去重**: `generateMindNodeRecommendations` 在生成候选前查询 `recommendationsTable`，对同一 subject/candidate 的 generated/shown/accepted/rejected 状态跳过。ignored 状态不跳过，允许重新生成（Defer MVP 语义）。
+2. **Accept/Defer/Reject 语义**: Accept → 创建真实 edge 或识别 already_connected，推荐变为 accepted；Defer → status=ignored，当前列表不显示，下次 Suggest 允许重新出现；Reject → status=rejected，明确负反馈，后续不再生成同 subject/candidate 推荐。
+3. **already_connected 处理**: `applyRecommendation` 在 mindNode→mindNode 路径中，先用 `findMindEdgeBetweenNodes` 检查是否已有边，如有则返回 `changeType: 'already_connected'`；`upsertMindEdge` 返回 null 时也返回 `already_connected` 而非抛错。UI 层据此 toast "连接已存在，推荐已处理"。
+4. **批量审核 MVP**: 每条推荐增加 checkbox；选中 > 0 时显示批量操作区（批量连接/稍后/拒绝）；批量操作逐条调用，成功后从列表移除；部分失败时 toast 输出成功/失败数量；批量操作期间 loading/disabled 防重复点击。
+5. **单条"修改"按钮移除**: 当前没有候选编辑模型，移除 Edit3 按钮避免假入口。
+6. **Capsule 位置**: 从 `top-6 left-6`（左上角）改为 `left-4 top-1/2 -translate-y-1/2`（左侧垂直居中），z-index 从 20 降为 10，低于顶部 breadcrumb dropdown 的 z-50。
+7. **Filter 遮挡**: `filterOpen=true` 时 zoom controls 和 node action bar 不渲染；如果当前 connectMode 激活则自动退出 connectMode。
+8. **Scope 汉化**: Focus Map→聚焦视图、Cluster Map→聚类视图、Link Review→链接审核、Drift Inbox→漂移收件箱、Timeline Snapshot→时间快照（Capsule 中已移除标题区，仅保留图标）。Breadcrumb 和 Filter Panel 的 Scope label 全部汉化。
+9. **Collection Scope**: topic 节点映射为 collection scope。`scopeOptions` 中 `topicNodes` 以 `type: 'collection'` 展示，label 使用真实 node.label，scopeTargetId 使用 topic node id。无 topic 节点时 collection 选项显示"无集合节点"并置灰。
+
+**遇到的问题及解决方式**:
+
+1. **Zap 导入未使用**: 重写 MindRecommendationInspector 时保留了 Zap 导入但未使用，lint 报错。移除 Zap 导入解决。
+2. **already_connected 需双重检查**: `upsertMindEdge` 返回 null 可能是因为 duplicate edge guard 或节点不存在。在 `applyRecommendation` 中先用 `findMindEdgeBetweenNodes` 检查已有边，再用 `upsertMindEdge` 返回 null 作为兜底。
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ 0 errors, 6 warnings（均为已有 warning）
+- `pnpm typecheck`: ✅ 通过
+- `pnpm test`: ✅ 711 tests passed（含新增 5 个 recommendation dedup 测试）
+- `pnpm build:web`: ✅ 通过
+
+**手工验证步骤说明**:
+
+1. 选中节点后点击 Suggest，验证推荐列表出现且无重复项
+2. 点击"连接"按钮，验证创建真实 edge 并从列表消失；再次 Suggest 不再推荐已连接节点
+3. 点击"稍后"按钮，验证推荐从列表消失；再次 Suggest 允许重新出现（Defer MVP）
+4. 点击"拒绝"按钮，验证推荐从列表消失；再次 Suggest 不再推荐已拒绝候选
+5. 手动创建 edge 后点击"连接"，验证 toast 显示"连接已存在，推荐已处理"而非报错
+6. 勾选多条推荐，验证批量操作区出现；批量连接/稍后/拒绝功能正常
+7. 验证 MindScopeCapsule 位于画布左侧垂直居中，无标题区，z-index 不遮挡 breadcrumb dropdown
+8. 打开 Filter 面板，验证 zoom controls 和 node action bar 自动隐藏；关闭 Filter 后恢复
+9. 验证 Filter 面板和 breadcrumb 中的 Scope 选项已汉化
+10. 验证 topic 节点在 Scope 下拉中以"集合"类型出现
+
+**当前风险及影响范围**:
+
+1. **Defer MVP 行为**: ignored 推荐在下次 Suggest 时可重新出现，这是 MVP 实现。未来如有 generation round 概念，应改为 round 级别的重新出现。
+2. **Collection Scope 映射**: 当前将 topic 节点映射为 collection scope，依赖 graph 中存在 nodeType==='topic' 的节点。如果未来 collection 概念与 topic 分离，需要调整映射逻辑。
+3. **批量操作串行执行**: 批量操作逐条调用 repository 函数，未做并行优化。大量推荐时可能较慢，但保证了数据一致性。
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-005 Round 3 (7 项缺陷修复) -->
+<!-- ============================================ -->
+
+## MIND-REAL-005 Round 3 devlog -- 7 项缺陷修复：多余下拉入口 / Filter 下拉化 / Breadcrumb Scope / Suggest 真实化 / Baseline 两遍清理 / Baseline 去重
+
+**时间戳**: 2026-05-13
+
+**任务目标**:
+
+修复 MIND-REAL-005 手工验证中发现的 7 项缺陷。
+
+**缺陷清单与修复**:
+
+| # | 缺陷 | 修复方式 | 涉及文件 |
+|---|------|----------|----------|
+| 1 | page.tsx 左侧 Scope 按钮多余 | 移除 Scope ▾ 按钮 | `page.tsx` |
+| 2 | MindScopeCapsule 浮层 Focus Map ▾ 下拉多余 | 移除下拉菜单，改为静态标签显示当前 scope；移除 snapshot/onViewScopeChange props、ViewScopeCounts 接口、computeViewScopeCounts 函数 | `MindScopeCapsule.tsx`, `MindGraphView.tsx` |
+| 3 | Filter Node Types / Edge Types 平铺按钮 | 改为 compact dropdown multi-select（MultiSelectDropdown 组件），支持勾选、计数徽章、点击外部关闭 | `MindFilterPanel.tsx` |
+| 4 | 顶栏 breadcrumb 下拉不可用 | 接入 scopeOptions 数据源和 setScope/setScopeTarget 逻辑；global scope 也显示可点击下拉；click-outside 关闭 | `MindGraphView.tsx` |
+| 5 | Suggest 总选第一个非 root 节点 | 改为优先使用 selectedNodeId → focusedNodeId → scopeTargetId；无有效节点时提示用户选中；topK 改为 5；事件 edgeId 改为 `suggested-${targetNode.id}` | `page.tsx` |
+| 6 | Baseline 清理单遍遍历有边界 bug | 改为两遍：第一遍完整收集 realParentTargets，第二遍遍历 baseline 边并检查是否被覆盖 | `useMindGraph.ts` |
+| 7 | Baseline state 可能重复 | refresh 中不再 append baselineEdges 到 finalEdges，改为仅使用 finalEdges（DB 已包含新创建的 baseline） | `useMindGraph.ts` |
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/app/workspace/page.tsx` | -3/+14 | 移除 Scope 按钮；handleSuggest 改为基于 selected/focused/scope 节点 |
+| `apps/web/app/workspace/features/mind/MindScopeCapsule.tsx` | -42/+6 | 移除下拉菜单、snapshot/onViewScopeChange props、ViewScopeCounts、computeViewScopeCounts |
+| `apps/web/app/workspace/features/mind/MindGraphView.tsx` | +48/-6 | 新增 scopeMenuOpen 状态、scopeOptions 计算、click-outside handler；breadcrumb 下拉接入 scope 切换 |
+| `apps/web/app/workspace/features/mind/MindFilterPanel.tsx` | +70/-42 | 新增 MultiSelectDropdown 组件；Node Types/Edge Types 改为 dropdown multi-select |
+| `apps/web/app/workspace/features/mind/useMindGraph.ts` | +5/-5 | ensureBaselineParentConnections 两遍算法；refresh 不再 append baselineEdges |
+
+**当前风险及影响范围**:
+
+1. **MindScopeCapsule 不再接收 snapshot prop**: scope 切换只能通过左侧面板或顶栏 breadcrumb 下拉完成
+2. **Suggest 需要选中节点**: 未选中/聚焦/指定 scope 节点时 Suggest 会提示用户先选中，不再静默选第一个节点
+3. **MultiSelectDropdown 未做全选/全不选**: 当前仅支持逐项勾选，后续可增加全选快捷操作
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-005 Round 1 (Mind 最终功能打通) -->
+<!-- ============================================ -->
+
+## MIND-REAL-005 Round 1 devlog -- Mind 最终功能打通：Drag Connect + Parent Rule + Recommendation + Scope + Dock/Review Bridge
+
+**时间戳**: 2026-05-12
+
+**任务起止时间**: 07:40 - 08:23 CST
+
+**工时**: 43 分钟
+
+**任务目标**:
+
+打通 Mind 模块 6 条最小闭环：Drag Connect 真实建边、Parent/Root 最小规则（含边方向规范化+单主父节点）、Edge Guard 下沉到 Repository 层、Recommendation 最小闭环、Scope/Filter 真实化、Dock/Review Bridge 最小数据桥。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/lib/repository.ts` | +223/-10 | Edge Guard 下沉（upsertMindEdge self-loop/不存在节点检查、deleteMindEdge baseline 保护）、generateMindNodeRecommendations 推荐生成函数、getMindGraphHealthSummary 健康摘要、applyRecommendation mindNode→mindNode 支持 |
+| `apps/web/app/workspace/features/mind/useMindGraph.ts` | +132/-30 | handleCreateEdge 增强（边类型判断+方向规范化+单主父节点）、ensureBaselineParentConnections 增强（排除有真实 parent 的节点）、handleDeleteEdge 增强（删除 parent 后 baseline 恢复）、userBehaviorEvent 写入 |
+| `apps/web/app/workspace/features/mind/useMindCanvasRenderer.ts` | +135/-20 | Drag Connect（onCreateEdge 回调、handlePointerUp 调用建边、screen position snap 判定）、filterByScope 增强（6 种 scope 类型）、applyFilterState 函数（nodeTypes/edgeTypes/search/visibility/minConfidence） |
+| `apps/web/app/workspace/features/mind/MindGraphView.tsx` | +72/-40 | 传递 onCreateEdge 给 renderer、移除 mock breadcrumb 改为真实 scope path、传递 filterState/scopeTargetId/snapshot 给子组件 |
+| `apps/web/app/workspace/features/mind/useMindGraphInteraction.ts` | +15/-5 | Scope 类型扩展（global/domain/project/collection/tag/focusedNode）、新增 scopeTargetId 状态和 setScopeTarget action |
+| `apps/web/app/workspace/features/mind/MindFilterPanel.tsx` | +170/-30 | Scope 选项扩展为真实数据驱动（从 snapshot 提取 domain/project/tag 节点列表）、无数据时置灰+Empty |
+| `apps/web/app/workspace/features/mind/MindScopeCapsule.tsx` | +63/-20 | FilteredCounts/ViewScopeCounts 接口、computeViewScopeCounts 真实计算、N/L/S/I 指标使用过滤后数据 |
+| `apps/web/app/workspace/features/mind/MindRecommendationInspector.tsx` | +41/-5 | handleReject/handleDefer 真实逻辑、Reject/Defer 按钮 onClick 绑定 |
+| `apps/web/tests/mind-edge-ops.test.ts` | +826/-10 | Repository Guard 测试（4）、Parent/Root Rules 测试（6）、Drag Connect 测试（5）、Recommendation MVP 测试（7）、Dock/Review Bridge 测试（5）、修正 self-loop 测试断言 |
+| `apps/web/tests/mind-graph.test.ts` | +8/-0 | upsertMindEdge null 返回值适配 |
+| `apps/web/tests/mind-layout-persistence.test.ts` | +20/-5 | baseline 边保护测试修正、null 返回值适配 |
+| `packages/domain/src/services/IntelligenceSpine.ts` | +2/-0 | UserBehaviorEventType 新增 mind_edge_created/mind_edge_deleted |
+
+**技术要点**:
+
+1. **Edge Guard 双层防御**: UI 层（useMindGraph.handleCreateEdge）保留快速防护，Repository 层（upsertMindEdge/deleteMindEdge）作为最终防线。BREAKING 变更：upsertMindEdge self-loop 从"允许创建"变为"拒绝返回 null"。
+2. **Parent/Root 规则**: parent_child 边方向自动规范化为 parent→child（无论用户拖拽方向）。单主父节点规则：连接新 parent 时先移除旧 parent 边。删除真实 parent 后 baseline 自动恢复。
+3. **Drag Connect**: handlePointerUp 改为 async，当 snapTarget 存在时调用 onCreateEdge。snap 判定从 world position 改为 screen position，保证缩放一致性。
+4. **Recommendation MVP**: 本地启发式算法（tag overlap/title keyword/neighbor overlap/node type），生成推荐边候选。Accept 创建 suggested edge，Reject/Defer 记录状态+事件。
+5. **Scope/Filter 真实化**: 严格区分 Scope（图谱范围选择器）vs 视图预设（Focus/Cluster/Link Review/Drift/Timeline）vs Filter（在 Scope+预设之上继续过滤）。移除所有 mock 文案，无数据时显示 Empty。
+6. **Dock/Review Bridge**: getMindGraphHealthSummary 计算 orphan/suggested/confirmed/conflict/rejected/deferred count。边操作后写入 userBehaviorEvent。
+
+**遇到的问题及解决方式**:
+
+1. **upsertMindEdge 返回类型变更**: 从 `Promise<StoredMindEdge>` 改为 `Promise<StoredMindEdge | null>` 后，所有调用方需要处理 null。通过在测试中添加 null guard（`expect(x).not.toBeNull(); if (!x) return`）解决。
+2. **Lint no-non-null-assertion 错误**: 测试中使用 `!` 非空断言被 lint 规则禁止。统一改为 null guard 模式。
+3. **MindScopeCapsule 未使用变量**: onViewScopeChange 和 viewScopeCounts 在组件中定义但未使用。用 `_` 前缀和 `void` 消费解决。
+
+**自动验证结果**:
+
+- `pnpm lint`: ✅ 0 errors (6 warnings, pre-existing)
+- `pnpm typecheck`: ✅ 通过
+- `pnpm test`: ✅ 706 tests passed
+- `pnpm build:web`: ✅ 构建成功
+
+**手工验证步骤说明**:
+
+1. 启动开发服务器 `pnpm dev`
+2. 进入 Mind 视图，拖拽节点到另一节点附近松手，验证边创建成功
+3. 选中节点后点击 Connect 按钮，点击目标节点，验证 Button Connect 仍正常工作
+4. 将 document 节点连接到 topic 节点，验证创建的是 parent_child 边（方向 parent→child）
+5. 将两个 document 节点互连，验证创建的是 semantic 边
+6. 删除真实 parent_child 边，验证 baseline 边自动恢复
+7. 点击 Filter 面板，切换 Scope 选项，验证可见节点/边变化
+8. 验证顶部 breadcrumb 显示真实 scope path（无 mock 文案）
+9. 验证 N/L/S/I 指标随 Scope/Filter 变化而更新
+10. 打开推荐检查器，点击 Reject/Defer 按钮，验证状态记录
+
+**当前风险及影响范围**:
+
+1. **BREAKING 变更**: `upsertMindEdge` self-loop 行为从"允许创建"变为"拒绝返回 null"，任何直接调用 upsertMindEdge 且未处理 null 的代码可能出错。当前所有调用方已适配。
+2. **viewScopeCounts 未消费**: MindScopeCapsule 中 computeViewScopeCounts 已实现但 UI 尚未展示各视图预设的独立 count，后续需在左侧菜单中接入。
+3. **Recommendation 算法简单**: 当前仅基于 tag/keyword/neighbor 的本地启发式，推荐质量有限，后续可增强。
+4. **Scope domain/project/collection 过滤**: 当前基于节点 nodeType 和一跳邻居过滤，未深入 Dock repository 的 collection 结构，后续需增强。
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：MIND-REAL-004 Round 6 (待整理队列折叠式改造) -->
 <!-- ============================================ -->
 
@@ -4135,4 +4398,209 @@ Sigma v3 的 camera state `x/y/ratio` 是 **framed graph 归一化坐标**（默
 | 架构说明书 | `docs/product/ARCHITECTURE.md` |
 | 技术规格 | `docs/product/TECH_SPEC.md` |
 | Phase 3 Feature & Bugs | `docs/engineering/dev_log/Phase3/pre-phase3-demo_feature_and_bugs.md` |
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-005 Round 2 (8 项缺陷修复) -->
+<!-- ============================================ -->
+
+## MIND-REAL-005 Round 2 devlog -- 8 项缺陷修复：Baseline 互斥持久化 / Scope 真实化 / View 过滤 / Suggest 接通 / Recommendation 新 API / Duplicate Edge Guard / Build 修复
+
+**时间戳**: 2026-05-12
+
+**任务起止时间**: 09:35 - 09:44 CST
+
+**工时**: 9 分钟
+
+**任务目标**:
+
+修复 MIND-REAL-005 第一轮验证中发现的 8 项缺陷，确保所有闭环真正打通。
+
+**缺陷清单与修复**:
+
+| # | 缺陷 | 修复方式 | 涉及文件 |
+|---|------|----------|----------|
+| 1 | `apps/web/app/seed-mind/` 未跟踪 | `git add` 暂存 | git CLI |
+| 2 | Parent/Root baseline 与真实 parent 刷新后共存 | 新增 `forceDeleteBaselineEdge`；`handleCreateEdge` 创建真实 parent 时同时从 DB 删除 baseline；`ensureBaselineParentConnections` 启动时清理被覆盖的 baseline；`refresh` 在 baseline 清理后重新 `listMindEdges` | `repository.ts`, `useMindGraph.ts` |
+| 3 | 左侧 Scope/Queue 假数据 (8/12/5/9) | 用 `useMemo` 从 snapshot 计算 `viewScopeCounts`，替换硬编码 | `page.tsx` |
+| 4 | 左侧 viewScope 切换不驱动子图过滤 | 新增 `filterByViewScope` 函数（5 种 scope 过滤逻辑）；`useMindCanvasRenderer` 新增 `viewScope` 参数并在 pipeline 中调用；逐层传递 `viewScope` | `useMindCanvasRenderer.ts`, `MindGraphView.tsx`, `MindCanvasStage.tsx` |
+| 5 | Suggest 按钮假按钮 | 新增 `onSuggest` prop 链路；`MindScopeCapsule` → `MindGraphView` → `MindCanvasStage` → `page.tsx`；`page.tsx` 中 `handleSuggest` 调用 `generateMindNodeRecommendations` | `MindScopeCapsule.tsx`, `MindGraphView.tsx`, `MindCanvasStage.tsx`, `page.tsx` |
+| 6 | Mind 推荐 UI 用旧 `generateRecommendationsForContext` | 替换为 `generateMindNodeRecommendations(userId, nodeId, 3)` | `MindRecommendationInspector.tsx` |
+| 7 | `upsertMindEdge` 对同 id 仍 put/update | 改为 `if (existing) return null`，拒绝 duplicate edge；更新 3 处测试 | `repository.ts`, `mind-edge-ops.test.ts`, `mind-graph.test.ts` |
+| 8 | `pnpm build:web` 失败 (demo2-prototype) | 构建已通过（此前为瞬时问题） | — |
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/lib/repository.ts` | +12 / -4 | 新增 `forceDeleteBaselineEdge`；`upsertMindEdge` 拒绝 duplicate |
+| `apps/web/app/workspace/features/mind/useMindGraph.ts` | +18 / -6 | 导入 `forceDeleteBaselineEdge`；`handleCreateEdge` 删除 baseline from DB；`ensureBaselineParentConnections` 清理被覆盖 baseline；`refresh` 重新 listMindEdges |
+| `apps/web/app/workspace/features/mind/useMindCanvasRenderer.ts` | +60 / -3 | 新增 `ViewScopeType` 和 `filterByViewScope`；hook 新增 `viewScope` 参数；pipeline 加入 viewScope 过滤 |
+| `apps/web/app/workspace/features/mind/MindGraphView.tsx` | +5 / -3 | 新增 `onSuggest` prop；传递 `viewScope` 和 `onSuggest` |
+| `apps/web/app/workspace/features/mind/MindCanvasStage.tsx` | +4 / -2 | 新增 `onSuggest` prop；传递给 MindGraphView |
+| `apps/web/app/workspace/features/mind/MindScopeCapsule.tsx` | +32 / -6 | 新增 `onSuggest` prop；Suggest 按钮调用 `onSuggest`；新增 scope 切换下拉菜单（使用 `onViewScopeChange` 和 `viewScopeCounts`） |
+| `apps/web/app/workspace/features/mind/MindRecommendationInspector.tsx` | +1 / -7 | 替换 `generateRecommendationsForContext` → `generateMindNodeRecommendations` |
+| `apps/web/app/workspace/page.tsx` | +28 / -7 | 导入 `generateMindNodeRecommendations`；计算 `viewScopeCounts`；新增 `handleSuggest`；传递 `onSuggest`；替换硬编码计数 |
+| `apps/web/tests/mind-edge-ops.test.ts` | +2 / -6 | 2 处 duplicate 测试改为 `expect(edge2).toBeNull()` |
+| `apps/web/tests/mind-graph.test.ts` | +5 / -5 | upsert 测试改为验证 duplicate 被拒绝 |
+
+**验证结果**:
+
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm lint` | ✅ 通过 (6 warnings, 0 errors) |
+| `pnpm typecheck` | ✅ 通过 |
+| `pnpm test` | ✅ 706 tests passed |
+| `pnpm build:web` | ✅ 通过 |
+
+<!-- 分割线：MIND-REAL-005 Round 5 (首屏同步竞态修复) -->
+<!-- ============================================ -->
+
+## MIND-REAL-005 Round 5 devlog -- 首屏同步顺序竞态修复
+
+**时间戳**: 2026-05-13
+
+**任务起止时间**: 2026-05-13
+
+**工时**: 15 分钟
+
+**任务目标**:
+
+修复 Dock 结构同步首屏竞态：`syncDocumentsToMindNodes` 和 `syncDockStructureToMind` 并行触发且存在两组重复 useEffect，导致 document mind nodes 未创建时 `syncDockStructureToMind` 读不到 `docNodeByEntryId`，跳过 project/tag → document edges。
+
+**缺陷清单与修复**:
+
+| # | 缺陷 | 修复方式 | 涉及文件 |
+|---|------|----------|----------|
+| 1 | 首屏同步竞态：两个 sync 函数并行跑，structure sync 在 document sync 完成前执行，读不到 docNodeByEntryId | 新增 `syncMindFirstScreen` 统一函数：先 `await syncDocumentsToMindNodes`，再 `await syncDockStructureToMind`，保证确定顺序 | `repository.ts` |
+| 2 | 重复 useEffect：两组 useEffect 各自并行调用两个 sync 函数 | 合并为一个 useEffect 调用 `syncMindFirstScreen`；另一个 useEffect 仅保留 tips/drafts 加载 | `page.tsx` |
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `repository.ts` | +18 | 新增 `MindFirstScreenSyncResult` 接口 + `syncMindFirstScreen` 函数 |
+| `page.tsx` | -18 / +9 | 导入改为 `syncMindFirstScreen`；两个 useEffect 合并为一个统一同步 + 一个 tips/drafts 加载 |
+| `mind-graph.test.ts` | +83 | 新增 `syncMindFirstScreen sequential sync` 测试组 3 条：从无 doc node 到完整 edges；幂等；snapshot 可见 |
+
+**风险标记**:
+
+| 风险 | 等级 | 说明 |
+|------|------|------|
+| Move to Cluster 无真实模型 | 高 | 当前 disabled，需后续实现 cluster move 模型后打通 |
+| Archive 无真实逻辑 | 高 | 当前 disabled，需后续实现 Mind node archive/state helper 后打通 |
+| Open in Dock 语义不匹配 | 中 | 当前仍打开 Editor（因 Dock 板块未实现），需 Dock 板块完成后改为 Dock 定位 |
+| `syncDockStructureToMind` 按标签名去重 | 低 | 同名标签/项目会合并为一个节点，若不同来源有同名但语义不同则需后续细化 |
+
+**验证结果**:
+
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm lint` | 待验证 |
+| `pnpm typecheck` | 待验证 |
+| `pnpm test` | 待验证 |
+| `pnpm build:web` | 待验证 |
+
+**当前风险及影响范围**:
+
+| 风险 | 等级 | 说明 |
+|------|------|------|
+| `upsertMindEdge` 不再支持 update 语义 | 中 | 如需更新 edge 属性，需先 delete 再 create；现有调用点均无需 update |
+| `filterByViewScope` 的 driftInbox 逻辑较粗 | 低 | 当前按孤立节点 + document 类型过滤，后续可细化 state 判断 |
+| `viewScopeCounts` 在 page.tsx 和 MindScopeCapsule 各自计算一次 | 低 | 两者算法略有差异（page 侧含 metadata 时间戳判断），可后续统一 |
 | 架构调整日志 | `docs/engineering/dev_log/Phase3/pre-phase3-architecture_rebuild.md` |
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-005 Round 3 (Capsule 竖置 / 汉化 / ActionBar 修正) -->
+<!-- ============================================ -->
+
+## MIND-REAL-005 Round 3 devlog -- Capsule 竖置修正 / 左侧视图汉化 / ActionBar 假功能最小化
+
+**时间戳**: 2026-05-12
+
+**任务起止时间**: 09:50 - 10:05 CST
+
+**工时**: 15 分钟
+
+**任务目标**:
+
+修正 MindScopeCapsule 为竖置左侧胶囊（之前横向移动实现不符合手测要求）；左侧视图预设汉化；ActionBar 假功能最小化处理。
+
+**缺陷清单与修复**:
+
+| # | 缺陷 | 修复方式 | 涉及文件 |
+|---|------|----------|----------|
+| 1 | MindScopeCapsule 仍为横向胶囊，仅移到左侧中部 | 重写为竖置左侧胶囊：`absolute left-3 top-1/2 -translate-y-1/2 flex flex-col items-center`，展开宽度 56px，从上到下排列图标→N/L/S/I 单列指标→Fit→推荐；收起态为同位置 48×48 图标按钮；不显示 Scope eyebrow 和 Focus Map 等标题 | `MindScopeCapsule.tsx` |
+| 2 | 左侧视图预设仍为英文 | Focus Map→聚焦视图、Cluster Map→聚类视图、Link Review→链接审核、Drift Inbox→散点视图、Timeline Snapshot→时间快照；Scope / Queue→范围 / 队列；Atlax 产品设计→知识图谱 | `page.tsx` |
+| 3 | Move to Cluster 假 toast | disabled + title="暂不支持移动到聚类"，灰色样式 `cursor-not-allowed` | `MindNodeActionBar.tsx`, `MindGraphView.tsx` |
+| 4 | Archive 假 toast | disabled + title="暂不支持归档节点"，灰色样式 `cursor-not-allowed` | `MindNodeActionBar.tsx`, `MindGraphView.tsx` |
+| 5 | Open in Dock 实际打开 Editor | 当前保留打开 Editor 行为（因 Dock 板块尚未实现），标记后续处理 | `MindGraphView.tsx` |
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `MindScopeCapsule.tsx` | 重写 | 竖置左侧胶囊，flex-col，56px 宽，N/L/S/I 单列指标，收起态 48×48 图标按钮 |
+| `page.tsx` | +5 / -5 | 视图预设汉化 + 标题汉化 |
+| `MindNodeActionBar.tsx` | +8 / -4 | Move to Cluster / Archive disabled 灰色；onMove/onArchive 改为空回调 |
+| `MindGraphView.tsx` | +2 / -2 | onMove/onArchive 从假 toast 改为空回调 |
+
+**风险标记**:
+
+| 风险 | 等级 | 说明 |
+|------|------|------|
+| Move to Cluster 无真实模型 | 高 | 当前 disabled，需后续实现 cluster move 模型后打通 |
+| Archive 无真实逻辑 | 高 | 当前 disabled，需后续实现 Mind node archive/state helper 后打通 |
+| Open in Dock 语义不匹配 | 中 | 当前仍打开 Editor（因 Dock 板块未实现），需 Dock 板块完成后改为 Dock 定位 |
+| Capsule 竖置高度未做响应式 | 低 | 当前固定 56px 宽，N/L/S/I 单列指标，极端数据可能溢出 |
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-005 Round 4 (Timeline 修复 / Dock 结构同步) -->
+<!-- ============================================ -->
+
+## MIND-REAL-005 Round 4 devlog -- Timeline Snapshot 筛空修复 / Dock 结构最小同步
+
+**时间戳**: 2026-05-12
+
+**任务起止时间**: 10:00 - 10:10 CST
+
+**工时**: 10 分钟
+
+**任务目标**:
+
+修复 Timeline Snapshot 视图实际筛空；补齐 Dock/repository 结构进入 Mind snapshot 的最小链路。
+
+**缺陷清单与修复**:
+
+| # | 缺陷 | 修复方式 | 涉及文件 |
+|---|------|----------|----------|
+| 1 | Timeline Snapshot 视图筛空：`filterByViewScope` 读取 `CanvasRenderNode.metadata` 但该类型无 metadata | `MindGraphSnapshotNode` 增加 `createdAt`/`updatedAt` 字段；`mindSnapshotBuilder` 从 `StoredMindNode` 拷贝时间戳；`CanvasRenderNode` 增加 `updatedAt` 字段；`filterByViewScope` 改用 `CanvasRenderNode.updatedAt`；`page.tsx` 的 `viewScopeCounts` 改用 `snapshot.nodes[].updatedAt` | `types.ts`, `mindSnapshotBuilder.ts`, `useMindCanvasRenderer.ts`, `page.tsx` |
+| 2 | Dock 结构未同步到 Mind：`syncDocumentsToMindNodes` 只创建 document node | 新增 `syncDockStructureToMind`：从 archived entries 提取 project → 创建 `project` 节点；从 tags + entry.tags 提取 tag → 创建 `tag` 节点；document 与 project 建 `parent_child` edge；document 与 tag 建 `semantic` edge；幂等（重复调用不重复创建）；走 `upsertMindEdge` safe guard | `repository.ts`, `page.tsx` |
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `types.ts` | +2 | `MindGraphSnapshotNode` 增加 `createdAt`/`updatedAt` |
+| `mindSnapshotBuilder.ts` | +2 | 从 `StoredMindNode` 拷贝 `createdAt`/`updatedAt` |
+| `useMindCanvasRenderer.ts` | +3 / -8 | `CanvasRenderNode` 增加 `updatedAt`；`buildRenderNodes` 填充；`filterByViewScope.timelineSnapshot` 改用 `n.updatedAt` |
+| `page.tsx` | +6 / -4 | 导入 `syncDockStructureToMind`；`viewScopeCounts.timelineSnapshot` 改用 `n.updatedAt`；两处 useEffect 调用 `syncDockStructureToMind` |
+| `repository.ts` | +97 | 新增 `syncDockStructureToMind` 函数 |
+| `mind-graph.test.ts` | +88 | Timeline Snapshot 测试 3 条 + Dock Structure Sync 测试 3 条 |
+
+**风险标记**:
+
+| 风险 | 等级 | 说明 |
+|------|------|------|
+| Move to Cluster 无真实模型 | 高 | 当前 disabled，需后续实现 cluster move 模型后打通 |
+| Archive 无真实逻辑 | 高 | 当前 disabled，需后续实现 Mind node archive/state helper 后打通 |
+| Open in Dock 语义不匹配 | 中 | 当前仍打开 Editor（因 Dock 板块未实现），需 Dock 板块完成后改为 Dock 定位 |
+| `syncDockStructureToMind` 按标签名去重 | 低 | 同名标签/项目会合并为一个节点，若不同来源有同名但语义不同则需后续细化 |
+
+**验证结果**:
+
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm lint` | ✅ 通过 (0 errors, 6 warnings) |
+| `pnpm typecheck` | ✅ 通过 |
+| `pnpm test` | ✅ 717 tests passed |
+| `pnpm build:web` | ✅ 通过 |

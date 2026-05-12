@@ -16,8 +16,9 @@ import MindRecommendationInspector from './features/mind/MindRecommendationInspe
 import {
   listActiveTips,
   convertTipToMindNode,
-  syncDocumentsToMindNodes,
+  syncMindFirstScreen,
   listDrafts,
+  generateMindNodeRecommendations,
 } from '@/lib/repository';
 import type { StoredDraft } from '@/lib/repository'
 import { emit } from '@/lib/events';
@@ -510,9 +511,13 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
 
   useEffect(() => {
     if (!userId) return;
-    syncDocumentsToMindNodes(userId).then((count) => {
-      if (count > 0) {
-        emit({ type: 'mind_node_created', nodeId: `sync-${Date.now()}` });
+    syncMindFirstScreen(userId).then((result) => {
+      const hasNew = result.documentNodesCreated > 0
+        || result.projectNodesCreated > 0
+        || result.tagNodesCreated > 0
+        || result.edgesCreated > 0
+      if (hasNew) {
+        emit({ type: 'mind_node_created', nodeId: `first-screen-sync-${Date.now()}` });
       }
     }).catch(() => {});
   }, [userId]);
@@ -527,11 +532,6 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
     if (!userId) return;
     listActiveTips(userId).then(tips => setUnlinkedThoughts(tips)).catch(() => {});
     listDrafts(userId).then(drafts => setInboxDrafts(drafts.filter(d => !d.sourceEntryId))).catch(() => {});
-    syncDocumentsToMindNodes(userId).then((count) => {
-      if (count > 0) {
-        emit({ type: 'mind_node_created', nodeId: `sync-${Date.now()}` });
-      }
-    }).catch(() => {});
   }, [userId]);
 
   // Build snapshot from real data
@@ -539,6 +539,29 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
     if (loading || mindNodes.length === 0) return null;
     return buildSimpleMindGraphSnapshot(mindNodes, mindEdges);
   }, [mindNodes, mindEdges, loading]);
+
+  const viewScopeCounts = useMemo(() => {
+    if (!snapshot) return { focusMap: 0, clusterMap: 0, linkReview: 0, driftInbox: 0, timelineSnapshot: 0 };
+    const parentTypes = new Set(['root', 'domain', 'project', 'topic']);
+    const connectedNodeIds = new Set<string>();
+    snapshot.edges.forEach(e => {
+      connectedNodeIds.add(e.sourceNodeId);
+      connectedNodeIds.add(e.targetNodeId);
+    });
+    const now = Date.now();
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    return {
+      focusMap: snapshot.nodes.length,
+      clusterMap: snapshot.nodes.filter(n => parentTypes.has(n.nodeType)).length,
+      linkReview: snapshot.edges.filter(e => e.edgeType === 'suggested').length,
+      driftInbox: snapshot.nodes.filter(n => !connectedNodeIds.has(n.id) || n.state === 'drifting' || n.state === 'isolated').length,
+      timelineSnapshot: snapshot.nodes.filter(n => {
+        const ts = n.updatedAt ?? n.createdAt;
+        if (ts != null) return now - ts < sevenDaysMs;
+        return false;
+      }).length,
+    };
+  }, [snapshot]);
 
   // Node color for right panel badges
   const getNodeColor = useCallback((nodeType: string) => {
@@ -592,6 +615,34 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
     }
   }, [activeThought, userId, onToast]);
 
+  const handleSuggest = useCallback(async () => {
+    if (!snapshot || snapshot.nodes.length === 0) {
+      onToast('图谱中暂无节点，无法生成推荐');
+      return;
+    }
+    const targetId = ixState.selectedNodeId
+      || ixState.focusedNodeId
+      || ixState.scopeTargetId;
+    const targetNode = targetId
+      ? snapshot.nodes.find(n => n.id === targetId)
+      : null;
+    if (!targetNode || targetNode.nodeType === 'root') {
+      onToast('请先选中或聚焦一个节点');
+      return;
+    }
+    try {
+      const recs = await generateMindNodeRecommendations(userId, targetNode.id, 5);
+      if (recs.length === 0) {
+        onToast('暂无新的推荐');
+      } else {
+        onToast(`已为「${targetNode.label}」生成 ${recs.length} 条推荐`);
+        emit({ type: 'mind_edge_created', edgeId: `suggested-${targetNode.id}` });
+      }
+    } catch {
+      onToast('推荐生成失败');
+    }
+  }, [snapshot, userId, onToast, ixState.selectedNodeId, ixState.focusedNodeId, ixState.scopeTargetId]);
+
   if (loading) {
     return (
       <div className="w-full h-full flex items-center justify-center bg-[#0b0f11] animate-in fade-in duration-500">
@@ -614,21 +665,18 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
         <div className="p-4 border-b border-white/[0.07] shrink-0">
           <div className="flex items-center justify-between mb-4">
             <div className="flex flex-col">
-              <div className="text-[10px] font-bold text-[#8d989f] uppercase tracking-widest">Scope / Queue</div>
-              <h2 className="text-[16px] font-bold text-white leading-tight">Atlax 产品设计</h2>
+              <div className="text-[10px] font-bold text-[#8d989f] uppercase tracking-widest">范围 / 队列</div>
+              <h2 className="text-[16px] font-bold text-white leading-tight">知识图谱</h2>
             </div>
-            <button className="flex items-center gap-1.5 px-2 py-1 rounded bg-white/5 border border-white/10 text-[10px] text-[#8d989f]">
-              Scope <ChevronDown size={12} />
-            </button>
           </div>
 
           <div className="space-y-1">
             {[
-              { id: 'focusMap', label: 'Focus Map', icon: <Sparkles size={14} />, count: mindNodes.length },
-              { id: 'clusterMap', label: 'Cluster Map', icon: <LayoutGrid size={14} />, count: 8 },
-              { id: 'linkReview', label: 'Link Review', icon: <Network size={14} />, count: 12 },
-              { id: 'driftInbox', label: 'Drift Inbox', icon: <AlertCircle size={14} />, count: 5 },
-              { id: 'timelineSnapshot', label: 'Timeline Snapshot', icon: <Timer size={14} />, count: 9 },
+              { id: 'focusMap', label: '聚焦视图', icon: <Sparkles size={14} />, count: viewScopeCounts.focusMap },
+              { id: 'clusterMap', label: '聚类视图', icon: <LayoutGrid size={14} />, count: viewScopeCounts.clusterMap },
+              { id: 'linkReview', label: '链接审核', icon: <Network size={14} />, count: viewScopeCounts.linkReview },
+              { id: 'driftInbox', label: '散点视图', icon: <AlertCircle size={14} />, count: viewScopeCounts.driftInbox },
+              { id: 'timelineSnapshot', label: '时间快照', icon: <Timer size={14} />, count: viewScopeCounts.timelineSnapshot },
             ].map(scope => {
               const isSelected = ixState.viewScope === scope.id;
               return (
@@ -721,6 +769,7 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
           onNodeDragEnd={onNodeDragEnd}
           onDeleteEdge={onDeleteEdge}
           onCreateEdge={onCreateEdge}
+          onSuggest={handleSuggest}
           activeModule="mind"
         />
       </div>

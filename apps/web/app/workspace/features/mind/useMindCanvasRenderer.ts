@@ -2,6 +2,7 @@
 
 import { useRef, useEffect, useCallback, useState } from 'react'
 import type { MindGraphSnapshot, MindGraphSnapshotEdge } from './types'
+import type { MindScopeType, MindFilterState } from './useMindGraphInteraction'
 import { NODE_COLOR, BG_COLOR } from './mindGraphStyle'
 
 // --- Canvas Render Node ---
@@ -20,6 +21,8 @@ export interface CanvasRenderNode {
   alpha: number
   documentId: number | null
   hasSavedPosition: boolean
+  createdAt: number | null
+  updatedAt: number | null
 }
 
 interface Camera { x: number; y: number; zoom: number }
@@ -65,6 +68,8 @@ function buildRenderNodes(snapshot: MindGraphSnapshot, vw: number, vh: number): 
       alpha: 1,
       documentId: n.documentId,
       hasSavedPosition: hasSavedPos,
+      createdAt: n.createdAt,
+      updatedAt: n.updatedAt,
     }
   })
 }
@@ -72,23 +77,162 @@ function buildRenderNodes(snapshot: MindGraphSnapshot, vw: number, vh: number): 
 // --- Scope filtering ---
 function filterByScope(
   nodes: CanvasRenderNode[], edges: MindGraphSnapshotEdge[],
-  scope: 'global' | 'currentChain', chainRootId: string | null
+  scope: MindScopeType, scopeTargetId: string | null
 ): { nodes: CanvasRenderNode[]; edges: MindGraphSnapshotEdge[] } {
-  if (scope === 'global' || !chainRootId) return { nodes, edges }
-  const ids = new Set<string>([chainRootId])
-  const queue = [chainRootId]
-  while (queue.length > 0) {
-    const cur = queue.shift()
-    if (!cur) continue
+  if (scope === 'global') return { nodes, edges }
+  if (!scopeTargetId) return { nodes: [], edges: [] }
+
+  if (scope === 'focusedNode') {
+    const ids = new Set<string>([scopeTargetId])
+    const queue = [scopeTargetId]
+    while (queue.length > 0) {
+      const cur = queue.shift()
+      if (!cur) continue
+      edges.forEach(e => {
+        if (e.sourceNodeId === cur && !ids.has(e.targetNodeId)) { ids.add(e.targetNodeId); queue.push(e.targetNodeId) }
+        if (e.targetNodeId === cur && !ids.has(e.sourceNodeId)) { ids.add(e.sourceNodeId); queue.push(e.sourceNodeId) }
+      })
+    }
+    return {
+      nodes: nodes.filter(n => ids.has(n.id)),
+      edges: edges.filter(e => ids.has(e.sourceNodeId) && ids.has(e.targetNodeId)),
+    }
+  }
+
+  const scopeNodeTypeMap: Partial<Record<MindScopeType, string>> = {
+    domain: 'domain',
+    project: 'project',
+    collection: 'topic',
+    tag: 'tag',
+  }
+  const matchType = scopeNodeTypeMap[scope]
+  const targetNode = nodes.find(n => n.id === scopeTargetId)
+  if (!targetNode) return { nodes: [], edges: [] }
+
+  const ids = new Set<string>([scopeTargetId])
+  if (matchType && targetNode.nodeType === matchType) {
     edges.forEach(e => {
-      if (e.sourceNodeId === cur && !ids.has(e.targetNodeId)) { ids.add(e.targetNodeId); queue.push(e.targetNodeId) }
-      if (e.targetNodeId === cur && !ids.has(e.sourceNodeId)) { ids.add(e.sourceNodeId); queue.push(e.sourceNodeId) }
+      if (e.sourceNodeId === scopeTargetId) ids.add(e.targetNodeId)
+      if (e.targetNodeId === scopeTargetId) ids.add(e.sourceNodeId)
     })
   }
+
   return {
     nodes: nodes.filter(n => ids.has(n.id)),
     edges: edges.filter(e => ids.has(e.sourceNodeId) && ids.has(e.targetNodeId)),
   }
+}
+
+export function applyFilterState(
+  nodes: CanvasRenderNode[], edges: MindGraphSnapshotEdge[],
+  filterState: MindFilterState
+): { nodes: CanvasRenderNode[]; edges: MindGraphSnapshotEdge[] } {
+  let filteredNodes = nodes.filter(n => {
+    if (!filterState.nodeTypes.has(n.nodeType)) return false
+    if (!filterState.showDocuments && n.nodeType === 'document') return false
+    if (!filterState.showTags && n.nodeType === 'tag') return false
+    if (!filterState.showSources && (n.nodeType === 'source' || n.nodeType === 'fragment')) return false
+    if (filterState.search) {
+      const q = filterState.search.toLowerCase()
+      if (!n.label.toLowerCase().includes(q)) return false
+    }
+    return true
+  })
+
+  if (filterState.timeField != null) {
+    const field = filterState.timeField
+    const start = filterState.timeRangeStart
+    const end = filterState.timeRangeEnd
+    filteredNodes = filteredNodes.filter(n => {
+      const ts = field === 'createdAt' ? n.createdAt : n.updatedAt
+      if (ts == null) return false
+      if (start != null && ts < start) return false
+      if (end != null && ts > end) return false
+      return true
+    })
+  }
+
+  const nodeIds = new Set(filteredNodes.map(n => n.id))
+  const filteredEdges = edges.filter(e => {
+    if (!nodeIds.has(e.sourceNodeId) || !nodeIds.has(e.targetNodeId)) return false
+    if (!filterState.edgeTypes.has(e.edgeType)) return false
+    if (!filterState.showSuggested && e.edgeType === 'suggested') return false
+    if (!filterState.showConfirmed && e.edgeType === 'confirmed') return false
+    if (filterState.minConfidence > 0 && e.confidence != null && e.confidence < filterState.minConfidence) return false
+    return true
+  })
+
+  if (!filterState.showOrphans) {
+    const connectedIds = new Set<string>()
+    filteredEdges.forEach(e => { connectedIds.add(e.sourceNodeId); connectedIds.add(e.targetNodeId) })
+    return {
+      nodes: filteredNodes.filter(n => connectedIds.has(n.id)),
+      edges: filteredEdges,
+    }
+  }
+
+  return { nodes: filteredNodes, edges: filteredEdges }
+}
+
+type ViewScopeType = 'focusMap' | 'clusterMap' | 'linkReview' | 'driftInbox' | 'timelineSnapshot'
+
+function filterByViewScope(
+  nodes: CanvasRenderNode[], edges: MindGraphSnapshotEdge[],
+  viewScope: ViewScopeType
+): { nodes: CanvasRenderNode[]; edges: MindGraphSnapshotEdge[] } {
+  if (viewScope === 'focusMap') return { nodes, edges }
+
+  if (viewScope === 'clusterMap') {
+    const parentTypes = new Set(['root', 'domain', 'project', 'topic'])
+    const parentNodeIds = new Set(nodes.filter(n => parentTypes.has(n.nodeType)).map(n => n.id))
+    const clusterNodeIds = new Set(parentNodeIds)
+    edges.forEach(e => {
+      if (parentNodeIds.has(e.sourceNodeId)) clusterNodeIds.add(e.targetNodeId)
+      if (parentNodeIds.has(e.targetNodeId)) clusterNodeIds.add(e.sourceNodeId)
+    })
+    return {
+      nodes: nodes.filter(n => clusterNodeIds.has(n.id)),
+      edges: edges.filter(e => clusterNodeIds.has(e.sourceNodeId) && clusterNodeIds.has(e.targetNodeId)),
+    }
+  }
+
+  if (viewScope === 'linkReview') {
+    const suggestedEdges = edges.filter(e => e.edgeType === 'suggested')
+    const nodeIds = new Set<string>()
+    suggestedEdges.forEach(e => { nodeIds.add(e.sourceNodeId); nodeIds.add(e.targetNodeId) })
+    return {
+      nodes: nodes.filter(n => nodeIds.has(n.id)),
+      edges: suggestedEdges,
+    }
+  }
+
+  if (viewScope === 'driftInbox') {
+    const connectedIds = new Set<string>()
+    edges.forEach(e => { connectedIds.add(e.sourceNodeId); connectedIds.add(e.targetNodeId) })
+    const driftNodes = nodes.filter(n => !connectedIds.has(n.id) || n.nodeType === 'document')
+    const driftNodeIds = new Set(driftNodes.map(n => n.id))
+    return {
+      nodes: driftNodes,
+      edges: edges.filter(e => driftNodeIds.has(e.sourceNodeId) && driftNodeIds.has(e.targetNodeId)),
+    }
+  }
+
+  if (viewScope === 'timelineSnapshot') {
+    const now = Date.now()
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000
+    const recentNodeIds = new Set(
+      nodes.filter(n => {
+        if (n.updatedAt != null) return now - n.updatedAt < sevenDaysMs
+        return false
+      }).map(n => n.id)
+    )
+    return {
+      nodes: nodes.filter(n => recentNodeIds.has(n.id)),
+      edges: edges.filter(e => recentNodeIds.has(e.sourceNodeId) && recentNodeIds.has(e.targetNodeId)),
+    }
+  }
+
+  return { nodes, edges }
 }
 
 // --- Layout target computation ---
@@ -186,13 +330,16 @@ export function useMindCanvasRenderer(
   containerRef: React.RefObject<HTMLDivElement | null>,
   snapshot: MindGraphSnapshot,
   layoutMode: 'force' | 'radial' | 'orbit',
-  scope: 'global' | 'currentChain',
-  chainRootId: string | null,
+  scope: MindScopeType,
+  scopeTargetId: string | null,
+  filterState: MindFilterState,
   selectedNodeId: string | null,
   hoveredNodeId: string | null,
   onSelectNode: (id: string | null) => void,
   onHoverNode: (id: string | null) => void,
   onNodeDragEnd?: (nodeId: string, x: number, y: number) => void,
+  onCreateEdge?: (sourceNodeId: string, targetNodeId: string) => Promise<{ success: boolean; error?: string }>,
+  viewScope?: ViewScopeType,
 ) {
   const nodesRef = useRef<CanvasRenderNode[]>([])
   const edgesRef = useRef<MindGraphSnapshotEdge[]>([])
@@ -211,6 +358,8 @@ export function useMindCanvasRenderer(
   const prevLayoutRef = useRef(layoutMode)
   const initDoneRef = useRef(false)
   const focusAlphasRef = useRef<Map<string, number>>(new Map())
+  const onCreateEdgeRef = useRef(onCreateEdge)
+  onCreateEdgeRef.current = onCreateEdge
 
   const [camera, setCameraState] = useState<Camera>({ x: 0, y: 0, zoom: 1 })
   const [hoverScreenPos, setHoverScreenPos] = useState<{ x: number; y: number } | null>(null)
@@ -228,10 +377,12 @@ export function useMindCanvasRenderer(
     const vw = rect.width || 800, vh = rect.height || 600
     sizeRef.current = { w: vw, h: vh }
 
-    const filtered = filterByScope(
+    const scoped = filterByScope(
       buildRenderNodes(snapshot, vw, vh),
-      snapshot.edges, scope, chainRootId
+      snapshot.edges, scope, scopeTargetId
     )
+    const viewScoped = filterByViewScope(scoped.nodes, scoped.edges, viewScope ?? 'focusMap')
+    const filtered = applyFilterState(viewScoped.nodes, viewScoped.edges, filterState)
     nodesRef.current = filtered.nodes
     edgesRef.current = filtered.edges
     initDoneRef.current = false
@@ -241,7 +392,7 @@ export function useMindCanvasRenderer(
     setCameraState({ x: 0, y: 0, zoom: initZoom })
 
     computeTargets(layoutRef.current, nodesRef.current, edgesRef.current, vw, vh, PADDING)
-  }, [snapshot, scope, chainRootId, containerRef])
+  }, [snapshot, scope, scopeTargetId, filterState, viewScope, containerRef])
 
   // --- Layout mode change ---
   useEffect(() => {
@@ -539,10 +690,13 @@ export function useMindCanvasRenderer(
       const node = nodesRef.current.find(n => n.id === dragNodeRef.current)
       if (node) { node.x = cx; node.y = cy; node.vx = 0; node.vy = 0 }
 
+      const cam = cameraRef.current
       let closestId: string | null = null, closestDist = 60
       nodesRef.current.forEach(n => {
         if (n.id === dragNodeRef.current) return
-        const d = Math.hypot(cx - n.x, cy - n.y)
+        const nsx = (n.x - w / 2) * cam.zoom + cam.x + w / 2
+        const nsy = (n.y - h / 2) * cam.zoom + cam.y + h / 2
+        const d = Math.hypot(sx - nsx, sy - nsy)
         if (d < closestDist) { closestDist = d; closestId = n.id }
       })
       snapTargetRef.current = closestId
@@ -573,18 +727,27 @@ export function useMindCanvasRenderer(
     lastPtrRef.current = { x: sx, y: sy }
   }, [containerRef, screenToWorld, onHoverNode])
 
-  const handlePointerUp = useCallback(() => {
+  const handlePointerUp = useCallback(async () => {
     if (dragNodeRef.current) {
-      if (hasDraggedRef.current && onNodeDragEnd) {
-        const node = nodesRef.current.find(n => n.id === dragNodeRef.current)
-        if (node) {
-          const { w, h } = sizeRef.current
-          const fx = Math.max(PADDING, Math.min(w - PADDING, node.x))
-          const fy = Math.max(PADDING, Math.min(h - PADDING, node.y))
-          node.hasSavedPosition = true
-          node.targetX = fx
-          node.targetY = fy
-          onNodeDragEnd(node.id, fx, fy)
+      if (hasDraggedRef.current) {
+        const draggedId = dragNodeRef.current
+        const snapId = snapTargetRef.current
+
+        if (snapId && onCreateEdgeRef.current) {
+          await onCreateEdgeRef.current(draggedId, snapId)
+        }
+
+        if (onNodeDragEnd) {
+          const node = nodesRef.current.find(n => n.id === draggedId)
+          if (node) {
+            const { w, h } = sizeRef.current
+            const fx = Math.max(PADDING, Math.min(w - PADDING, node.x))
+            const fy = Math.max(PADDING, Math.min(h - PADDING, node.y))
+            node.hasSavedPosition = true
+            node.targetX = fx
+            node.targetY = fy
+            onNodeDragEnd(node.id, fx, fy)
+          }
         }
       } else {
         onSelectNode(dragNodeRef.current)
@@ -642,12 +805,21 @@ export function useMindCanvasRenderer(
     setCameraState({ x: 0, y: 0, zoom: 1 })
   }, [])
 
+  const filteredNodes = nodesRef.current
+  const filteredEdges = edgesRef.current
+  const suggestionCount = filteredEdges.filter(e => e.edgeType === 'suggested').length
+  const connectedIds = new Set<string>()
+  filteredEdges.forEach(e => { connectedIds.add(e.sourceNodeId); connectedIds.add(e.targetNodeId) })
+  const isolatedCount = filteredNodes.filter(n => !connectedIds.has(n.id)).length
+
   return {
     camera,
     hoverScreenPos,
     handlePointerDown, handlePointerMove, handlePointerUp,
     zoomIn, zoomOut, centerView,
-    nodeCount: nodesRef.current.length,
-    edgeCount: edgesRef.current.length,
+    nodeCount: filteredNodes.length,
+    edgeCount: filteredEdges.length,
+    suggestionCount,
+    isolatedCount,
   }
 }

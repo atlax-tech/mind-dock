@@ -9,6 +9,132 @@
 ---
 
 <!-- ============================================ -->
+<!-- 分割线：MIND-REAL-005 Round 4 (Recommendation 去重 + already-connected) -->
+<!-- ============================================ -->
+
+## MIND-REAL-005 Round 4 devlog -- Recommendation 去重 + already-connected 闭环
+
+**时间戳**: 2026-05-13
+
+**任务起止时间**: 01:40 - 01:50 CST
+
+**工时**: 10 分钟
+
+**任务目标**:
+
+修复 recommendation 去重和 already-connected 闭环问题。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/lib/repository.ts` | +38/-3 | `generateMindNodeRecommendations` 增加 existingRecs 去重查询，generated/shown/accepted/rejected 状态跳过，ignored 允许重新生成；`applyRecommendation` mindNode→mindNode 路径增加 `findMindEdgeBetweenNodes` 检查，已存在边返回 `already_connected` 而非抛错；新增 `findMindEdgeBetweenNodes` 辅助函数 |
+| `apps/web/tests/mind-edge-ops.test.ts` | +146/-0 | 新增 5 个测试覆盖去重、already-connected、rejected skip、ignored reappear |
+
+**技术要点**:
+
+1. **去重逻辑**: `generateMindNodeRecommendations` 在生成候选前查询 `recommendationsTable`，对同一 subject/candidate 的 generated/shown/accepted/rejected 状态加入 `skipCandidateIds`。ignored 不跳过，实现 Defer MVP 语义。
+2. **already_connected**: `applyRecommendation` mindNode→mindNode 路径中，先用 `findMindEdgeBetweenNodes` 检查已有边，如有返回 `changeType: 'already_connected'`。`upsertMindEdge` 返回 null 时也返回 `already_connected` 而非抛错。
+3. **findMindEdgeBetweenNodes**: 新增辅助函数，查询两个节点之间的任意边（双向检查）。
+
+**自动验证结果**:
+
+- `pnpm test`: ✅ 711 tests passed（含新增 5 个测试）
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-005 Round 1 (Mind 最终功能打通 - 数据层) -->
+<!-- ============================================ -->
+
+## MIND-REAL-005 Round 1 devlog -- Mind 最终功能打通：Edge Guard + Recommendation + Health Summary
+
+**时间戳**: 2026-05-12
+
+**任务起止时间**: 07:40 - 08:23 CST
+
+**工时**: 43 分钟
+
+**任务目标**:
+
+Edge Guard 下沉到 Repository 层（self-loop/不存在节点/baseline 保护）、generateMindNodeRecommendations 推荐生成函数、getMindGraphHealthSummary 健康摘要、applyRecommendation mindNode→mindNode 支持、UserBehaviorEventType 扩展。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/lib/repository.ts` | +223/-10 | upsertMindEdge 增加 self-loop 检查（return null）+节点存在性检查（return null）；deleteMindEdge 增加 baseline 边保护（return false）；新增 generateMindNodeRecommendations 函数（本地启发式推荐生成）；新增 getMindGraphHealthSummary 函数（图谱健康摘要）；applyRecommendation 增加 mindNode→mindNode 边创建路径 |
+| `packages/domain/src/services/IntelligenceSpine.ts` | +2/-0 | UserBehaviorEventType 新增 'mind_edge_created' 和 'mind_edge_deleted' |
+
+**技术要点**:
+
+1. **upsertMindEdge 返回类型 BREAKING 变更**: 从 `Promise<PersistedMindEdge>` 改为 `Promise<PersistedMindEdge | null>`，self-loop 和不存在节点时返回 null。
+2. **deleteMindEdge baseline 保护**: reason === 'baseline-auto-connect' 时返回 false 不删除，作为 Repository 层最终防线。
+3. **generateMindNodeRecommendations**: 基于 tag overlap / title keyword / neighbor overlap / node type 四种信号打分，生成 link_suggestion 类型推荐，包含 reason_text/confidence/source。
+4. **getMindGraphHealthSummary**: 计算 totalNodes/totalEdges/orphanCount/suggestedEdgeCount/confirmedEdgeCount/conflictEdgeCount/rejectedRecommendationCount/deferredRecommendationCount。
+5. **applyRecommendation mindNode→mindNode**: 当 subjectType 和 candidateType 都是 mindNode 时，直接创建 suggested 类型边。
+
+**遇到的问题及解决方式**:
+
+1. **applyRecommendation subjectId 类型问题**: 原函数将 subjectId 强制转为 number，但 mindNode 的 ID 是 string。修改为 subjectId: number | string，当 subjectType === 'mindNode' 时保留字符串 ID。
+2. **UserBehaviorEventType 缺失**: mind_edge_created/mind_edge_deleted 不在原有联合类型中。在 IntelligenceSpine.ts 中扩展了 UserBehaviorEventType。
+
+**自动验证结果**:
+
+- `pnpm typecheck`: ✅ 通过
+- `pnpm test`: ✅ 706 tests passed（含新增 Repository Guard/Recommendation/Bridge 测试）
+
+**手工验证步骤说明**:
+
+1. 调用 upsertMindEdge 传入 sourceNodeId === targetNodeId，验证返回 null
+2. 调用 upsertMindEdge 传入不存在的 nodeId，验证返回 null
+3. 调用 deleteMindEdge 删除 baseline 边，验证返回 false
+4. 调用 generateMindNodeRecommendations，验证返回推荐列表含 reason_text/confidence/source
+5. 调用 getMindGraphHealthSummary，验证返回正确的健康指标
+
+**当前风险及影响范围**:
+
+1. **BREAKING**: upsertMindEdge 返回类型变更，所有调用方需处理 null
+2. **Recommendation 算法简单**: 仅本地启发式，推荐质量有限
+3. **Health Summary 同步计算**: 当前实时查询所有节点/边，数据量大时可能有性能问题
+
+---
+
+<!-- ============================================ -->
+<!-- 分割线：MIND-REAL-005 Round 2 (数据层缺陷修复) -->
+<!-- ============================================ -->
+
+## MIND-REAL-005 Round 2 devlog -- 数据层缺陷修复：forceDeleteBaselineEdge + Duplicate Edge Guard
+
+**时间戳**: 2026-05-12
+
+**任务起止时间**: 09:35 - 09:44 CST
+
+**工时**: 9 分钟
+
+**任务目标**:
+
+修复 MIND-REAL-005 第一轮验证中发现的数据层缺陷：baseline 边与真实 parent 共存、duplicate edge 未被拒绝。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `apps/web/lib/repository.ts` | +12/-4 | 新增 `forceDeleteBaselineEdge`（仅允许删除 reason === 'baseline-auto-connect' 的边）；`upsertMindEdge` 拒绝 duplicate edge（existing 时 return null） |
+
+**技术要点**:
+
+1. **forceDeleteBaselineEdge**: 与 `deleteMindEdge` 互为补充——`deleteMindEdge` 拒绝删除 baseline 边（return false），`forceDeleteBaselineEdge` 只允许删除 baseline 边（reason !== 'baseline-auto-connect' 时 return false）。两者组合实现 baseline 边的受控生命周期。
+2. **Duplicate Edge Guard**: `upsertMindEdge` 在创建前检查 composite ID（userId + sourceNodeId + targetNodeId + edgeType），如果已存在则 return null 而非 update。这意味着 upsertMindEdge 不再支持 update 语义，如需更新需先 delete 再 create。
+
+**当前风险及影响范围**:
+
+1. **upsertMindEdge 不再支持 update 语义**: 如需更新 edge 属性，需先 delete 再 create；现有调用点均无需 update
+2. **forceDeleteBaselineEdge 仅限内部使用**: 不暴露给 UI 层，仅由 `ensureBaselineParentConnections` 和 `handleCreateEdge` 内部调用
+
+---
+
+<!-- ============================================ -->
 <!-- 分割线：MIND-REAL-003 Round 1 (Mind 图谱布局持久化 + Root/Parent 连接基线) -->
 <!-- ============================================ -->
 

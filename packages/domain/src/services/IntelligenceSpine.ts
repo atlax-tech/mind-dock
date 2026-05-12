@@ -211,6 +211,8 @@ export type UserBehaviorEventType =
   | 'delete'
   | 'archive'
   | 'reopen'
+  | 'mind_edge_created'
+  | 'mind_edge_deleted'
   | RecommendationEventType
 
 export type UserBehaviorSubjectType = 'dockItem' | 'entry' | 'document' | 'mindNode' | 'tag' | 'project' | 'recommendation' | 'widget' | 'tab'

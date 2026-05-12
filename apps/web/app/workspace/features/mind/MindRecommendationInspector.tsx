@@ -1,11 +1,12 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
-import { Zap, Check, X, Clock, Edit3, Loader2, Sparkles } from 'lucide-react'
+import React, { useState, useEffect, useCallback } from 'react'
+import { Check, X, Clock, Loader2, Sparkles } from 'lucide-react'
 import { 
   listRecommendationDockQueue, 
-  generateRecommendationsForContext, 
+  generateMindNodeRecommendations,
   applyRecommendation,
+  recordRecommendationFeedback,
   resolveRecommendationCandidate,
   type RecommendationDockQueueItem
 } from '@/lib/repository'
@@ -32,6 +33,8 @@ export default function MindRecommendationInspector({
   const [resolvedCandidates, setResolvedCandidates] = useState<Record<string, ResolvedCandidate>>({})
   const [loading, setLoading] = useState(true)
   const [applyingId, setApplyingId] = useState<string | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [batchLoading, setBatchLoading] = useState(false)
 
   const fetchRecommendations = async () => {
     setLoading(true)
@@ -45,13 +48,7 @@ export default function MindRecommendationInspector({
       let items = res.items
 
       if (items.length === 0) {
-        await generateRecommendationsForContext({
-          userId,
-          subjectType: 'mindNode',
-          subjectId: nodeId,
-          topK: 3,
-          source: 'mind_inspector'
-        })
+        await generateMindNodeRecommendations(userId, nodeId, 5)
         const res2 = await listRecommendationDockQueue(userId, { 
           subjectType: 'mindNode', 
           subjectId: nodeId, 
@@ -61,6 +58,7 @@ export default function MindRecommendationInspector({
       }
 
       setRecommendations(items)
+      setSelectedIds(new Set())
 
       const resolved: Record<string, ResolvedCandidate> = {}
       for (const item of items) {
@@ -84,12 +82,25 @@ export default function MindRecommendationInspector({
     }
   }, [nodeId, userId])
 
+  const removeItem = useCallback((recId: string) => {
+    setRecommendations(prev => prev.filter(r => r.id !== recId))
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      next.delete(recId)
+      return next
+    })
+  }, [])
+
   const handleApply = async (recId: string) => {
     setApplyingId(recId)
     try {
-      await applyRecommendation({ userId, recommendationId: recId })
-      onToast('已成功建立连接')
-      setRecommendations(prev => prev.filter(r => r.id !== recId))
+      const result = await applyRecommendation({ userId, recommendationId: recId })
+      if (result.appliedChanges.changeType === 'already_connected') {
+        onToast('连接已存在，推荐已处理')
+      } else {
+        onToast('已成功建立连接')
+      }
+      removeItem(recId)
       onRefreshGraph?.()
     } catch (err) {
       console.error('Failed to apply recommendation:', err)
@@ -97,6 +108,128 @@ export default function MindRecommendationInspector({
     } finally {
       setApplyingId(null)
     }
+  }
+
+  const handleReject = async (recId: string) => {
+    setApplyingId(recId)
+    try {
+      await recordRecommendationFeedback({
+        userId,
+        recommendationId: recId,
+        feedbackType: 'rejected',
+      })
+      removeItem(recId)
+      onToast('已拒绝推荐')
+    } catch (err) {
+      console.error('Failed to reject recommendation:', err)
+      onToast('操作失败')
+    } finally {
+      setApplyingId(null)
+    }
+  }
+
+  const handleDefer = async (recId: string) => {
+    setApplyingId(recId)
+    try {
+      await recordRecommendationFeedback({
+        userId,
+        recommendationId: recId,
+        feedbackType: 'ignored',
+      })
+      removeItem(recId)
+      onToast('已推迟推荐')
+    } catch (err) {
+      console.error('Failed to defer recommendation:', err)
+      onToast('操作失败')
+    } finally {
+      setApplyingId(null)
+    }
+  }
+
+  const toggleSelect = useCallback((recId: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(recId)) next.delete(recId)
+      else next.add(recId)
+      return next
+    })
+  }, [])
+
+  const toggleSelectAll = useCallback(() => {
+    if (selectedIds.size === recommendations.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(recommendations.map(r => r.id)))
+    }
+  }, [selectedIds.size, recommendations])
+
+  const handleBatchApply = async () => {
+    setBatchLoading(true)
+    let successCount = 0
+    let failCount = 0
+    const ids = Array.from(selectedIds)
+    for (const recId of ids) {
+      try {
+        const result = await applyRecommendation({ userId, recommendationId: recId })
+        if (result.appliedChanges.changeType === 'already_connected' || result.appliedChanges.changeType === 'create_edge') {
+          successCount++
+          removeItem(recId)
+        }
+      } catch {
+        failCount++
+      }
+    }
+    if (failCount > 0) {
+      onToast(`批量连接完成：成功 ${successCount}，失败 ${failCount}`)
+    } else {
+      onToast(`已批量连接 ${successCount} 条推荐`)
+    }
+    onRefreshGraph?.()
+    setBatchLoading(false)
+  }
+
+  const handleBatchReject = async () => {
+    setBatchLoading(true)
+    let successCount = 0
+    let failCount = 0
+    const ids = Array.from(selectedIds)
+    for (const recId of ids) {
+      try {
+        await recordRecommendationFeedback({ userId, recommendationId: recId, feedbackType: 'rejected' })
+        successCount++
+        removeItem(recId)
+      } catch {
+        failCount++
+      }
+    }
+    if (failCount > 0) {
+      onToast(`批量拒绝完成：成功 ${successCount}，失败 ${failCount}`)
+    } else {
+      onToast(`已批量拒绝 ${successCount} 条推荐`)
+    }
+    setBatchLoading(false)
+  }
+
+  const handleBatchDefer = async () => {
+    setBatchLoading(true)
+    let successCount = 0
+    let failCount = 0
+    const ids = Array.from(selectedIds)
+    for (const recId of ids) {
+      try {
+        await recordRecommendationFeedback({ userId, recommendationId: recId, feedbackType: 'ignored' })
+        successCount++
+        removeItem(recId)
+      } catch {
+        failCount++
+      }
+    }
+    if (failCount > 0) {
+      onToast(`批量推迟完成：成功 ${successCount}，失败 ${failCount}`)
+    } else {
+      onToast(`已批量推迟 ${successCount} 条推荐`)
+    }
+    setBatchLoading(false)
   }
 
   if (loading) {
@@ -117,89 +250,124 @@ export default function MindRecommendationInspector({
     )
   }
 
+  const allSelected = selectedIds.size === recommendations.length
+
   return (
     <div className="flex flex-col animate-in fade-in duration-300">
-      {/* Header */}
       <div className="flex items-center justify-between mb-3">
-        <div className="flex flex-col gap-0.5">
-          <div className="text-[10px] font-bold text-[#c8a0f0]/70 uppercase tracking-wider">推荐解释</div>
-          <h4 className="text-[13px] font-semibold text-white">结构推荐</h4>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={toggleSelectAll}
+            className={`w-4 h-4 rounded-[4px] border flex items-center justify-center transition-all ${
+              allSelected ? 'bg-[#86d7ff] border-[#86d7ff]' : 'bg-white/5 border-white/10 hover:border-white/20'
+            }`}
+          >
+            {allSelected && (
+              <svg className="w-2.5 h-2.5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+              </svg>
+            )}
+          </button>
+          <span className="text-[10px] font-bold text-[#8d989f]/60 uppercase tracking-wider">
+            结构推荐
+          </span>
         </div>
         <div className="px-1.5 py-0.5 rounded bg-[#c8a0f0]/10 text-[#c8a0f0]/80 text-[9px] font-bold">
-          {recommendations.length} Links
+          {recommendations.length} 条
         </div>
       </div>
 
-      {/* Summary */}
-      <div className="p-3 mb-3 bg-white/[0.02] relative overflow-hidden group">
-        <div className="absolute top-0 right-0 p-2 opacity-15 group-hover:opacity-30 transition-opacity">
-          <Zap className="w-5 h-5 text-[#facc15]" fill="currentColor" />
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-1.5 mb-3 p-2 rounded-lg bg-white/[0.03] border border-white/5">
+          <span className="text-[10px] text-[#8d989f] mr-1">已选 {selectedIds.size} 项</span>
+          <button
+            onClick={handleBatchApply}
+            disabled={batchLoading}
+            className="h-6 px-2.5 flex items-center gap-1 rounded bg-[#86d7ff]/10 hover:bg-[#86d7ff]/20 text-[9px] font-bold text-[#86d7ff] transition-all disabled:opacity-50"
+          >
+            {batchLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check size={10} />}
+            批量连接
+          </button>
+          <button
+            onClick={handleBatchDefer}
+            disabled={batchLoading}
+            className="h-6 px-2.5 flex items-center gap-1 rounded bg-white/5 hover:bg-white/10 text-[9px] font-bold text-[#8d989f] transition-all disabled:opacity-50"
+          >
+            {batchLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Clock size={10} />}
+            批量稍后
+          </button>
+          <button
+            onClick={handleBatchReject}
+            disabled={batchLoading}
+            className="h-6 px-2.5 flex items-center gap-1 rounded bg-white/5 hover:bg-[#f87171]/10 text-[9px] font-bold text-[#8d989f] hover:text-[#f87171] transition-all disabled:opacity-50"
+          >
+            {batchLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <X size={10} />}
+            批量拒绝
+          </button>
         </div>
-        <div className="relative z-10">
-          <div className="flex items-center gap-1.5 mb-1">
-            <h5 className="text-[12px] font-bold text-white">Mind 结构整理方案</h5>
-            <div className="w-1 h-1 rounded-full bg-[#facc15] animate-pulse" />
-          </div>
-          <p className="text-[10px] text-[#8d989f] mb-2">
-            未确认关系 {recommendations.length} · 缺少最终归属
-          </p>
-          <div className="flex gap-1">
-            {['Mind', 'Structure', 'Recommendation'].map(tag => (
-              <span key={tag} className="px-1.5 py-px rounded bg-white/5 text-[8px] font-medium text-[#6b7280]">
-                {tag}
-              </span>
-            ))}
-          </div>
-        </div>
-      </div>
+      )}
 
-      {/* Recommended Links List */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] font-bold text-[#8d989f]/60 uppercase tracking-wider">Recommended Links</span>
-          <button className="text-[9px] font-bold text-[#86d7ff]/60 hover:text-[#86d7ff] transition-colors">批量审核</button>
-        </div>
-
+      <div className="space-y-2">
         {recommendations.map(rec => {
           const resolved = resolvedCandidates[rec.id]
           const confidence = Math.round(rec.confidenceScore * 100)
+          const isSelected = selectedIds.has(rec.id)
           
           return (
-            <div key={rec.id} className="bg-white/[0.02] p-3 space-y-2.5">
-              <div className="flex items-start justify-between gap-2">
+            <div key={rec.id} className={`bg-white/[0.02] p-3 space-y-2.5 rounded-lg border transition-colors ${isSelected ? 'border-[#86d7ff]/20' : 'border-transparent'}`}>
+              <div className="flex items-start gap-2">
+                <button
+                  onClick={() => toggleSelect(rec.id)}
+                  className={`mt-0.5 w-3.5 h-3.5 rounded-[3px] border shrink-0 flex items-center justify-center transition-all ${
+                    isSelected ? 'bg-[#86d7ff] border-[#86d7ff]' : 'bg-white/5 border-white/10 hover:border-white/20'
+                  }`}
+                >
+                  {isSelected && (
+                    <svg className="w-2 h-2 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                    </svg>
+                  )}
+                </button>
                 <div className="flex-1 min-w-0">
-                  <h6 className="text-[12px] font-bold text-white truncate">{resolved?.title || rec.candidateId}</h6>
-                  <div className="text-[9px] text-[#8d989f] mt-0.5">
-                    关系类型：<span className="text-[#e0e3e6]">{rec.recommendationType || '语义关联'}</span>
+                  <div className="flex items-start justify-between gap-2">
+                    <h6 className="text-[12px] font-bold text-white truncate">{resolved?.title || rec.candidateId}</h6>
+                    <div className="px-1.5 py-0.5 rounded bg-green-500/10 text-green-400/80 text-[9px] font-bold shrink-0">
+                      {confidence}%
+                    </div>
                   </div>
-                </div>
-                <div className="px-1.5 py-0.5 rounded bg-green-500/10 text-green-400/80 text-[9px] font-bold shrink-0">
-                  {confidence}%
+                  <div className="text-[9px] text-[#8d989f] mt-0.5">
+                    {rec.reasonSummary.reason || '语义关联'}
+                  </div>
                 </div>
               </div>
 
-              <p className="text-[10px] text-[#8d989f] leading-relaxed line-clamp-2">
-                {rec.reasonSummary.reason || '该节点与当前上下文具有高度语义相似度，建议建立结构化关联。'}
-              </p>
-
-              <div className="grid grid-cols-4 gap-1.5">
+              <div className="grid grid-cols-3 gap-1.5 pl-5.5">
                 <button 
                   onClick={() => handleApply(rec.id)}
                   disabled={applyingId === rec.id}
-                  className="col-span-1 flex items-center justify-center h-7 rounded bg-[#86d7ff] text-[#0b0f11] hover:bg-[#b3eaff] transition-colors disabled:opacity-50"
+                  className="flex items-center justify-center h-7 rounded bg-[#86d7ff] text-[#0b0f11] hover:bg-[#b3eaff] transition-colors disabled:opacity-50"
                   title="连接"
                 >
                   {applyingId === rec.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check size={12} strokeWidth={3} />}
                   <span className="ml-0.5 text-[9px] font-bold">连接</span>
                 </button>
-                <button className="flex items-center justify-center h-7 rounded bg-white/5 text-[#8d989f] hover:text-white hover:bg-white/10 transition-all" title="修改">
-                  <Edit3 size={12} />
-                </button>
-                <button className="flex items-center justify-center h-7 rounded bg-white/5 text-[#8d989f] hover:text-white hover:bg-white/10 transition-all" title="稍后">
+                <button 
+                  className="flex items-center justify-center h-7 rounded bg-white/5 text-[#8d989f] hover:text-white hover:bg-white/10 transition-all"
+                  title="稍后"
+                  onClick={() => handleDefer(rec.id)}
+                  disabled={applyingId === rec.id}
+                >
                   <Clock size={12} />
+                  <span className="ml-0.5 text-[9px] font-bold">稍后</span>
                 </button>
-                <button className="flex items-center justify-center h-7 rounded bg-white/5 text-[#8d989f] hover:text-[#f87171] hover:bg-[#f87171]/10 transition-all" title="拒绝">
+                <button 
+                  className="flex items-center justify-center h-7 rounded bg-white/5 text-[#8d989f] hover:text-[#f87171] hover:bg-[#f87171]/10 transition-all"
+                  title="拒绝"
+                  onClick={() => handleReject(rec.id)}
+                  disabled={applyingId === rec.id}
+                >
                   <X size={12} />
+                  <span className="ml-0.5 text-[9px] font-bold">拒绝</span>
                 </button>
               </div>
             </div>

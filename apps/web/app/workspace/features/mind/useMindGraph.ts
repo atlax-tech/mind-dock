@@ -8,7 +8,9 @@ import {
   upsertMindEdge,
   upsertMindNode,
   deleteMindEdge,
+  forceDeleteBaselineEdge,
   getMindEdge,
+  recordUserBehaviorEvent,
   type StoredMindNode,
   type StoredMindEdge,
 } from '@/lib/repository'
@@ -52,15 +54,34 @@ export async function ensureBaselineParentConnections(
   const rootNode = nodes.find(n => n.nodeType === 'root')
   if (!rootNode) return []
 
-  const structuralEdgeTargets = new Set<string>()
+  const realParentTargets = new Set<string>()
   edges.forEach(e => {
-    if (e.edgeType === 'parent_child') {
-      structuralEdgeTargets.add(e.targetNodeId)
+    if (e.edgeType === 'parent_child' && e.reason !== 'baseline-auto-connect') {
+      realParentTargets.add(e.targetNodeId)
     }
   })
 
+  const baselineEdgesToRemove: string[] = []
+  const baselineParentTargets = new Set<string>()
+  edges.forEach(e => {
+    if (e.edgeType === 'parent_child' && e.reason === 'baseline-auto-connect') {
+      baselineParentTargets.add(e.targetNodeId)
+      if (realParentTargets.has(e.targetNodeId)) {
+        baselineEdgesToRemove.push(e.id)
+      }
+    }
+  })
+
+  for (const edgeId of baselineEdgesToRemove) {
+    await forceDeleteBaselineEdge(userId, edgeId)
+  }
+
+  const effectiveBaselineTargets = new Set<string>(
+    Array.from(baselineParentTargets).filter(id => !realParentTargets.has(id))
+  )
+
   const orphanDocNodes = nodes.filter(n =>
-    n.nodeType === 'document' && !structuralEdgeTargets.has(n.id)
+    n.nodeType === 'document' && !realParentTargets.has(n.id) && !effectiveBaselineTargets.has(n.id)
   )
 
   const created: StoredMindEdge[] = []
@@ -75,7 +96,7 @@ export async function ensureBaselineParentConnections(
       confidence: 0.5,
       reason: 'baseline-auto-connect',
     })
-    created.push(edge)
+    if (edge) created.push(edge)
   }
   return created
 }
@@ -106,10 +127,12 @@ export function useMindGraph(userId: string) {
         listMindEdges(userId),
       ])
 
-      const baselineEdges = await ensureBaselineParentConnections(userId, updatedNodes, updatedEdges)
+      await ensureBaselineParentConnections(userId, updatedNodes, updatedEdges)
+
+      const finalEdges = await listMindEdges(userId)
 
       setNodes(updatedNodes)
-      setEdges([...updatedEdges, ...baselineEdges])
+      setEdges(finalEdges)
     } catch {
     } finally {
       setLoading(false)
@@ -167,54 +190,143 @@ export function useMindGraph(userId: string) {
 
   const handleDeleteEdge = useCallback(async (edgeId: string) => {
     const edge = edges.find(e => e.id === edgeId)
-    if (edge && edge.reason === 'baseline-auto-connect') {
-      return false
-    }
+    if (!edge) return false
+    if (edge.reason === 'baseline-auto-connect') return false
+
+    const wasParentChild = edge.edgeType === 'parent_child'
+    const targetNodeId = edge.targetNodeId
+
     setEdges((prev) => prev.filter((e) => e.id !== edgeId))
     await deleteMindEdge(userId, edgeId)
     emit({ type: 'mind_edge_deleted', edgeId })
+
+    await recordUserBehaviorEvent({
+      userId,
+      eventType: 'mind_edge_deleted',
+      subjectType: 'mindNode',
+      subjectId: edgeId,
+      metadata: { edgeType: edge.edgeType, sourceNodeId: edge.sourceNodeId, targetNodeId: edge.targetNodeId },
+    }).catch(() => {})
+
+    if (wasParentChild) {
+      const targetNode = nodes.find(n => n.id === targetNodeId)
+      if (targetNode && targetNode.nodeType === 'document') {
+        const remainingEdges = edges.filter(e => e.id !== edgeId)
+        const hasRealParent = remainingEdges.some(e =>
+          e.edgeType === 'parent_child' &&
+          e.targetNodeId === targetNodeId &&
+          e.reason !== 'baseline-auto-connect'
+        )
+        if (!hasRealParent) {
+          const rootNode = nodes.find(n => n.nodeType === 'root')
+          if (rootNode) {
+            const baselineEdge = await upsertMindEdge({
+              userId,
+              sourceNodeId: rootNode.id,
+              targetNodeId,
+              edgeType: 'parent_child',
+              strength: 0.3,
+              source: 'system',
+              confidence: 0.5,
+              reason: 'baseline-auto-connect',
+            })
+            if (baselineEdge) {
+              setEdges(prev => [...prev, baselineEdge])
+              emit({ type: 'mind_edge_created', edgeId: baselineEdge.id })
+            }
+          }
+        }
+      }
+    }
+
     return true
-  }, [userId, edges])
+  }, [userId, edges, nodes])
 
   const handleCreateEdge = useCallback(async (sourceNodeId: string, targetNodeId: string): Promise<{ success: boolean; error?: string }> => {
     if (sourceNodeId === targetNodeId) {
       return { success: false, error: '不能连接到自身' }
     }
 
-    const sourceExists = nodes.some(n => n.id === sourceNodeId)
-    const targetExists = nodes.some(n => n.id === targetNodeId)
-    if (!sourceExists || !targetExists) {
+    const sourceNode = nodes.find(n => n.id === sourceNodeId)
+    const targetNode = nodes.find(n => n.id === targetNodeId)
+    if (!sourceNode || !targetNode) {
       return { success: false, error: '目标节点不存在' }
     }
 
-    const edgeType = 'semantic'
-    const existingId = makeMindEdgeId(userId, sourceNodeId, targetNodeId, edgeType)
+    const PARENT_TYPES = ['root', 'domain', 'project', 'topic']
+    const sourceIsParent = PARENT_TYPES.includes(sourceNode.nodeType)
+    const targetIsParent = PARENT_TYPES.includes(targetNode.nodeType)
+    const edgeType = (sourceIsParent || targetIsParent) ? 'parent_child' : 'semantic'
+
+    let normalizedSource = sourceNodeId
+    let normalizedTarget = targetNodeId
+    if (edgeType === 'parent_child') {
+      if (targetIsParent && !sourceIsParent) {
+        normalizedSource = targetNodeId
+        normalizedTarget = sourceNodeId
+      }
+    }
+
+    const existingId = makeMindEdgeId(userId, normalizedSource, normalizedTarget, edgeType)
     const existingEdge = await getMindEdge(userId, existingId)
     if (existingEdge) {
       return { success: false, error: '连接已存在' }
     }
 
-    const reverseId = makeMindEdgeId(userId, targetNodeId, sourceNodeId, edgeType)
+    const reverseId = makeMindEdgeId(userId, normalizedTarget, normalizedSource, edgeType)
     const reverseEdge = await getMindEdge(userId, reverseId)
     if (reverseEdge) {
       return { success: false, error: '反向连接已存在' }
     }
 
+    if (edgeType === 'parent_child') {
+      const childId = normalizedTarget
+      const existingParentEdges = edges.filter(e =>
+        e.edgeType === 'parent_child' && e.targetNodeId === childId
+      )
+      for (const oldEdge of existingParentEdges) {
+        if (oldEdge.reason === 'baseline-auto-connect') {
+          await forceDeleteBaselineEdge(userId, oldEdge.id)
+          setEdges(prev => prev.filter(e => e.id !== oldEdge.id))
+        } else {
+          await deleteMindEdge(userId, oldEdge.id)
+          setEdges(prev => prev.filter(e => e.id !== oldEdge.id))
+          emit({ type: 'mind_edge_deleted', edgeId: oldEdge.id })
+        }
+      }
+    }
+
+    const strength = edgeType === 'parent_child' ? 0.8 : 0.5
+    const reason = edgeType === 'parent_child' ? 'user-parent-link' : null
+
     const created = await upsertMindEdge({
       userId,
-      sourceNodeId,
-      targetNodeId,
+      sourceNodeId: normalizedSource,
+      targetNodeId: normalizedTarget,
       edgeType,
-      strength: 0.5,
+      strength,
       source: 'user',
       confidence: null,
-      reason: null,
+      reason,
     })
+
+    if (!created) {
+      return { success: false, error: '创建连接失败' }
+    }
 
     setEdges((prev) => [...prev, created])
     emit({ type: 'mind_edge_created', edgeId: created.id })
+
+    await recordUserBehaviorEvent({
+      userId,
+      eventType: 'mind_edge_created',
+      subjectType: 'mindNode',
+      subjectId: created.id,
+      metadata: { sourceNodeId: normalizedSource, targetNodeId: normalizedTarget, edgeType: created.edgeType },
+    }).catch(() => {})
+
     return { success: true }
-  }, [userId, nodes])
+  }, [userId, nodes, edges])
 
   return {
     nodes,

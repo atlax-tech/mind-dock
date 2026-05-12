@@ -24,6 +24,8 @@ export function buildSimpleMindGraphSnapshot(
     positionX: n.positionX ?? null,
     positionY: n.positionY ?? null,
     metadata: n.metadata as Record<string, unknown> | null,
+    createdAt: n.createdAt ? new Date(n.createdAt).getTime() : null,
+    updatedAt: n.updatedAt ? new Date(n.updatedAt).getTime() : null,
   }))
 
   const snapshotEdges: MindGraphSnapshotEdge[] = edges

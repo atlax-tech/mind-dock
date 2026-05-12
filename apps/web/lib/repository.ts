@@ -1801,6 +1801,24 @@ export async function getMindEdge(userId: string, id: string): Promise<Persisted
   return toPersistedMindEdge(edge)
 }
 
+async function findMindEdgeBetweenNodes(
+  userId: string,
+  nodeA: string,
+  nodeB: string,
+): Promise<PersistedMindEdge | null> {
+  const edges = await mindEdgesTable
+    .where('userId')
+    .equals(userId)
+    .and(e =>
+      (e.sourceNodeId === nodeA && e.targetNodeId === nodeB) ||
+      (e.sourceNodeId === nodeB && e.targetNodeId === nodeA),
+    )
+    .limit(1)
+    .toArray()
+  if (edges.length === 0) return null
+  return toPersistedMindEdge(edges[0])
+}
+
 export async function upsertMindEdge(input: {
   userId: string
   sourceNodeId: string
@@ -1810,10 +1828,20 @@ export async function upsertMindEdge(input: {
   source?: 'user' | 'system' | 'import'
   confidence?: number | null
   reason?: string | null
-}): Promise<PersistedMindEdge> {
+}): Promise<PersistedMindEdge | null> {
+  if (input.sourceNodeId === input.targetNodeId) return null
+
+  const [sourceNode, targetNode] = await Promise.all([
+    mindNodesTable.get(input.sourceNodeId),
+    mindNodesTable.get(input.targetNodeId),
+  ])
+  if (!sourceNode || sourceNode.userId !== input.userId) return null
+  if (!targetNode || targetNode.userId !== input.userId) return null
+
   const now = new Date()
   const id = makeMindEdgeId(input.userId, input.sourceNodeId, input.targetNodeId, input.edgeType)
   const existing = await mindEdgesTable.get(id)
+  if (existing) return null
 
   const record: MindEdgeRecord = {
     id,
@@ -1821,11 +1849,11 @@ export async function upsertMindEdge(input: {
     sourceNodeId: input.sourceNodeId,
     targetNodeId: input.targetNodeId,
     edgeType: input.edgeType,
-    strength: input.strength ?? existing?.strength ?? 0.5,
-    source: input.source ?? existing?.source ?? 'system',
-    confidence: input.confidence ?? existing?.confidence ?? null,
-    reason: input.reason ?? existing?.reason ?? null,
-    createdAt: existing?.createdAt ?? now,
+    strength: input.strength ?? 0.5,
+    source: input.source ?? 'system',
+    confidence: input.confidence ?? null,
+    reason: input.reason ?? null,
+    createdAt: now,
     updatedAt: now,
   }
   await mindEdgesTable.put(record)
@@ -1835,6 +1863,15 @@ export async function upsertMindEdge(input: {
 export async function deleteMindEdge(userId: string, id: string): Promise<boolean> {
   const existing = await mindEdgesTable.get(id)
   if (!existing || existing.userId !== userId) return false
+  if (existing.reason === 'baseline-auto-connect') return false
+  await mindEdgesTable.delete(id)
+  return true
+}
+
+export async function forceDeleteBaselineEdge(userId: string, id: string): Promise<boolean> {
+  const existing = await mindEdgesTable.get(id)
+  if (!existing || existing.userId !== userId) return false
+  if (existing.reason !== 'baseline-auto-connect') return false
   await mindEdgesTable.delete(id)
   return true
 }
@@ -2484,10 +2521,12 @@ export async function applyRecommendation(
     )
   }
 
-  const subjectId = typeof recommendation.subjectId === 'string'
-    ? Number.parseInt(recommendation.subjectId, 10)
-    : recommendation.subjectId
-  if (Number.isNaN(subjectId)) {
+  const subjectId = recommendation.subjectType === 'mindNode'
+    ? String(recommendation.subjectId)
+    : typeof recommendation.subjectId === 'string'
+      ? Number.parseInt(recommendation.subjectId, 10)
+      : recommendation.subjectId
+  if (typeof subjectId === 'number' && Number.isNaN(subjectId)) {
     throw new Error(`Invalid subjectId for recommendation: ${recommendation.subjectId}`)
   }
   
@@ -2560,21 +2599,21 @@ export async function applyRecommendation(
 
 async function executeApplyChangeInTxn(
   recommendation: RecommendationRecord,
-  subjectId: number,
+  subjectId: number | string,
 ): Promise<{
   candidateType: RecommendationCandidateType
   candidateId: string
   changeType: string
   changeDetail: string
 }> {
-  const { candidateType, candidateId, userId } = recommendation
+  const { candidateType, candidateId, userId, subjectType } = recommendation
 
   if (candidateType === 'tag') {
     const tag = await tagsTable.get(candidateId)
     if (!tag || tag.userId !== userId) {
       throw new Error(`Tag not found for candidate: ${candidateId}`)
     }
-    const dockItem = await getDockItemForUser(userId, subjectId)
+    const dockItem = await getDockItemForUser(userId, subjectId as number)
     if (!dockItem) {
       throw new Error(`Dock item not found: ${subjectId}`)
     }
@@ -2597,7 +2636,7 @@ async function executeApplyChangeInTxn(
     if (!collection || collection.userId !== userId) {
       throw new Error(`Collection not found for candidate: ${candidateId}`)
     }
-    const dockItem = await getDockItemForUser(userId, subjectId)
+    const dockItem = await getDockItemForUser(userId, subjectId as number)
     if (!dockItem) {
       throw new Error(`Dock item not found: ${subjectId}`)
     }
@@ -2619,14 +2658,55 @@ async function executeApplyChangeInTxn(
     if (!targetNode || targetNode.userId !== userId) {
       throw new Error(`Mind node not found for candidate: ${candidateId}`)
     }
-    const dockItem = await getDockItemForUser(userId, subjectId)
+
+    if (subjectType === 'mindNode') {
+      const sourceNode = await mindNodesTable.get(String(subjectId))
+      if (!sourceNode || sourceNode.userId !== userId) {
+        throw new Error(`Source mind node not found: ${subjectId}`)
+      }
+      const existingEdge = await findMindEdgeBetweenNodes(userId, sourceNode.id, targetNode.id)
+      if (existingEdge) {
+        return {
+          candidateType: 'mindNode',
+          candidateId,
+          changeType: 'already_connected',
+          changeDetail: `Edge already exists between "${sourceNode.label}" and "${targetNode.label}"`,
+        }
+      }
+      const edge = await upsertMindEdge({
+        userId,
+        sourceNodeId: sourceNode.id,
+        targetNodeId: targetNode.id,
+        edgeType: 'suggested',
+        source: 'system',
+        confidence: recommendation.confidenceScore,
+        reason: 'recommendation_accepted',
+      })
+      if (!edge) {
+        return {
+          candidateType: 'mindNode',
+          candidateId,
+          changeType: 'already_connected',
+          changeDetail: `Edge already exists between "${sourceNode.label}" and "${targetNode.label}"`,
+        }
+      }
+      return {
+        candidateType: 'mindNode',
+        candidateId,
+        changeType: 'create_edge',
+        changeDetail: `Created edge from "${sourceNode.label}" to "${targetNode.label}"`,
+      }
+    }
+
+    const numericSubjectId = subjectId as number
+    const dockItem = await getDockItemForUser(userId, numericSubjectId)
     if (!dockItem) {
       throw new Error(`Dock item not found: ${subjectId}`)
     }
     const dockMindNodes = await mindNodesTable
       .where('userId')
       .equals(userId)
-      .and((n) => n.documentId === subjectId)
+      .and((n) => n.documentId === numericSubjectId)
       .toArray()
     let sourceNode = dockMindNodes[0]
     let createdSource = false
@@ -2634,8 +2714,8 @@ async function executeApplyChangeInTxn(
       sourceNode = await upsertMindNode({
         userId,
         nodeType: 'document',
-        label: dockItem.topic || dockItem.rawText?.slice(0, 40) || `Dock Item #${subjectId}`,
-        documentId: subjectId,
+        label: dockItem.topic || dockItem.rawText?.slice(0, 40) || `Dock Item #${numericSubjectId}`,
+        documentId: numericSubjectId,
         state: 'drifting',
       })
       createdSource = true
@@ -3856,4 +3936,317 @@ export async function syncDocumentsToMindNodes(
   } catch {
     return 0
   }
+}
+
+export async function syncDockStructureToMind(
+  userId: string,
+): Promise<{ projectNodes: number; tagNodes: number; edges: number }> {
+  const result = { projectNodes: 0, tagNodes: 0, edges: 0 }
+
+  const [entries, tags, existingNodes] = await Promise.all([
+    listArchivedEntries(userId),
+    listTags(userId),
+    listMindNodes(userId),
+  ])
+
+  const existingByLabel = new Map<string, PersistedMindNode>()
+  existingNodes.forEach(n => existingByLabel.set(n.label, n))
+
+  const existingDocNodes = existingNodes.filter(n => n.nodeType === 'document' && n.documentId !== null)
+  const docNodeByEntryId = new Map<number, PersistedMindNode>()
+  existingDocNodes.forEach(n => {
+    if (n.documentId != null) docNodeByEntryId.set(n.documentId, n)
+  })
+
+  const uniqueProjects: string[] = []
+  entries.forEach(e => { if (e.project && !uniqueProjects.includes(e.project)) uniqueProjects.push(e.project) })
+
+  const uniqueTagNames: string[] = []
+  tags.forEach(t => { if (!uniqueTagNames.includes(t.name)) uniqueTagNames.push(t.name) })
+  entries.forEach(e => e.tags.forEach(t => { if (!uniqueTagNames.includes(t)) uniqueTagNames.push(t) }))
+
+  for (const projectName of uniqueProjects) {
+    const existing = existingByLabel.get(projectName)
+    if (existing) continue
+    const node = await upsertMindNode({
+      userId,
+      nodeType: 'project',
+      label: projectName,
+      state: 'anchored',
+      metadata: { sourceType: 'dock_project', projectName },
+    })
+    if (node) {
+      result.projectNodes++
+      existingByLabel.set(projectName, node)
+    }
+  }
+
+  for (const tagName of uniqueTagNames) {
+    const existing = existingByLabel.get(tagName)
+    if (existing) continue
+    const node = await upsertMindNode({
+      userId,
+      nodeType: 'tag',
+      label: tagName,
+      state: 'anchored',
+      metadata: { sourceType: 'dock_tag', tagName },
+    })
+    if (node) {
+      result.tagNodes++
+      existingByLabel.set(tagName, node)
+    }
+  }
+
+  const existingEdges = await listMindEdges(userId)
+
+  for (const entry of entries) {
+    const docNode = docNodeByEntryId.get(entry.id)
+    if (!docNode) continue
+
+    if (entry.project) {
+      const projectNode = existingByLabel.get(entry.project)
+      if (projectNode) {
+        const already = existingEdges.some(e =>
+          e.sourceNodeId === projectNode.id && e.targetNodeId === docNode.id && e.edgeType === 'parent_child'
+        )
+        if (!already) {
+          const edge = await upsertMindEdge({
+            userId,
+            sourceNodeId: projectNode.id,
+            targetNodeId: docNode.id,
+            edgeType: 'parent_child',
+            strength: 0.8,
+            source: 'system',
+            confidence: 0.9,
+            reason: 'dock-project-sync',
+          })
+          if (edge) result.edges++
+        }
+      }
+    }
+
+    for (const tagName of entry.tags) {
+      const tagNode = existingByLabel.get(tagName)
+      if (tagNode) {
+        const already = existingEdges.some(e =>
+          e.sourceNodeId === tagNode.id && e.targetNodeId === docNode.id && e.edgeType === 'semantic'
+        )
+        if (!already) {
+          const edge = await upsertMindEdge({
+            userId,
+            sourceNodeId: tagNode.id,
+            targetNodeId: docNode.id,
+            edgeType: 'semantic',
+            strength: 0.6,
+            source: 'system',
+            confidence: 0.7,
+            reason: 'dock-tag-sync',
+          })
+          if (edge) result.edges++
+        }
+      }
+    }
+  }
+
+  return result
+}
+
+export interface MindFirstScreenSyncResult {
+  documentNodesCreated: number
+  projectNodesCreated: number
+  tagNodesCreated: number
+  edgesCreated: number
+}
+
+export async function syncMindFirstScreen(
+  userId: string,
+): Promise<MindFirstScreenSyncResult> {
+  const documentNodesCreated = await syncDocumentsToMindNodes(userId)
+
+  const { projectNodes: projectNodesCreated, tagNodes: tagNodesCreated, edges: edgesCreated } = await syncDockStructureToMind(userId)
+
+  return { documentNodesCreated, projectNodesCreated, tagNodesCreated, edgesCreated }
+}
+
+export interface MindGraphHealthSummary {
+  totalNodes: number
+  totalEdges: number
+  orphanCount: number
+  suggestedEdgeCount: number
+  confirmedEdgeCount: number
+  conflictEdgeCount: number
+  rejectedRecommendationCount: number
+  deferredRecommendationCount: number
+}
+
+export async function getMindGraphHealthSummary(userId: string): Promise<MindGraphHealthSummary> {
+  const nodes = await listMindNodes(userId)
+  const edges = await listMindEdges(userId)
+
+  const connectedNodeIds = new Set<string>()
+  edges.forEach(e => {
+    connectedNodeIds.add(e.sourceNodeId)
+    connectedNodeIds.add(e.targetNodeId)
+  })
+  const orphanCount = nodes.filter(n => !connectedNodeIds.has(n.id) && n.nodeType !== 'root').length
+
+  const suggestedEdgeCount = edges.filter(e => e.edgeType === 'suggested').length
+  const confirmedEdgeCount = edges.filter(e => e.edgeType === 'confirmed').length
+  const conflictEdgeCount = edges.filter(e => e.edgeType === 'conflict').length
+
+  const recommendations = await recommendationsTable
+    .where('userId').equals(userId)
+    .toArray()
+  const rejectedRecommendationCount = recommendations.filter(r => r.status === 'rejected').length
+  const deferredRecommendationCount = recommendations.filter(r => r.status === 'ignored').length
+
+  return {
+    totalNodes: nodes.length,
+    totalEdges: edges.length,
+    orphanCount,
+    suggestedEdgeCount,
+    confirmedEdgeCount,
+    conflictEdgeCount,
+    rejectedRecommendationCount,
+    deferredRecommendationCount,
+  }
+}
+
+export async function generateMindNodeRecommendations(
+  userId: string,
+  nodeId: string,
+  topK: number = 5,
+): Promise<PersistedRecommendation[]> {
+  const targetNode = await mindNodesTable.get(nodeId)
+  if (!targetNode || targetNode.userId !== userId) return []
+
+  const allNodes = await listMindNodes(userId)
+  const allEdges = await listMindEdges(userId)
+
+  const connectedIds = new Set<string>()
+  allEdges.forEach((e) => {
+    if (e.sourceNodeId === nodeId) connectedIds.add(e.targetNodeId)
+    if (e.targetNodeId === nodeId) connectedIds.add(e.sourceNodeId)
+  })
+  connectedIds.add(nodeId)
+
+  const existingRecs = await recommendationsTable
+    .where('userId')
+    .equals(userId)
+    .and(r =>
+      r.subjectType === 'mindNode' &&
+      String(r.subjectId) === nodeId &&
+      r.candidateType === 'mindNode',
+    )
+    .toArray()
+
+  const skipCandidateIds = new Set<string>()
+  for (const rec of existingRecs) {
+    if (
+      rec.status === 'generated' ||
+      rec.status === 'shown' ||
+      rec.status === 'accepted'
+    ) {
+      skipCandidateIds.add(rec.candidateId)
+    }
+    if (rec.status === 'rejected') {
+      skipCandidateIds.add(rec.candidateId)
+    }
+  }
+
+  const candidates: Array<{ nodeId: string; score: number; reason: string; source: string }> = []
+
+  const targetTags: string[] = Array.isArray((targetNode.metadata as Record<string, unknown>)?.tagIds)
+    ? ((targetNode.metadata as Record<string, unknown>).tagIds as string[])
+    : []
+
+  const targetNeighbors = new Set<string>()
+  allEdges.forEach((e) => {
+    if (e.sourceNodeId === nodeId) targetNeighbors.add(e.targetNodeId)
+    if (e.targetNodeId === nodeId) targetNeighbors.add(e.sourceNodeId)
+  })
+
+  for (const node of allNodes) {
+    if (connectedIds.has(node.id)) continue
+    if (skipCandidateIds.has(node.id)) continue
+
+    let score = 0
+    let reason = ''
+    let source = ''
+
+    const nodeTags: string[] = Array.isArray((node.metadata as Record<string, unknown>)?.tagIds)
+      ? ((node.metadata as Record<string, unknown>).tagIds as string[])
+      : []
+    const tagOverlap = targetTags.filter((t) => nodeTags.includes(t)).length
+    if (tagOverlap > 0) {
+      score += 0.3 + Math.min(tagOverlap * 0.15, 0.55)
+      reason = `${tagOverlap} 个共同标签`
+      source = 'tag_overlap'
+    }
+
+    const targetWords = targetNode.label.toLowerCase().split(/\s+/).filter((w: string) => w.length > 1)
+    const nodeWords = node.label.toLowerCase().split(/\s+/).filter((w: string) => w.length > 1)
+    const wordOverlap = targetWords.filter((w: string) => nodeWords.includes(w)).length
+    if (wordOverlap > 0) {
+      const titleScore = 0.2 + Math.min(wordOverlap * 0.15, 0.5)
+      if (titleScore > score) {
+        score = titleScore
+        reason = `${wordOverlap} 个标题关键词匹配`
+        source = 'title_keyword'
+      } else {
+        score += titleScore * 0.3
+      }
+    }
+
+    if (node.nodeType === targetNode.nodeType && node.nodeType !== 'root') {
+      score += 0.15
+      if (!reason) {
+        reason = `相同节点类型: ${node.nodeType}`
+        source = 'node_type'
+      }
+    }
+
+    const nodeNeighbors = new Set<string>()
+    allEdges.forEach((e) => {
+      if (e.sourceNodeId === node.id) nodeNeighbors.add(e.targetNodeId)
+      if (e.targetNodeId === node.id) nodeNeighbors.add(e.sourceNodeId)
+    })
+    const sharedNeighbors = Array.from(targetNeighbors).filter((id: string) => nodeNeighbors.has(id)).length
+    if (sharedNeighbors > 0) {
+      score += 0.2 + Math.min(sharedNeighbors * 0.1, 0.4)
+      if (!reason || source === 'node_type') {
+        reason = `${sharedNeighbors} 个共同邻居`
+        source = 'neighbor_overlap'
+      }
+    }
+
+    if (score > 0.2) {
+      candidates.push({ nodeId: node.id, score: Math.min(score, 0.95), reason, source })
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score)
+  const topCandidates = candidates.slice(0, topK)
+
+  const results: PersistedRecommendation[] = []
+  for (const candidate of topCandidates) {
+    const created = await createRecommendation({
+      userId,
+      subjectType: 'mindNode',
+      subjectId: nodeId,
+      recommendationType: 'link_suggestion',
+      candidateType: 'mindNode',
+      candidateId: candidate.nodeId,
+      confidenceScore: candidate.score,
+      reasonJson: JSON.stringify({
+        reason_text: candidate.reason,
+        source: candidate.source,
+        confidence: candidate.score,
+      }),
+      status: 'generated',
+    })
+    results.push(created)
+  }
+
+  return results
 }
