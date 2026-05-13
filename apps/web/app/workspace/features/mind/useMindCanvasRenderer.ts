@@ -174,7 +174,7 @@ export function applyFilterState(
   return { nodes: filteredNodes, edges: filteredEdges }
 }
 
-type ViewScopeType = 'focusMap' | 'clusterMap' | 'linkReview' | 'driftInbox' | 'timelineSnapshot'
+type ViewScopeType = 'focusMap' | 'clusterMap' | 'linkReview' | 'driftDock' | 'timelineSnapshot'
 
 function filterByViewScope(
   nodes: CanvasRenderNode[], edges: MindGraphSnapshotEdge[],
@@ -206,7 +206,7 @@ function filterByViewScope(
     }
   }
 
-  if (viewScope === 'driftInbox') {
+  if (viewScope === 'driftDock') {
     const connectedIds = new Set<string>()
     edges.forEach(e => { connectedIds.add(e.sourceNodeId); connectedIds.add(e.targetNodeId) })
     const driftNodes = nodes.filter(n => !connectedIds.has(n.id) || n.nodeType === 'document')

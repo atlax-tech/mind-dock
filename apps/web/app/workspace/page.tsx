@@ -15,11 +15,14 @@ import MindCanvasStage from './features/mind/MindCanvasStage';
 import MindRecommendationInspector from './features/mind/MindRecommendationInspector';
 import {
   listActiveTips,
+  convertTipToDraft,
   convertTipToMindNode,
   syncMindFirstScreen,
   listDrafts,
   generateMindNodeRecommendations,
+  type StoredMindNode,
 } from '@/lib/repository';
+import { useDockData, type DockEntityType, findRelatedMindNode } from './features/dock/useDockData';
 import type { StoredDraft } from '@/lib/repository'
 import { emit } from '@/lib/events';
 import {
@@ -66,7 +69,6 @@ import {
   Target,
   Trash2,
   PieChart,
-  Inbox,
   Clock,
   Filter,
   Plus,
@@ -440,7 +442,7 @@ const ToolboxView = () => {
 // 使用 MindCanvasStage + MindGraphView 渲染中心图谱
 // ==========================================
 
-interface InboxItem {
+interface DockQueueItem {
   key: string
   label: string
   color: string
@@ -454,11 +456,11 @@ interface InboxItem {
   onClick: () => void
 }
 
-function InboxSection({ title, color, count, items, defaultOpen = true }: {
+function DockQueueSection({ title, color, count, items, defaultOpen = true }: {
   title: string
   color: string
   count: number
-  items: InboxItem[]
+  items: DockQueueItem[]
   defaultOpen?: boolean
 }) {
   const [open, setOpen] = useState(defaultOpen)
@@ -526,15 +528,15 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
   }, [userId]);
   
   const [unlinkedThoughts, setUnlinkedThoughts] = useState<StoredTip[]>([]);
-  const [inboxDrafts, setInboxDrafts] = useState<StoredDraft[]>([]);
+  const [dockDrafts, setDockDrafts] = useState<StoredDraft[]>([]);
   const [activeThought, setActiveThought] = useState<StoredTip | null>(null);
-  const [activeInboxDraft, setActiveInboxDraft] = useState<StoredDraft | null>(null);
+  const [activeDockDraft, setActiveDockDraft] = useState<StoredDraft | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!userId) return;
     listActiveTips(userId).then(tips => setUnlinkedThoughts(tips)).catch(() => {});
-    listDrafts(userId).then(drafts => setInboxDrafts(drafts.filter(d => !d.sourceEntryId))).catch(() => {});
+    listDrafts(userId).then(drafts => setDockDrafts(drafts.filter(d => !d.sourceEntryId))).catch(() => {});
   }, [userId]);
 
   // Build snapshot from real data
@@ -544,7 +546,7 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
   }, [mindNodes, mindEdges, loading]);
 
   const viewScopeCounts = useMemo(() => {
-    if (!snapshot) return { focusMap: 0, clusterMap: 0, linkReview: 0, driftInbox: 0, timelineSnapshot: 0 };
+    if (!snapshot) return { focusMap: 0, clusterMap: 0, linkReview: 0, driftDock: 0, timelineSnapshot: 0 };
     const parentTypes = new Set(['root', 'domain', 'project', 'topic']);
     const connectedNodeIds = new Set<string>();
     snapshot.edges.forEach(e => {
@@ -557,7 +559,7 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
       focusMap: snapshot.nodes.length,
       clusterMap: snapshot.nodes.filter(n => parentTypes.has(n.nodeType)).length,
       linkReview: snapshot.edges.filter(e => e.edgeType === 'suggested').length,
-      driftInbox: snapshot.nodes.filter(n => !connectedNodeIds.has(n.id) || n.state === 'drifting' || n.state === 'isolated').length,
+      driftDock: snapshot.nodes.filter(n => !connectedNodeIds.has(n.id) || n.state === 'drifting' || n.state === 'isolated').length,
       timelineSnapshot: snapshot.nodes.filter(n => {
         const ts = n.updatedAt ?? n.createdAt;
         if (ts != null) return now - ts < sevenDaysMs;
@@ -678,7 +680,7 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
               { id: 'focusMap', label: '聚焦视图', icon: <Sparkles size={14} />, count: viewScopeCounts.focusMap },
               { id: 'clusterMap', label: '聚类视图', icon: <LayoutGrid size={14} />, count: viewScopeCounts.clusterMap },
               { id: 'linkReview', label: '链接审核', icon: <Network size={14} />, count: viewScopeCounts.linkReview },
-              { id: 'driftInbox', label: '散点视图', icon: <AlertCircle size={14} />, count: viewScopeCounts.driftInbox },
+              { id: 'driftDock', label: '散点视图', icon: <AlertCircle size={14} />, count: viewScopeCounts.driftDock },
               { id: 'timelineSnapshot', label: '时间快照', icon: <Timer size={14} />, count: viewScopeCounts.timelineSnapshot },
             ].map(scope => {
               const isSelected = ixState.viewScope === scope.id;
@@ -760,33 +762,33 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
           </div>
         </div>
 
-        {/* Lower Section: QUEUE (Inbox) — 折叠式 */}
+        {/* Lower Section: QUEUE (Dock) — 折叠式 */}
         <div className="flex flex-col min-h-0 overflow-hidden">
           <div className="px-4 py-3 flex items-center justify-between shrink-0">
             <span className="text-[10px] font-bold text-[#4a5568] uppercase tracking-widest">待整理队列</span>
-            <span className="text-[10px] text-[#4a5568]">{unlinkedThoughts.length + inboxDrafts.length}</span>
+            <span className="text-[10px] text-[#4a5568]">{unlinkedThoughts.length + dockDrafts.length}</span>
           </div>
 
           <div className="flex-1 overflow-y-auto custom-scrollbar px-2 pb-4 space-y-1">
-            <InboxSection
+            <DockQueueSection
               title="Drafts"
               color="#fbbf24"
-              count={inboxDrafts.length}
-              items={inboxDrafts.map(d => ({
+              count={dockDrafts.length}
+              items={dockDrafts.map(d => ({
                 key: `draft-${d.id}`,
                 label: d.title || 'Untitled',
                 color: '#fbbf24',
                 badge: 'draft',
                 badgeIcon: '✎',
-                isSelected: activeInboxDraft?.id === d.id,
+                isSelected: activeDockDraft?.id === d.id,
                 selectedBg: 'bg-[#fbbf24]/10 border-[#fbbf24]/30',
                 hoverGroupBg: 'group-hover:bg-[#fbbf24]/20 group-hover:border-[#fbbf24]/30',
                 hoverGroupText: 'group-hover:text-[#fbbf24]',
                 selectedText: 'text-[#fbbf24]',
-                onClick: () => { setActiveInboxDraft(d); setActiveThought(null); setSelectedNodeId(null) },
+                onClick: () => { setActiveDockDraft(d); setActiveThought(null); setSelectedNodeId(null) },
               }))}
             />
-            <InboxSection
+            <DockQueueSection
               title="Tips"
               color="#86d7ff"
               count={unlinkedThoughts.length}
@@ -804,7 +806,7 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
                   hoverGroupBg: 'group-hover:bg-[#86d7ff]/20 group-hover:border-[#86d7ff]/30',
                   hoverGroupText: 'group-hover:text-[#86d7ff]',
                   selectedText: 'text-[#86d7ff]',
-                  onClick: () => { setActiveThought(t); setActiveInboxDraft(null); setSelectedNodeId(null) },
+                  onClick: () => { setActiveThought(t); setActiveDockDraft(null); setSelectedNodeId(null) },
                 };
               })}
             />
@@ -841,7 +843,7 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
       </div>
 
       {/* Right Pane: 节点详情面板 (图五) 或 AI 蒸馏面板 */}
-      {(selectedNode || activeThought || activeInboxDraft) && (
+      {(selectedNode || activeThought || activeDockDraft) && (
         <div className="w-[300px] bg-[#0d1215] flex flex-col shrink-0 relative overflow-hidden border-l border-white/[0.07] animate-in slide-in-from-right duration-300">
           <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-[#86d7ff] to-[#c8a0f0]"></div>
 
@@ -923,21 +925,21 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
                 </button>
               </div>
             </div>
-          ) : activeInboxDraft ? (
+          ) : activeDockDraft ? (
             <div className="flex flex-col h-full p-5 overflow-y-auto custom-scrollbar">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
                   <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#fbbf24' }}></div>
                   <span className="text-[10px] font-semibold text-[#8d989f] uppercase tracking-wider">Draft</span>
                 </div>
-                <button onClick={() => setActiveInboxDraft(null)} className="w-6 h-6 rounded-full bg-white/5 flex items-center justify-center hover:bg-white/10 transition-colors">
+                <button onClick={() => setActiveDockDraft(null)} className="w-6 h-6 rounded-full bg-white/5 flex items-center justify-center hover:bg-white/10 transition-colors">
                   <X className="w-3.5 h-3.5 text-[#8d989f]" />
                 </button>
               </div>
 
-              <h3 className="text-[16px] font-semibold text-white leading-tight mb-2">{activeInboxDraft.title || 'Untitled'}</h3>
-              {activeInboxDraft.content && (
-                <p className="text-[12px] text-[#8d989f] leading-relaxed mb-4 line-clamp-4">{activeInboxDraft.content.slice(0, 200)}</p>
+              <h3 className="text-[16px] font-semibold text-white leading-tight mb-2">{activeDockDraft.title || 'Untitled'}</h3>
+              {activeDockDraft.content && (
+                <p className="text-[12px] text-[#8d989f] leading-relaxed mb-4 line-clamp-4">{activeDockDraft.content.slice(0, 200)}</p>
               )}
 
               <div className="bg-[#fbbf24]/[0.05] border border-[#fbbf24]/20 rounded-[12px] p-4 mb-4">
@@ -945,7 +947,7 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
                 <p className="text-[11px] text-[#e0e3e6] leading-relaxed mb-4">
                   此草稿尚未发布为正式文档。发布后将自动在图谱中生成对应节点。
                 </p>
-                <button onClick={() => { if (activeInboxDraft) { onOpenEditor?.(activeInboxDraft.id, 'draft'); setActiveInboxDraft(null) } }}
+                <button onClick={() => { if (activeDockDraft) { onOpenEditor?.(activeDockDraft.id, 'draft'); setActiveDockDraft(null) } }}
                   className="w-full h-[32px] rounded-[8px] bg-[#fbbf24]/20 border border-[#fbbf24]/30 text-white text-[12px] font-medium hover:bg-[#fbbf24]/30 transition-all flex items-center justify-center gap-1.5">
                   <PenTool className="w-3.5 h-3.5" /> 打开编辑器
                 </button>
@@ -999,44 +1001,132 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
 // ==========================================
 
 // 3. 停靠区视图 (Dock View) — 知识结构控制台
-// 此处为Mock功能，等待后端接入 — 所有Space/Doc/Rec数据均为Mock
-// To-do: 后端已支持 listDockItems(), archiveItem(), ignoreItem(), restoreItem(), suggestItem()
-// To-do: 后端已支持 getCurrentUser() 获取当前用户身份
-const DockView = ({ setActiveTab }: { setActiveTab: (tab: string) => void }) => {
-  const [selectedSpace, setSelectedSpace] = React.useState('Atlax 架构设计');
-  const [selectedDoc, setSelectedDoc] = React.useState('空间计算 UI 范式');
-  const [selectedAction, setSelectedAction] = React.useState('修复 5 个孤立节点');
+// Phase 3.2 DOCK-REAL-001: 已接入真实 IndexedDB 数据源
+const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
+  setActiveTab: (tab: string) => void
+  userId: string
+  onOpenEditor?: (documentId: number, sourceType: 'draft' | 'document') => void
+  onToast?: (msg: string) => void
+}) => {
+  const { data: dockData, loading: dockLoading } = useDockData(userId);
+  const [selectedSpaceId, setSelectedSpaceId] = React.useState<string | null>(null);
+  const [selectedEntityId, setSelectedEntityId] = React.useState<string | null>(null);
+  const [selectedRecId, setSelectedRecId] = React.useState<string | null>(null);
+  const [relatedMindNode, setRelatedMindNode] = React.useState<StoredMindNode | null>(null);
 
-  
-  // 此处为Mock功能，等待后端接入
-// Space Data
-  const spaces = [
-    { name: 'Atlax 架构设计', type: 'Project Control', health: '92%', recs: 5, active: true },
-    { name: 'Q3 用户研究', type: 'Research OS', health: '85%', recs: 0, active: false },
-    { name: 'Java 体系复习', type: 'Learning', health: '78%', recs: 2, active: false },
-    { name: '技术博客', type: 'Content Pipeline', health: '95%', recs: 1, active: false }
-  ];
+  const spaces = dockData.spaces;
+  const selectedSpace = spaces.find(s => s.id === selectedSpaceId) || spaces[0] || null;
 
-  
-  // 此处为Mock功能，等待后端接入
-// Document Data
-  const docs = [
-    { type: 'Research Note', name: '空间计算 UI 范式', space: 'Atlax 架构设计', state: '待确认', tags: '#Spatial #Architecture', rec: '推荐连接到 UI Structure', score: '92%' },
-    { type: 'Tech Draft', name: 'Local-first 数据同步设计', space: 'Atlax 架构设计', state: '活跃', tags: '#CRDT #Sync', rec: '建议加入数据结构链路', score: '88%' },
-    { type: 'Decision', name: 'Mind 与 Dock 边界说明', space: 'Atlax 架构设计', state: '可合并', tags: '#Architecture', rec: '可关联到产品原则', score: '84%' },
-    { type: 'Interview', name: '用户访谈 #12 摘要', space: 'Q3 用户研究', state: '待整理', tags: '#UserPain', rec: '建议生成洞察节点', score: '79%' },
-    { type: 'Learning', name: 'JVM 内存模型复习', space: 'Java 体系复习', state: '孤立', tags: '#Java #JVM', rec: '建议连接到并发主题', score: '75%' }
-  ];
+  const filteredEntities = React.useMemo(() => {
+    if (!selectedSpace) return dockData.entities;
+    const spaceName = selectedSpace.name;
+    return dockData.entities.filter(e => {
+      if (e.type === 'document') return e.project === spaceName || !e.project;
+      if (e.type === 'collection' && e.title === spaceName) return true;
+      return true;
+    });
+  }, [dockData.entities, selectedSpace]);
 
-  
-  // 此处为Mock功能，等待后端接入
-// Rec Data
-  const recs = [
-    { id: '修复 5 个孤立节点', type: 'Link', action: '修复 5 个孤立节点', target: 'Atlax 架构设计', impact: '+5 MindEdge', confidence: '94%' },
-    { id: '合并重复 Design 标签', type: 'Merge', action: '合并重复 Design 标签', target: '14 篇文档', impact: 'tag cleanup', confidence: '88%' },
-    { id: '确认 12 条落库建议', type: 'Landing', action: '确认 12 条落库建议', target: 'Capture queue', impact: '+12 events', confidence: '83%' },
-    { id: '处理 8 条停滞内容', type: 'Review', action: '处理 8 条停滞内容', target: '7d untouched', impact: 'archive / revive', confidence: '71%' }
-  ];
+  const selectedEntity = dockData.entities.find(e => e.id === selectedEntityId) || null;
+  const selectedRec = dockData.recommendations.find(r => r.id === selectedRecId) || null;
+
+  React.useEffect(() => {
+    if (selectedEntity && userId) {
+      findRelatedMindNode(userId, selectedEntity).then(node => setRelatedMindNode(node)).catch(() => setRelatedMindNode(null));
+    } else {
+      setRelatedMindNode(null);
+    }
+  }, [selectedEntity, userId]);
+
+  const handleOpenEditor = React.useCallback(async () => {
+    if (!selectedEntity || !onOpenEditor) return;
+    if (selectedEntity.type === 'document' && selectedEntity.entryId) {
+      onOpenEditor(selectedEntity.entryId, 'document');
+    } else if (selectedEntity.type === 'draft' && selectedEntity.draftId) {
+      onOpenEditor(selectedEntity.draftId, 'draft');
+    } else if (selectedEntity.type === 'tip' && selectedEntity.tipId) {
+      try {
+        const result = await convertTipToDraft(userId, selectedEntity.tipId);
+        if (result.draft) {
+          emit({ type: 'tip_converted', tipId: selectedEntity.tipId, draftId: result.draft.id });
+          onOpenEditor(result.draft.id, 'draft');
+        } else {
+          onToast?.('Tip 转换失败');
+        }
+      } catch {
+        onToast?.('Tip 转换失败');
+      }
+    } else if (selectedEntity.type === 'mindNode' && selectedEntity.documentId != null) {
+      onOpenEditor(selectedEntity.documentId, 'document');
+    } else {
+      onToast?.('此类型暂不支持打开 Editor');
+    }
+  }, [selectedEntity, onOpenEditor, userId, onToast]);
+
+  const handleOpenInMind = React.useCallback(() => {
+    setActiveTab('mind');
+  }, [setActiveTab]);
+
+  const getStatusStyle = (status: string) => {
+    switch (status) {
+      case 'active': case '活跃': return 'bg-[#9cf4d4]/10 text-[#9cf4d4] border-[#9cf4d4]/20';
+      case 'archived': case '待确认': return 'bg-[#86d7ff]/10 text-[#86d7ff] border-[#86d7ff]/20';
+      case 'published': case '可合并': return 'bg-[#c8a0f0]/10 text-[#c8a0f0] border-[#c8a0f0]/20';
+      case 'drifting': case 'isolated': case '孤立': return 'bg-[#ffb4ab]/10 text-[#ffb4ab] border-[#ffb4ab]/20';
+      default: return 'bg-white/10 text-[#8d989f] border-white/10';
+    }
+  };
+
+  const getStatusLabel = (status: string) => {
+    switch (status) {
+      case 'active': return '活跃';
+      case 'archived': return '已归档';
+      case 'published': return '已发布';
+      case 'discarded': return '已丢弃';
+      case 'drifting': return '漂移';
+      case 'isolated': return '孤立';
+      case 'anchored': return '锚定';
+      case 'dormant': return '休眠';
+      default: return status;
+    }
+  };
+
+  const getTypeIcon = (type: DockEntityType) => {
+    switch (type) {
+      case 'document': return <FileText className="w-4 h-4" />;
+      case 'draft': return <PenTool className="w-4 h-4" />;
+      case 'tip': return <Sparkles className="w-4 h-4" />;
+      case 'mindNode': return <Brain className="w-4 h-4" />;
+      case 'collection': return <FolderTree className="w-4 h-4" />;
+      case 'tag': return <Layers className="w-4 h-4" />;
+      default: return <FileText className="w-4 h-4" />;
+    }
+  };
+
+  const getTypeLabel = (type: DockEntityType) => {
+    switch (type) {
+      case 'document': return 'Document';
+      case 'draft': return 'Draft';
+      case 'tip': return 'Tip';
+      case 'mindNode': return 'Mind Node';
+      case 'collection': return 'Collection';
+      case 'tag': return 'Tag';
+      default: return type;
+    }
+  };
+
+  if (dockLoading) {
+    return (
+      <div className="flex w-full h-full bg-[#0b0f11] text-[#e6eaed] overflow-hidden items-center justify-center">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center animate-pulse">
+            <Archive className="w-5 h-5 text-[#86d7ff]" />
+          </div>
+          <span className="text-xs text-[#899298]">加载 Dock 数据...</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex w-full h-full bg-[#0b0f11] text-[#e6eaed] overflow-hidden">
@@ -1053,9 +1143,9 @@ const DockView = ({ setActiveTab }: { setActiveTab: (tab: string) => void }) => 
             <span className="text-[12px] font-medium flex-1">任务控制</span>
           </div>
           <div className="h-[36px] px-2 rounded-[8px] flex items-center gap-2 cursor-pointer text-[#8d989f] hover:bg-white/5 hover:text-white transition-colors">
-            <Inbox className="w-[14px] h-[14px]" />
+            <Archive className="w-[14px] h-[14px]" />
             <span className="text-[12px] font-medium flex-1">待整理</span>
-            <span className="text-[10px] bg-white/10 px-1.5 rounded-full">24</span>
+            <span className="text-[10px] bg-white/10 px-1.5 rounded-full">{dockData.rawTips.length}</span>
           </div>
           <div className="h-[36px] px-2 rounded-[8px] flex items-center gap-2 cursor-pointer text-[#8d989f] hover:bg-white/5 hover:text-white transition-colors">
             <FolderTree className="w-[14px] h-[14px]" />
@@ -1064,19 +1154,19 @@ const DockView = ({ setActiveTab }: { setActiveTab: (tab: string) => void }) => 
           <div className="h-[36px] px-2 rounded-[8px] flex items-center gap-2 cursor-pointer text-[#8d989f] hover:bg-white/5 hover:text-white transition-colors">
             <Sparkles className="w-[14px] h-[14px]" />
             <span className="text-[12px] font-medium flex-1">推荐</span>
-            <span className="text-[10px] bg-white/10 px-1.5 rounded-full">12</span>
+            <span className="text-[10px] bg-white/10 px-1.5 rounded-full">{dockData.recommendations.length}</span>
           </div>
           <div className="h-[36px] px-2 rounded-[8px] flex items-center gap-2 cursor-pointer text-[#8d989f] hover:bg-white/5 hover:text-white transition-colors">
             <Activity className="w-[14px] h-[14px]" />
             <span className="text-[12px] font-medium flex-1">结构健康</span>
-            <span className="text-[10px] bg-[#9cf4d4]/20 text-[#9cf4d4] px-1.5 rounded-full">92</span>
+            <span className="text-[10px] bg-[#9cf4d4]/20 text-[#9cf4d4] px-1.5 rounded-full">{dockData.signals.find(s => s.key === 'health')?.value ?? '—'}</span>
           </div>
         </div>
 
         <div className="p-3 mb-2">
           <div className="p-3 bg-[#111619] border border-white/[0.07] rounded-[12px] h-[110px] flex flex-col">
             <div className="text-[12px] font-semibold text-white mb-1">自动整理</div>
-            <div className="text-[10px] text-[#8d989f] leading-relaxed flex-1 mt-1">12 条建议可预览。确认后才写入结构层。</div>
+            <div className="text-[10px] text-[#8d989f] leading-relaxed flex-1 mt-1">{dockData.recommendations.length} 条建议可预览。确认后才写入结构层。</div>
             <button className="w-full h-[28px] rounded-[8px] bg-white/10 text-[11px] font-medium text-white hover:bg-white/20 transition-colors mt-2">查看建议</button>
           </div>
         </div>
@@ -1088,7 +1178,7 @@ const DockView = ({ setActiveTab }: { setActiveTab: (tab: string) => void }) => 
         {/* D1. Local toolbar */}
         <div className="h-[48px] bg-[#0d1215] border-b border-white/[0.07] px-4 flex items-center justify-between shrink-0">
           <div className="flex flex-col justify-center">
-            <div className="text-[9px] text-[#8d989f] uppercase tracking-wider font-semibold">Dock / {selectedSpace}</div>
+            <div className="text-[9px] text-[#8d989f] uppercase tracking-wider font-semibold">Dock / {selectedSpace?.name ?? '—'}</div>
             <div className="text-[14px] font-medium text-white mt-0.5">任务控制台</div>
           </div>
           <div className="flex items-center gap-2">
@@ -1111,14 +1201,14 @@ const DockView = ({ setActiveTab }: { setActiveTab: (tab: string) => void }) => 
             <div className="text-[10px] text-[#86d7ff] cursor-pointer hover:underline">管理视图模板</div>
           </div>
           <div className="flex gap-3">
-            {spaces.map(space => (
+            {spaces.length > 0 ? spaces.map(space => (
               <div 
-                key={space.name}
-                onClick={() => setSelectedSpace(space.name)}
-                className={`flex-1 h-[54px] rounded-[8px] border p-2 cursor-pointer flex flex-col justify-between transition-colors ${selectedSpace === space.name ? 'border-[#86d7ff]/40 bg-[#86d7ff]/5' : 'border-white/[0.07] hover:border-white/20 bg-white/[0.02]'}`}
+                key={space.id}
+                onClick={() => setSelectedSpaceId(space.id)}
+                className={`flex-1 h-[54px] rounded-[8px] border p-2 cursor-pointer flex flex-col justify-between transition-colors ${selectedSpace?.id === space.id ? 'border-[#86d7ff]/40 bg-[#86d7ff]/5' : 'border-white/[0.07] hover:border-white/20 bg-white/[0.02]'}`}
               >
                 <div className="flex justify-between items-center">
-                  <span className={`text-[13px] font-medium truncate ${selectedSpace === space.name ? 'text-[#86d7ff]' : 'text-[#e6eaed]'}`}>{space.name}</span>
+                  <span className={`text-[13px] font-medium truncate ${selectedSpace?.id === space.id ? 'text-[#86d7ff]' : 'text-[#e6eaed]'}`}>{space.name}</span>
                   <span className="text-[10px] text-[#9cf4d4]">{space.health}</span>
                 </div>
                 <div className="flex justify-between items-center text-[10px] text-[#8d989f]">
@@ -1126,19 +1216,23 @@ const DockView = ({ setActiveTab }: { setActiveTab: (tab: string) => void }) => 
                   {space.recs > 0 && <span className="bg-[#86d7ff]/20 text-[#86d7ff] px-1.5 rounded">{space.recs} 建议</span>}
                 </div>
               </div>
-            ))}
+            )) : (
+              <div className="flex-1 h-[54px] rounded-[8px] border border-white/[0.07] p-2 flex items-center justify-center text-[12px] text-[#8d989f]">
+                暂无 Space，创建 Collection 后自动出现
+              </div>
+            )}
           </div>
         </div>
 
         {/* D3. System signal strip */}
         <div className="h-[68px] border-b border-white/[0.07] flex shrink-0 divide-x divide-white/[0.07]">
           {[
-            { label: '待归类', val: '24', icon: Inbox },
-            { label: '待确认建议', val: '12', icon: Sparkles },
-            { label: '孤立节点', val: '15', icon: Network },
-            { label: '重复主题', val: '3', icon: Layers },
-            { label: '停滞内容', val: '8', icon: Clock },
-            { label: '结构健康', val: '92%', icon: Activity }
+            { label: '待归类', val: String(dockData.signals.find(s => s.key === 'unsorted')?.value ?? 0), icon: Archive },
+            { label: '待确认建议', val: String(dockData.signals.find(s => s.key === 'pendingRecs')?.value ?? 0), icon: Sparkles },
+            { label: '孤立节点', val: String(dockData.signals.find(s => s.key === 'isolated')?.value ?? 0), icon: Network },
+            { label: '重复主题', val: String(dockData.signals.find(s => s.key === 'duplicates')?.value ?? 0), icon: Layers },
+            { label: '停滞内容', val: String(dockData.signals.find(s => s.key === 'stagnant')?.value ?? 0), icon: Clock },
+            { label: '结构健康', val: String(dockData.signals.find(s => s.key === 'health')?.value ?? '—'), icon: Activity }
           ].map(sig => (
             <div key={sig.label} className="flex-1 flex items-center justify-center gap-3 hover:bg-white/[0.02] cursor-pointer transition-colors">
               <div className="w-[28px] h-[28px] flex items-center justify-center bg-white/[0.04] rounded-md border border-white/[0.05]">
@@ -1165,30 +1259,34 @@ const DockView = ({ setActiveTab }: { setActiveTab: (tab: string) => void }) => 
           </div>
           
           <div className="flex-1 overflow-y-auto custom-scrollbar">
-            {docs.map(doc => (
+            {filteredEntities.length > 0 ? filteredEntities.map(entity => (
               <div 
-                key={doc.name}
-                onClick={() => setSelectedDoc(doc.name)}
-                className={`h-[54px] border-b border-white/[0.055] flex items-center px-4 cursor-pointer transition-colors ${selectedDoc === doc.name ? 'bg-[#86d7ff]/[0.07]' : 'hover:bg-white/[0.02]'}`}
+                key={entity.id}
+                onClick={() => setSelectedEntityId(entity.id)}
+                className={`h-[54px] border-b border-white/[0.055] flex items-center px-4 cursor-pointer transition-colors ${selectedEntityId === entity.id ? 'bg-[#86d7ff]/[0.07]' : 'hover:bg-white/[0.02]'}`}
               >
                 <div className="w-[32px] flex items-center justify-start text-[#8d989f]">
-                  <FileText className="w-4 h-4" />
+                  {getTypeIcon(entity.type)}
                 </div>
                 <div className="flex-1 min-w-[150px] pr-2 flex flex-col justify-center">
-                  <div className="text-[12px] font-medium text-[#e6eaed] truncate mb-0.5">{doc.name}</div>
-                  <div className="text-[10px] text-[#8d989f] truncate">{doc.type}</div>
+                  <div className="text-[12px] font-medium text-[#e6eaed] truncate mb-0.5">{entity.title}</div>
+                  <div className="text-[10px] text-[#8d989f] truncate">{getTypeLabel(entity.type)}</div>
                 </div>
-                <div className="w-[120px] text-[12px] text-[#8d989f] truncate pr-2">{doc.space}</div>
+                <div className="w-[120px] text-[12px] text-[#8d989f] truncate pr-2">{entity.project ?? '—'}</div>
                 <div className="w-[80px]">
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded border ${doc.state === '活跃' ? 'bg-[#9cf4d4]/10 text-[#9cf4d4] border-[#9cf4d4]/20' : doc.state === '待确认' ? 'bg-[#86d7ff]/10 text-[#86d7ff] border-[#86d7ff]/20' : doc.state === '可合并' ? 'bg-[#c8a0f0]/10 text-[#c8a0f0] border-[#c8a0f0]/20' : doc.state === '孤立' ? 'bg-[#ffb4ab]/10 text-[#ffb4ab] border-[#ffb4ab]/20' : 'bg-white/10 text-[#8d989f] border-white/10'}`}>
-                    {doc.state}
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded border ${getStatusStyle(entity.status)}`}>
+                    {getStatusLabel(entity.status)}
                   </span>
                 </div>
-                <div className="w-[140px] text-[10px] text-[#8d989f] truncate pr-2">{doc.tags}</div>
-                <div className="w-[160px] text-[11px] text-[#e6eaed] truncate pr-2">{doc.rec}</div>
-                <div className="w-[60px] text-right text-[12px] font-medium text-[#8d989f]">{doc.score}</div>
+                <div className="w-[140px] text-[10px] text-[#8d989f] truncate pr-2">{entity.tags && entity.tags.length > 0 ? entity.tags.map(t => `#${t}`).join(' ') : '—'}</div>
+                <div className="w-[160px] text-[11px] text-[#e6eaed] truncate pr-2">—</div>
+                <div className="w-[60px] text-right text-[12px] font-medium text-[#8d989f]">—</div>
               </div>
-            ))}
+            )) : (
+              <div className="flex-1 flex items-center justify-center py-12 text-[12px] text-[#8d989f]">
+                暂无内容。创建 Document、Draft 或 Tip 后将在此显示。
+              </div>
+            )}
           </div>
         </div>
 
@@ -1198,12 +1296,12 @@ const DockView = ({ setActiveTab }: { setActiveTab: (tab: string) => void }) => 
             <div className="text-[10px] font-semibold text-[#8d989f] uppercase tracking-wider">推荐队列</div>
             <div className="text-[10px] text-[#86d7ff] cursor-pointer hover:underline">全部预览</div>
           </div>
-          <div className="flex gap-3">
-            {recs.map(rec => (
+          <div className="flex gap-3 overflow-x-auto min-w-0">
+            {dockData.recommendations.length > 0 ? dockData.recommendations.map(rec => (
               <div 
                 key={rec.id}
-                onClick={() => setSelectedAction(rec.id)}
-                className={`flex-1 h-[86px] border-r border-white/[0.07] p-2 cursor-pointer flex flex-col justify-between transition-colors ${selectedAction === rec.id ? 'bg-[#86d7ff]/5' : 'hover:bg-white/[0.02]'}`}
+                onClick={() => setSelectedRecId(rec.id)}
+                className={`min-w-[200px] max-w-[280px] shrink-0 h-[86px] border-r border-white/[0.07] p-2 cursor-pointer flex flex-col justify-between transition-colors ${selectedRecId === rec.id ? 'bg-[#86d7ff]/5' : 'hover:bg-white/[0.02]'}`}
               >
                 <div className="flex justify-between items-start">
                   <div className="flex items-center gap-1.5 overflow-hidden">
@@ -1216,7 +1314,11 @@ const DockView = ({ setActiveTab }: { setActiveTab: (tab: string) => void }) => 
                   <span className="text-[#86d7ff]">{rec.type}</span> • {rec.target}
                 </div>
               </div>
-            ))}
+            )) : (
+              <div className="min-w-[200px] shrink-0 h-[86px] border-r border-white/[0.07] p-2 flex items-center justify-center text-[11px] text-[#8d989f]">
+                暂无推荐。使用 Mind 视图生成推荐后将在此显示。
+              </div>
+            )}
           </div>
         </div>
 
@@ -1227,18 +1329,18 @@ const DockView = ({ setActiveTab }: { setActiveTab: (tab: string) => void }) => 
         {/* 1. Header */}
         <div className="mb-5">
           <div className="text-[9px] font-semibold text-[#8d989f] uppercase tracking-wider mb-2">Inspector</div>
-          <div className="text-[16px] font-semibold text-white leading-tight mb-1">{selectedDoc}</div>
-          <div className="text-[11px] text-[#8d989f]">Research Note · {selectedSpace} · 2h</div>
+          <div className="text-[16px] font-semibold text-white leading-tight mb-1">{selectedEntity?.title ?? '未选择'}</div>
+          <div className="text-[11px] text-[#8d989f]">{selectedEntity ? `${getTypeLabel(selectedEntity.type)} · ${selectedEntity.project ?? '—'} · ${selectedEntity.updatedAt ? formatRelativeTime(selectedEntity.updatedAt) : '—'}` : '选择一个实体查看详情'}</div>
         </div>
 
         {/* 2. 当前建议 */}
         <div className="mb-5 p-3 bg-[#c8a0f0]/[0.08] border border-[#c8a0f0]/30 rounded-[12px]">
           <div className="flex items-center gap-1.5 mb-2 text-[#c8a0f0]">
             <Sparkles className="w-3.5 h-3.5" />
-            <span className="text-[12px] font-medium">{selectedAction}</span>
+            <span className="text-[12px] font-medium">{selectedRec?.action ?? '无选中推荐'}</span>
           </div>
-          <div className="text-[11px] text-[#e6eaed] mb-1">目标：{recs.find(r => r.id === selectedAction)?.target}</div>
-          <div className="text-[11px] text-[#e6eaed] mb-3">影响：{recs.find(r => r.id === selectedAction)?.impact}</div>
+          <div className="text-[11px] text-[#e6eaed] mb-1">目标：{selectedRec?.target ?? '—'}</div>
+          <div className="text-[11px] text-[#e6eaed] mb-3">影响：{selectedRec?.impact ?? '—'}</div>
           <div className="flex gap-2">
             <button className="flex-1 h-[28px] rounded-[8px] bg-[#c8a0f0]/20 text-[#c8a0f0] text-[11px] font-medium hover:bg-[#c8a0f0]/30 transition-colors">预览方案</button>
             <button className="px-3 h-[28px] rounded-[8px] bg-white/5 text-[#8d989f] text-[11px] font-medium hover:bg-white/10 transition-colors">忽略</button>
@@ -1251,23 +1353,23 @@ const DockView = ({ setActiveTab }: { setActiveTab: (tab: string) => void }) => 
           <div className="divide-y divide-white/[0.07] border-y border-white/[0.07]">
             <div className="flex items-center justify-between h-[32px] text-[12px]">
               <span className="text-[#8d989f]">Space</span>
-              <span className="text-[#e6eaed]">{selectedSpace}</span>
+              <span className="text-[#e6eaed]">{selectedEntity?.project ?? selectedSpace?.name ?? '—'}</span>
             </div>
             <div className="flex items-center justify-between h-[32px] text-[12px]">
-              <span className="text-[#8d989f]">Lens</span>
-              <span className="text-[#e6eaed]">Project Control</span>
+              <span className="text-[#8d989f]">Type</span>
+              <span className="text-[#e6eaed]">{selectedEntity ? getTypeLabel(selectedEntity.type) : '—'}</span>
             </div>
             <div className="flex items-center justify-between h-[32px] text-[12px]">
               <span className="text-[#8d989f]">State</span>
-              <span className="text-[#86d7ff]">活跃</span>
+              <span className="text-[#86d7ff]">{selectedEntity ? getStatusLabel(selectedEntity.status) : '—'}</span>
             </div>
             <div className="flex items-center justify-between h-[32px] text-[12px]">
-              <span className="text-[#8d989f]">Score</span>
-              <span className="text-[#9cf4d4]">92%</span>
+              <span className="text-[#8d989f]">Mind Node</span>
+              <span className="text-[#9cf4d4]">{relatedMindNode ? relatedMindNode.label : '未关联'}</span>
             </div>
             <div className="flex items-center justify-between h-[32px] text-[12px]">
               <span className="text-[#8d989f]">Tags</span>
-              <span className="text-[#e6eaed] truncate max-w-[150px]">#Spatial #Architecture</span>
+              <span className="text-[#e6eaed] truncate max-w-[150px]">{selectedEntity?.tags && selectedEntity.tags.length > 0 ? selectedEntity.tags.map(t => `#${t}`).join(' ') : '—'}</span>
             </div>
           </div>
         </div>
@@ -1285,13 +1387,14 @@ const DockView = ({ setActiveTab }: { setActiveTab: (tab: string) => void }) => 
         {/* 5. Bottom actions */}
         <div className="flex gap-2 mt-4">
           <button 
-            onClick={() => setActiveTab('editor')}
-            className="flex-1 h-[32px] rounded-[8px] bg-white text-[#0b0f11] text-[12px] font-medium hover:bg-gray-200 transition-colors flex items-center justify-center gap-1.5"
+            onClick={handleOpenEditor}
+            disabled={!selectedEntity || (selectedEntity.type !== 'document' && selectedEntity.type !== 'draft' && selectedEntity.type !== 'tip' && selectedEntity.type !== 'mindNode')}
+            className={`flex-1 h-[32px] rounded-[8px] text-[12px] font-medium transition-colors flex items-center justify-center gap-1.5 ${selectedEntity && (selectedEntity.type === 'document' || selectedEntity.type === 'draft' || selectedEntity.type === 'tip' || selectedEntity.type === 'mindNode') ? 'bg-white text-[#0b0f11] hover:bg-gray-200' : 'bg-white/10 text-[#8d989f] cursor-not-allowed'}`}
           >
             <PenTool className="w-3.5 h-3.5" /> 打开 Editor
           </button>
           <button 
-            onClick={() => setActiveTab('mind')}
+            onClick={handleOpenInMind}
             className="flex-1 h-[32px] rounded-[8px] bg-white/10 text-white text-[12px] font-medium hover:bg-white/20 transition-colors flex items-center justify-center gap-1.5"
           >
             <Network className="w-3.5 h-3.5" /> 在 Mind 查看
@@ -2207,7 +2310,7 @@ export default function WorkspacePage() {
           {activeTab === 'briefing' && <DailyBriefingView brief={dailyBriefHook.data} briefLoading={dailyBriefHook.loading} />}
           {activeTab === 'toolbox' && <ToolboxView />}
           {activeTab === 'mind' && <MindView userId={userId} onToast={showToast} onSelectionChange={setIsNodeSelected} onOpenEditor={(documentId, sourceType) => { if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} />}
-          {activeTab === 'dock' && <DockView setActiveTab={setActiveTab} />}
+          {activeTab === 'dock' && <DockView setActiveTab={setActiveTab} userId={userId} onOpenEditor={(documentId, sourceType) => { if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} onToast={showToast} />}
           {activeTab === 'editor' && <DraftEditorView userId={userId} showSourcePacket={showSourcePacket} showInspector={showInspector} onToggleSourcePacket={() => setShowSourcePacket(v => !v)} onToggleInspector={() => setShowInspector(v => !v)} onToast={showToast} initialDraftId={pendingOpenDraftId} initialEntryId={pendingOpenEntryId} onInitialDraftConsumed={() => setPendingOpenDraftId(null)} onInitialEntryConsumed={() => setPendingOpenEntryId(null)} />}
           {activeTab === 'review' && <ReviewView />}
           {activeTab === 'settings' && <SettingsView />}

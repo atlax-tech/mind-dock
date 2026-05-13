@@ -59,7 +59,7 @@ export interface MindInteractionState {
   scope: MindScopeType
   scopeTargetId: string | null
   chainRootId: string | null
-  viewScope: 'focusMap' | 'clusterMap' | 'linkReview' | 'driftInbox' | 'timelineSnapshot'
+  viewScope: 'focusMap' | 'clusterMap' | 'linkReview' | 'driftDock' | 'timelineSnapshot'
   connectMode: boolean
   connectSourceId: string | null
   changeParentMode: boolean

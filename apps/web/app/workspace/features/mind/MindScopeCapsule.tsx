@@ -26,7 +26,7 @@ function isStaging(node: HiddenNode): boolean {
 
 interface MindScopeCapsuleProps {
   filteredCounts: FilteredCounts
-  viewScope: 'focusMap' | 'clusterMap' | 'linkReview' | 'driftInbox' | 'timelineSnapshot'
+  viewScope: 'focusMap' | 'clusterMap' | 'linkReview' | 'driftDock' | 'timelineSnapshot'
   hiddenNodes?: HiddenNode[]
   onCenter?: () => void
   onSuggest?: () => void
@@ -51,7 +51,7 @@ export default function MindScopeCapsule({
       case 'timelineSnapshot': return <Timer size={16} className="text-[#86d7ff]" />
       case 'clusterMap': return <LayoutGrid size={16} className="text-[#c8a0f0]" />
       case 'linkReview': return <Network size={16} className="text-[#9cf4d4]" />
-      case 'driftInbox': return <AlertCircle size={16} className="text-[#ff9c9c]" />
+      case 'driftDock': return <AlertCircle size={16} className="text-[#ff9c9c]" />
       default: return <Sparkles size={16} className="text-[#86d7ff]" />
     }
   }
