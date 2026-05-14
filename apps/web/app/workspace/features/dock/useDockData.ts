@@ -11,6 +11,9 @@ import {
   listTags,
   listRecommendationDockQueue,
   findMindNodeByDocumentId,
+  convertTipToDraft,
+  applyRecommendation,
+  recordRecommendationFeedback,
   type StoredEntry,
   type StoredDraft,
   type StoredTip,
@@ -20,7 +23,9 @@ import {
   type StoredTag,
   type RecommendationDockQueueItem,
 } from '@/lib/repository'
-import { subscribe } from '@/lib/events'
+import { subscribe, emit } from '@/lib/events'
+import { isRecommendationPending } from '@/lib/recommendation-i18n'
+import type { RecommendationStatus, RecommendationCandidateType, RecommendationSubjectType } from '@atlax/domain'
 
 export type DockEntityType = 'document' | 'draft' | 'tip' | 'mindNode' | 'collection' | 'tag'
 
@@ -66,6 +71,17 @@ export interface DockRecommendation {
   target: string
   impact: string
   confidence: string
+  status: RecommendationStatus
+  candidateType: RecommendationCandidateType
+  candidateId: string
+  subjectType: RecommendationSubjectType
+  subjectId: number | string
+  confidenceScore: number
+  isShown: boolean
+  hasFeedback: boolean
+  reasonSummary: { reason: string }
+  scoreSummary: { score: number; scoreReason?: string | null }
+  evidenceSummary: { evidenceCount: number; evidenceTypes: string[]; matchedValues: string[] }
 }
 
 export interface DockData {
@@ -80,6 +96,7 @@ export interface DockData {
   rawMindEdges: StoredMindEdge[]
   rawCollections: StoredCollection[]
   rawTags: StoredTag[]
+  rawRecommendations: RecommendationDockQueueItem[]
 }
 
 const REFRESH_EVENTS = [
@@ -88,6 +105,8 @@ const REFRESH_EVENTS = [
   'archive_completed',
   'mind_node_created', 'mind_node_updated', 'mind_node_deleted',
   'mind_edge_created', 'mind_edge_updated', 'mind_edge_deleted',
+  'recommendation_applied', 'recommendation_rejected', 'recommendation_ignored',
+  'collection_updated', 'tag_updated',
 ] as const
 
 function entryToEntity(entry: StoredEntry): DockEntity {
@@ -229,6 +248,7 @@ function computeSignals(
   mindNodes: StoredMindNode[],
   mindEdges: StoredMindEdge[],
   tags: StoredTag[],
+  pendingRecCount: number,
 ): DockSignal[] {
   const connectedNodeIds = new Set<string>()
   mindEdges.forEach(e => {
@@ -250,7 +270,7 @@ function computeSignals(
 
   return [
     { label: '待整理', value: tips.length, key: 'unsorted' },
-    { label: '待确认建议', value: 0, key: 'pendingRecs' },
+    { label: '待确认建议', value: pendingRecCount, key: 'pendingRecs' },
     { label: '孤立节点', value: isolatedNodes.length, key: 'isolated' },
     { label: '重复主题', value: duplicateTagCount, key: 'duplicates' },
     { label: '停滞内容', value: stagnantCount, key: 'stagnant' },
@@ -258,16 +278,151 @@ function computeSignals(
   ]
 }
 
+function makeDeterministicRecKey(r: RecommendationDockQueueItem, index: number): string {
+  if (r.id) return r.id
+  const parts = [
+    r.recommendationType || 'rec',
+    r.subjectType || 'unk',
+    String(r.subjectId),
+    r.candidateType || 'unk',
+    r.candidateId || 'unk',
+    r.createdAt ? String(r.createdAt.getTime()) : String(index),
+    String(index),
+  ]
+  return parts.join('-')
+}
+
 function computeRecommendations(recs: RecommendationDockQueueItem[]): DockRecommendation[] {
   if (!recs || recs.length === 0) return []
-  return recs.slice(0, 4).map(r => ({
-    id: r.id || `rec-${Math.random()}`,
+  return recs.slice(0, 8).map((r, idx) => ({
+    id: makeDeterministicRecKey(r, idx),
     type: r.recommendationType || 'Link',
     action: r.reasonSummary?.reason || r.recommendationType || 'Recommendation',
     target: r.subjectType || '—',
     impact: r.scoreSummary ? `score: ${Math.round((r.confidenceScore ?? 0) * 100)}%` : '—',
     confidence: `${Math.round((r.confidenceScore ?? 0) * 100)}%`,
+    status: r.status,
+    candidateType: r.candidateType,
+    candidateId: r.candidateId,
+    subjectType: r.subjectType,
+    subjectId: r.subjectId,
+    confidenceScore: r.confidenceScore,
+    isShown: r.isShown,
+    hasFeedback: r.hasFeedback,
+    reasonSummary: r.reasonSummary,
+    scoreSummary: r.scoreSummary,
+    evidenceSummary: r.evidenceSummary,
   }))
+}
+
+export type EditorOpenTarget =
+  | { type: 'document'; id: number }
+  | { type: 'draft'; id: number }
+  | { type: 'unsupported'; reason: string }
+
+export function resolveDockEditorOpenTarget(entity: DockEntity): EditorOpenTarget {
+  switch (entity.type) {
+    case 'document':
+      if (entity.entryId) return { type: 'document', id: entity.entryId }
+      return { type: 'unsupported', reason: '该文档缺少 entryId，无法打开 Editor' }
+    case 'draft':
+      if (entity.draftId) return { type: 'draft', id: entity.draftId }
+      return { type: 'unsupported', reason: '该草稿缺少 draftId，无法打开 Editor' }
+    case 'tip':
+      if (entity.tipId) return { type: 'draft', id: -entity.tipId }
+      return { type: 'unsupported', reason: '该 Tip 缺少 tipId，无法转换' }
+    case 'mindNode':
+      if (entity.documentId != null) return { type: 'document', id: entity.documentId }
+      return { type: 'unsupported', reason: '该 Mind 节点未关联文档，无法打开 Editor' }
+    default:
+      return { type: 'unsupported', reason: `${entity.type} 类型暂不支持打开 Editor` }
+  }
+}
+
+export async function executeDockEditorOpen(
+  entity: DockEntity,
+  userId: string,
+  onOpenEditor: (id: number, sourceType: 'draft' | 'document') => void,
+  onToast?: (msg: string) => void,
+): Promise<boolean> {
+  const target = resolveDockEditorOpenTarget(entity)
+  switch (target.type) {
+    case 'document':
+      onOpenEditor(target.id, 'document')
+      return true
+    case 'draft':
+      if (target.id < 0) {
+        const tipId = -target.id
+        try {
+          const result = await convertTipToDraft(userId, tipId)
+          if (result.draft) {
+            emit({ type: 'tip_converted', tipId, draftId: result.draft.id })
+            onOpenEditor(result.draft.id, 'draft')
+            return true
+          }
+          onToast?.('Tip 转换失败：未生成 Draft')
+          return false
+        } catch (e) {
+          onToast?.(`Tip 转换失败: ${e instanceof Error ? e.message : '未知错误'}`)
+          return false
+        }
+      }
+      onOpenEditor(target.id, 'draft')
+      return true
+    case 'unsupported':
+      onToast?.(target.reason)
+      return false
+  }
+}
+
+export async function executeRecommendationApply(
+  userId: string,
+  recommendationId: string,
+  onToast?: (msg: string) => void,
+): Promise<{ success: boolean; detail?: string }> {
+  try {
+    const result = await applyRecommendation({ userId, recommendationId })
+    emit({ type: 'recommendation_applied', recommendationId })
+    if (result.appliedChanges?.changeType === 'already_accepted') {
+      return { success: true, detail: '该建议已被应用' }
+    }
+    const detail = result.appliedChanges?.changeDetail || '建议已应用'
+    return { success: true, detail }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : '未知错误'
+    onToast?.(`建议应用失败: ${msg}`)
+    return { success: false, detail: msg }
+  }
+}
+
+export async function executeRecommendationReject(
+  userId: string,
+  recommendationId: string,
+  onToast?: (msg: string) => void,
+): Promise<boolean> {
+  try {
+    await recordRecommendationFeedback({ userId, recommendationId, feedbackType: 'rejected' })
+    emit({ type: 'recommendation_rejected', recommendationId })
+    return true
+  } catch (e) {
+    onToast?.(`拒绝失败: ${e instanceof Error ? e.message : '未知错误'}`)
+    return false
+  }
+}
+
+export async function executeRecommendationIgnore(
+  userId: string,
+  recommendationId: string,
+  onToast?: (msg: string) => void,
+): Promise<boolean> {
+  try {
+    await recordRecommendationFeedback({ userId, recommendationId, feedbackType: 'ignored' })
+    emit({ type: 'recommendation_ignored', recommendationId })
+    return true
+  } catch (e) {
+    onToast?.(`忽略失败: ${e instanceof Error ? e.message : '未知错误'}`)
+    return false
+  }
 }
 
 export function useDockData(userId: string) {
@@ -283,13 +438,16 @@ export function useDockData(userId: string) {
     rawMindEdges: [],
     rawCollections: [],
     rawTags: [],
+    rawRecommendations: [],
   })
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
 
   const refresh = useCallback(async () => {
     if (!userId) return
     try {
+      setError(null)
       const [entries, drafts, tips, mindNodes, mindEdges, collections, tags] = await Promise.all([
         listArchivedEntries(userId),
         listDrafts(userId),
@@ -301,9 +459,13 @@ export function useDockData(userId: string) {
       ])
 
       let recommendations: DockRecommendation[] = []
+      let rawRecommendations: RecommendationDockQueueItem[] = []
+      let pendingRecCount = 0
       try {
-        const recResult = await listRecommendationDockQueue(userId, { limit: 4 })
+        const recResult = await listRecommendationDockQueue(userId, { limit: 20 })
+        rawRecommendations = recResult.items
         recommendations = computeRecommendations(recResult.items)
+        pendingRecCount = recResult.items.filter(i => isRecommendationPending(i.status)).length
       } catch {
         // recommendation queue not available, leave empty
       }
@@ -318,7 +480,7 @@ export function useDockData(userId: string) {
       ]
 
       const spaces = computeSpaces(collections, entries, drafts, mindNodes)
-      const signals = computeSignals(tips, entries, drafts, mindNodes, mindEdges, tags)
+      const signals = computeSignals(tips, entries, drafts, mindNodes, mindEdges, tags, pendingRecCount)
 
       setData({
         entities,
@@ -332,9 +494,10 @@ export function useDockData(userId: string) {
         rawMindEdges: mindEdges,
         rawCollections: collections,
         rawTags: tags,
+        rawRecommendations,
       })
-    } catch {
-      // silently fail
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Dock 数据加载失败')
     } finally {
       setLoading(false)
     }
@@ -357,7 +520,7 @@ export function useDockData(userId: string) {
     setRefreshKey((k) => k + 1)
   }, [])
 
-  return { data, loading, refresh: forceRefresh }
+  return { data, loading, error, refresh: forceRefresh }
 }
 
 export async function findRelatedMindNode(userId: string, entity: DockEntity): Promise<StoredMindNode | null> {

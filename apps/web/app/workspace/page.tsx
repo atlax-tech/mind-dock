@@ -15,16 +15,16 @@ import MindCanvasStage from './features/mind/MindCanvasStage';
 import MindRecommendationInspector from './features/mind/MindRecommendationInspector';
 import {
   listActiveTips,
-  convertTipToDraft,
   convertTipToMindNode,
   syncMindFirstScreen,
   listDrafts,
   generateMindNodeRecommendations,
   type StoredMindNode,
 } from '@/lib/repository';
-import { useDockData, type DockEntityType, findRelatedMindNode } from './features/dock/useDockData';
+import { useDockData, type DockEntityType, type DockRecommendation, findRelatedMindNode, executeDockEditorOpen, executeRecommendationApply, executeRecommendationReject, executeRecommendationIgnore } from './features/dock/useDockData';
 import type { StoredDraft } from '@/lib/repository'
 import { emit } from '@/lib/events';
+import { isRecommendationPending, isRecommendationResolved, isSupportedCandidateType, describeRecommendationAction, describeRecommendationReason, describeApplyPreview, formatConfidenceLevel, STATUS_LABELS, CANDIDATE_TYPE_LABELS } from '@/lib/recommendation-i18n';
 import {
   Home,
   Brain,
@@ -1001,18 +1001,19 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
 // ==========================================
 
 // 3. 停靠区视图 (Dock View) — 知识结构控制台
-// Phase 3.2 DOCK-REAL-001: 已接入真实 IndexedDB 数据源
+// Phase 3.2 DOCK-REAL-002: 真实 Recommendation Queue + Apply/Reject/Ignore + Inspector Actions
 const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
   setActiveTab: (tab: string) => void
   userId: string
   onOpenEditor?: (documentId: number, sourceType: 'draft' | 'document') => void
   onToast?: (msg: string) => void
 }) => {
-  const { data: dockData, loading: dockLoading } = useDockData(userId);
+  const { data: dockData, loading: dockLoading, error: dockError, refresh: dockRefresh } = useDockData(userId);
   const [selectedSpaceId, setSelectedSpaceId] = React.useState<string | null>(null);
   const [selectedEntityId, setSelectedEntityId] = React.useState<string | null>(null);
   const [selectedRecId, setSelectedRecId] = React.useState<string | null>(null);
   const [relatedMindNode, setRelatedMindNode] = React.useState<StoredMindNode | null>(null);
+  const [recActionLoading, setRecActionLoading] = React.useState<string | null>(null);
 
   const spaces = dockData.spaces;
   const selectedSpace = spaces.find(s => s.id === selectedSpaceId) || spaces[0] || null;
@@ -1029,6 +1030,7 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
 
   const selectedEntity = dockData.entities.find(e => e.id === selectedEntityId) || null;
   const selectedRec = dockData.recommendations.find(r => r.id === selectedRecId) || null;
+  const pendingRecs = dockData.recommendations.filter(r => isRecommendationPending(r.status));
 
   React.useEffect(() => {
     if (selectedEntity && userId) {
@@ -1040,32 +1042,67 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
 
   const handleOpenEditor = React.useCallback(async () => {
     if (!selectedEntity || !onOpenEditor) return;
-    if (selectedEntity.type === 'document' && selectedEntity.entryId) {
-      onOpenEditor(selectedEntity.entryId, 'document');
-    } else if (selectedEntity.type === 'draft' && selectedEntity.draftId) {
-      onOpenEditor(selectedEntity.draftId, 'draft');
-    } else if (selectedEntity.type === 'tip' && selectedEntity.tipId) {
-      try {
-        const result = await convertTipToDraft(userId, selectedEntity.tipId);
-        if (result.draft) {
-          emit({ type: 'tip_converted', tipId: selectedEntity.tipId, draftId: result.draft.id });
-          onOpenEditor(result.draft.id, 'draft');
-        } else {
-          onToast?.('Tip 转换失败');
-        }
-      } catch {
-        onToast?.('Tip 转换失败');
-      }
-    } else if (selectedEntity.type === 'mindNode' && selectedEntity.documentId != null) {
-      onOpenEditor(selectedEntity.documentId, 'document');
-    } else {
-      onToast?.('此类型暂不支持打开 Editor');
-    }
+    await executeDockEditorOpen(selectedEntity, userId, onOpenEditor, onToast);
   }, [selectedEntity, onOpenEditor, userId, onToast]);
 
   const handleOpenInMind = React.useCallback(() => {
     setActiveTab('mind');
   }, [setActiveTab]);
+
+  const handleRecApply = React.useCallback(async (recId: string) => {
+    if (recActionLoading) return;
+    setRecActionLoading(recId);
+    try {
+      const result = await executeRecommendationApply(userId, recId, onToast);
+      if (result.success) {
+        onToast?.(result.detail || '建议已应用');
+        dockRefresh();
+      }
+    } finally {
+      setRecActionLoading(null);
+    }
+  }, [userId, recActionLoading, onToast, dockRefresh]);
+
+  const handleRecReject = React.useCallback(async (recId: string) => {
+    if (recActionLoading) return;
+    setRecActionLoading(recId);
+    try {
+      const ok = await executeRecommendationReject(userId, recId, onToast);
+      if (ok) {
+        onToast?.('建议已拒绝');
+        dockRefresh();
+      }
+    } finally {
+      setRecActionLoading(null);
+    }
+  }, [userId, recActionLoading, onToast, dockRefresh]);
+
+  const handleRecIgnore = React.useCallback(async (recId: string) => {
+    if (recActionLoading) return;
+    setRecActionLoading(recId);
+    try {
+      const ok = await executeRecommendationIgnore(userId, recId, onToast);
+      if (ok) {
+        onToast?.('建议已忽略');
+        dockRefresh();
+      }
+    } finally {
+      setRecActionLoading(null);
+    }
+  }, [userId, recActionLoading, onToast, dockRefresh]);
+
+  const getRecStatusBadge = (rec: DockRecommendation) => {
+    const statusConfig = STATUS_LABELS[rec.status as keyof typeof STATUS_LABELS];
+    const isUnsupported = !isSupportedCandidateType(rec.candidateType);
+    const isResolved = isRecommendationResolved(rec.status);
+    if (isResolved) {
+      return <span className={`text-[9px] font-medium ${statusConfig?.color ?? 'text-gray-500'}`}>{statusConfig?.label ?? rec.status}</span>;
+    }
+    if (isUnsupported) {
+      return <span className="text-[9px] font-medium text-yellow-400/80">暂不支持自动应用</span>;
+    }
+    return <span className={`text-[9px] font-medium ${statusConfig?.color ?? 'text-blue-400'}`}>{statusConfig?.label ?? rec.status}</span>;
+  };
 
   const getStatusStyle = (status: string) => {
     switch (status) {
@@ -1154,7 +1191,7 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
           <div className="h-[36px] px-2 rounded-[8px] flex items-center gap-2 cursor-pointer text-[#8d989f] hover:bg-white/5 hover:text-white transition-colors">
             <Sparkles className="w-[14px] h-[14px]" />
             <span className="text-[12px] font-medium flex-1">推荐</span>
-            <span className="text-[10px] bg-white/10 px-1.5 rounded-full">{dockData.recommendations.length}</span>
+            <span className="text-[10px] bg-white/10 px-1.5 rounded-full">{pendingRecs.length}</span>
           </div>
           <div className="h-[36px] px-2 rounded-[8px] flex items-center gap-2 cursor-pointer text-[#8d989f] hover:bg-white/5 hover:text-white transition-colors">
             <Activity className="w-[14px] h-[14px]" />
@@ -1166,7 +1203,7 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
         <div className="p-3 mb-2">
           <div className="p-3 bg-[#111619] border border-white/[0.07] rounded-[12px] h-[110px] flex flex-col">
             <div className="text-[12px] font-semibold text-white mb-1">自动整理</div>
-            <div className="text-[10px] text-[#8d989f] leading-relaxed flex-1 mt-1">{dockData.recommendations.length} 条建议可预览。确认后才写入结构层。</div>
+            <div className="text-[10px] text-[#8d989f] leading-relaxed flex-1 mt-1">{pendingRecs.length} 条待处理建议。确认后才写入结构层。</div>
             <button className="w-full h-[28px] rounded-[8px] bg-white/10 text-[11px] font-medium text-white hover:bg-white/20 transition-colors mt-2">查看建议</button>
           </div>
         </div>
@@ -1182,6 +1219,11 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
             <div className="text-[14px] font-medium text-white mt-0.5">任务控制台</div>
           </div>
           <div className="flex items-center gap-2">
+            {dockError && (
+              <span className="text-[10px] text-[#ffb4ab] bg-[#ffb4ab]/10 px-2 py-1 rounded border border-[#ffb4ab]/20">
+                数据加载异常
+              </span>
+            )}
             <button className="h-[32px] px-3 rounded-[8px] bg-white/5 border border-white/[0.07] text-[12px] text-[#e6eaed] hover:bg-white/10 transition-colors flex items-center gap-1.5">
               <LayoutTemplate className="w-3.5 h-3.5" /> 视图：项目控制
             </button>
@@ -1259,7 +1301,12 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
           </div>
           
           <div className="flex-1 overflow-y-auto custom-scrollbar">
-            {filteredEntities.length > 0 ? filteredEntities.map(entity => (
+            {filteredEntities.length > 0 ? filteredEntities.map(entity => {
+              const entityRecs = dockData.recommendations.filter(r =>
+                isRecommendationPending(r.status) &&
+                String(r.subjectId) === String(entity.entryId ?? entity.draftId ?? entity.tipId ?? entity.mindNodeId ?? entity.collectionId ?? entity.tagId)
+              );
+              return (
               <div 
                 key={entity.id}
                 onClick={() => setSelectedEntityId(entity.id)}
@@ -1279,10 +1326,19 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
                   </span>
                 </div>
                 <div className="w-[140px] text-[10px] text-[#8d989f] truncate pr-2">{entity.tags && entity.tags.length > 0 ? entity.tags.map(t => `#${t}`).join(' ') : '—'}</div>
-                <div className="w-[160px] text-[11px] text-[#e6eaed] truncate pr-2">—</div>
-                <div className="w-[60px] text-right text-[12px] font-medium text-[#8d989f]">—</div>
+                <div className="w-[160px] text-[11px] text-[#e6eaed] truncate pr-2">
+                  {entityRecs.length > 0
+                    ? describeRecommendationAction(entityRecs[0].candidateType, entityRecs[0].candidateId)
+                    : '—'}
+                </div>
+                <div className="w-[60px] text-right text-[12px] font-medium text-[#8d989f]">
+                  {entityRecs.length > 0
+                    ? `${Math.round(entityRecs[0].confidenceScore * 100)}%`
+                    : '—'}
+                </div>
               </div>
-            )) : (
+              );
+            }) : (
               <div className="flex-1 flex items-center justify-center py-12 text-[12px] text-[#8d989f]">
                 暂无内容。创建 Document、Draft 或 Tip 后将在此显示。
               </div>
@@ -1293,28 +1349,83 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
         {/* D5. Recommendation queue strip */}
         <div className="h-[110px] border-t border-white/[0.07] bg-[#0b0f11] flex flex-col justify-center px-4 shrink-0">
           <div className="flex justify-between items-center mb-2">
-            <div className="text-[10px] font-semibold text-[#8d989f] uppercase tracking-wider">推荐队列</div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-semibold text-[#8d989f] uppercase tracking-wider">推荐队列</span>
+              {pendingRecs.length > 0 && (
+                <span className="text-[9px] text-[#86d7ff] bg-[#86d7ff]/10 px-1.5 rounded-full">{pendingRecs.length} 条待处理</span>
+              )}
+            </div>
             <div className="text-[10px] text-[#86d7ff] cursor-pointer hover:underline">全部预览</div>
           </div>
           <div className="flex gap-3 overflow-x-auto min-w-0">
-            {dockData.recommendations.length > 0 ? dockData.recommendations.map(rec => (
+            {dockData.recommendations.length > 0 ? dockData.recommendations.map(rec => {
+              const isPending = isRecommendationPending(rec.status);
+              const isResolved = isRecommendationResolved(rec.status);
+              const isUnsupported = !isSupportedCandidateType(rec.candidateType);
+              const isBusy = recActionLoading === rec.id;
+              return (
               <div 
                 key={rec.id}
                 onClick={() => setSelectedRecId(rec.id)}
-                className={`min-w-[200px] max-w-[280px] shrink-0 h-[86px] border-r border-white/[0.07] p-2 cursor-pointer flex flex-col justify-between transition-colors ${selectedRecId === rec.id ? 'bg-[#86d7ff]/5' : 'hover:bg-white/[0.02]'}`}
+                className={`min-w-[200px] max-w-[280px] shrink-0 h-[86px] border-r border-white/[0.07] p-2 cursor-pointer flex flex-col justify-between transition-colors ${selectedRecId === rec.id ? 'bg-[#86d7ff]/5' : isResolved ? 'opacity-50' : 'hover:bg-white/[0.02]'}`}
               >
                 <div className="flex justify-between items-start">
                   <div className="flex items-center gap-1.5 overflow-hidden">
-                    <Sparkles className="w-3 h-3 text-[#c8a0f0] shrink-0" />
-                    <span className="text-[11px] font-medium text-[#e6eaed] truncate">{rec.action}</span>
+                    <Sparkles className={`w-3 h-3 shrink-0 ${isUnsupported ? 'text-yellow-400' : isResolved ? 'text-[#8d989f]' : 'text-[#c8a0f0]'}`} />
+                    <span className="text-[11px] font-medium text-[#e6eaed] truncate">{describeRecommendationAction(rec.candidateType, rec.candidateId)}</span>
                   </div>
-                  <span className="text-[9px] bg-[#c8a0f0]/10 text-[#c8a0f0] px-1 rounded border border-[#c8a0f0]/20 shrink-0 ml-1">{rec.confidence}</span>
+                  <span className={`text-[9px] px-1 rounded border shrink-0 ml-1 ${isUnsupported ? 'bg-yellow-500/5 text-yellow-400 border-yellow-500/10' : 'bg-[#c8a0f0]/10 text-[#c8a0f0] border-[#c8a0f0]/20'}`}>
+                    {rec.confidence}
+                  </span>
                 </div>
-                <div className="text-[10px] text-[#8d989f] truncate mt-auto">
-                  <span className="text-[#86d7ff]">{rec.type}</span> • {rec.target}
+                <div className="flex items-center justify-between mt-auto">
+                  <div className="text-[10px] text-[#8d989f] truncate">
+                    <span className="text-[#86d7ff]">{CANDIDATE_TYPE_LABELS[rec.candidateType] ?? rec.type}</span> • {rec.target}
+                  </div>
+                  {getRecStatusBadge(rec)}
                 </div>
+                {isPending && !isUnsupported && (
+                  <div className="flex gap-1 mt-1">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleRecApply(rec.id); }}
+                      disabled={isBusy}
+                      className="h-[20px] px-2 rounded text-[9px] font-medium bg-[#9cf4d4]/10 text-[#9cf4d4] border border-[#9cf4d4]/20 hover:bg-[#9cf4d4]/20 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      {isBusy ? '...' : '接受'}
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleRecReject(rec.id); }}
+                      disabled={isBusy}
+                      className="h-[20px] px-2 rounded text-[9px] font-medium bg-white/5 text-[#8d989f] border border-white/10 hover:bg-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      拒绝
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleRecIgnore(rec.id); }}
+                      disabled={isBusy}
+                      className="h-[20px] px-2 rounded text-[9px] font-medium bg-white/5 text-[#8d989f] border border-white/10 hover:bg-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      忽略
+                    </button>
+                  </div>
+                )}
+                {isPending && isUnsupported && (
+                  <div className="flex gap-1 mt-1">
+                    <span className="text-[9px] text-yellow-400/80 flex items-center gap-0.5">
+                      <AlertCircle className="w-2.5 h-2.5" /> 暂不支持自动应用
+                    </span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleRecIgnore(rec.id); }}
+                      disabled={isBusy}
+                      className="h-[20px] px-2 rounded text-[9px] font-medium bg-white/5 text-[#8d989f] border border-white/10 hover:bg-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      忽略
+                    </button>
+                  </div>
+                )}
               </div>
-            )) : (
+              );
+            }) : (
               <div className="min-w-[200px] shrink-0 h-[86px] border-r border-white/[0.07] p-2 flex items-center justify-center text-[11px] text-[#8d989f]">
                 暂无推荐。使用 Mind 视图生成推荐后将在此显示。
               </div>
@@ -1337,14 +1448,77 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
         <div className="mb-5 p-3 bg-[#c8a0f0]/[0.08] border border-[#c8a0f0]/30 rounded-[12px]">
           <div className="flex items-center gap-1.5 mb-2 text-[#c8a0f0]">
             <Sparkles className="w-3.5 h-3.5" />
-            <span className="text-[12px] font-medium">{selectedRec?.action ?? '无选中推荐'}</span>
+            <span className="text-[12px] font-medium">{selectedRec ? describeRecommendationAction(selectedRec.candidateType, selectedRec.candidateId) : '无选中推荐'}</span>
           </div>
-          <div className="text-[11px] text-[#e6eaed] mb-1">目标：{selectedRec?.target ?? '—'}</div>
-          <div className="text-[11px] text-[#e6eaed] mb-3">影响：{selectedRec?.impact ?? '—'}</div>
-          <div className="flex gap-2">
-            <button className="flex-1 h-[28px] rounded-[8px] bg-[#c8a0f0]/20 text-[#c8a0f0] text-[11px] font-medium hover:bg-[#c8a0f0]/30 transition-colors">预览方案</button>
-            <button className="px-3 h-[28px] rounded-[8px] bg-white/5 text-[#8d989f] text-[11px] font-medium hover:bg-white/10 transition-colors">忽略</button>
-          </div>
+          {selectedRec ? (
+            <>
+              <div className="text-[11px] text-[#e6eaed] mb-1">目标：{selectedRec.target}</div>
+              <div className="text-[11px] text-[#e6eaed] mb-1">影响：{selectedRec.impact}</div>
+              <div className="text-[11px] text-[#e6eaed] mb-1">原因：{describeRecommendationReason(selectedRec.candidateType, selectedRec.reasonSummary, selectedRec.evidenceSummary)}</div>
+              <div className="text-[11px] text-[#e6eaed] mb-3">接受后：{describeApplyPreview(selectedRec.candidateType, selectedRec.candidateId)}</div>
+              <div className="flex items-center gap-2 mb-3">
+                {getRecStatusBadge(selectedRec)}
+                <span className="text-[9px] text-[#8d989f]">可信度: {formatConfidenceLevel(selectedRec.confidenceScore)}</span>
+              </div>
+              <div className="flex gap-2">
+                {isRecommendationPending(selectedRec.status) && isSupportedCandidateType(selectedRec.candidateType) ? (
+                  <>
+                    <button
+                      onClick={() => handleRecApply(selectedRec.id)}
+                      disabled={recActionLoading === selectedRec.id}
+                      className="flex-1 h-[28px] rounded-[8px] bg-[#9cf4d4]/20 text-[#9cf4d4] text-[11px] font-medium hover:bg-[#9cf4d4]/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      {recActionLoading === selectedRec.id ? '处理中...' : '接受建议'}
+                    </button>
+                    <button
+                      onClick={() => handleRecReject(selectedRec.id)}
+                      disabled={recActionLoading === selectedRec.id}
+                      className="px-3 h-[28px] rounded-[8px] bg-white/5 text-[#8d989f] text-[11px] font-medium hover:bg-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      拒绝
+                    </button>
+                    <button
+                      onClick={() => handleRecIgnore(selectedRec.id)}
+                      disabled={recActionLoading === selectedRec.id}
+                      className="px-3 h-[28px] rounded-[8px] bg-white/5 text-[#8d989f] text-[11px] font-medium hover:bg-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      忽略
+                    </button>
+                  </>
+                ) : isRecommendationPending(selectedRec.status) && !isSupportedCandidateType(selectedRec.candidateType) ? (
+                  <>
+                    <span className="flex items-center gap-1 text-[11px] text-yellow-400/80">
+                      <AlertCircle className="w-3 h-3" /> 暂不支持自动应用
+                    </span>
+                    <button
+                      onClick={() => handleRecIgnore(selectedRec.id)}
+                      disabled={recActionLoading === selectedRec.id}
+                      className="px-3 h-[28px] rounded-[8px] bg-white/5 text-[#8d989f] text-[11px] font-medium hover:bg-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      忽略
+                    </button>
+                    <button
+                      onClick={() => handleRecReject(selectedRec.id)}
+                      disabled={recActionLoading === selectedRec.id}
+                      className="px-3 h-[28px] rounded-[8px] bg-white/5 text-[#8d989f] text-[11px] font-medium hover:bg-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      不再推荐
+                    </button>
+                  </>
+                ) : (
+                  <span className="text-[11px] text-[#8d989f]">该建议已处理</span>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="text-[11px] text-[#e6eaed] mb-3">选择推荐队列中的建议查看详情</div>
+              <div className="flex gap-2">
+                <button className="flex-1 h-[28px] rounded-[8px] bg-[#c8a0f0]/20 text-[#c8a0f0] text-[11px] font-medium hover:bg-[#c8a0f0]/30 transition-colors opacity-50 cursor-not-allowed">预览方案</button>
+                <button className="px-3 h-[28px] rounded-[8px] bg-white/5 text-[#8d989f] text-[11px] font-medium hover:bg-white/10 transition-colors opacity-50 cursor-not-allowed">忽略</button>
+              </div>
+            </>
+          )}
         </div>
 
         {/* 3. 属性 table */}
@@ -1374,7 +1548,115 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
           </div>
         </div>
 
-        {/* 4. 操作规则 */}
+        {/* 4. Entity Actions */}
+        {selectedEntity && (
+          <div className="mb-5">
+            <div className="text-[10px] font-semibold text-[#8d989f] uppercase tracking-wider mb-2">Actions</div>
+            <div className="space-y-1.5">
+              {selectedEntity.type === 'document' && (
+                <>
+                  <button
+                    onClick={handleOpenEditor}
+                    disabled={!selectedEntity.entryId}
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#e6eaed] hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    <PenTool className="w-3 h-3" /> 打开 Editor
+                  </button>
+                  <button
+                    onClick={handleOpenInMind}
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Network className="w-3 h-3" /> 在 Mind 查看
+                  </button>
+                </>
+              )}
+              {selectedEntity.type === 'draft' && (
+                <>
+                  <button
+                    onClick={handleOpenEditor}
+                    disabled={!selectedEntity.draftId}
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#e6eaed] hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    <PenTool className="w-3 h-3" /> 打开 Editor
+                  </button>
+                  <button
+                    disabled
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] flex items-center justify-center gap-1.5 opacity-30 cursor-not-allowed"
+                  >
+                    <Trash2 className="w-3 h-3" /> 删除 Draft <span className="text-[8px] text-[#8d989f] ml-1">Planned</span>
+                  </button>
+                </>
+              )}
+              {selectedEntity.type === 'tip' && (
+                <>
+                  <button
+                    onClick={handleOpenEditor}
+                    disabled={!selectedEntity.tipId}
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#e6eaed] hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    <PenTool className="w-3 h-3" /> 转 Draft 并打开 Editor
+                  </button>
+                  <button
+                    disabled
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] flex items-center justify-center gap-1.5 opacity-30 cursor-not-allowed"
+                  >
+                    <Trash2 className="w-3 h-3" /> 丢弃 Tip <span className="text-[8px] text-[#8d989f] ml-1">Preview</span>
+                  </button>
+                </>
+              )}
+              {selectedEntity.type === 'mindNode' && (
+                <>
+                  {selectedEntity.documentId != null ? (
+                    <button
+                      onClick={handleOpenEditor}
+                      className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#e6eaed] hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5"
+                    >
+                      <PenTool className="w-3 h-3" /> 打开关联文档
+                    </button>
+                  ) : (
+                    <div className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] text-[#ffb4ab] flex items-center justify-center gap-1.5">
+                      <AlertCircle className="w-3 h-3" /> 该节点未关联文档，无法打开 Editor
+                    </div>
+                  )}
+                  <button
+                    onClick={handleOpenInMind}
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Network className="w-3 h-3" /> 在 Mind 查看
+                  </button>
+                </>
+              )}
+              {selectedEntity.type === 'collection' && (
+                <>
+                  <div className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] text-[#8d989f] flex items-center justify-center gap-1.5">
+                    只读 Inspector
+                  </div>
+                  <button
+                    disabled
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] flex items-center justify-center gap-1.5 opacity-30 cursor-not-allowed"
+                  >
+                    <PenTool className="w-3 h-3" /> 编辑 Collection <span className="text-[8px] text-[#8d989f] ml-1">Planned</span>
+                  </button>
+                </>
+              )}
+              {selectedEntity.type === 'tag' && (
+                <>
+                  <div className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] text-[#8d989f] flex items-center justify-center gap-1.5">
+                    只读 Inspector
+                  </div>
+                  <button
+                    disabled
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] flex items-center justify-center gap-1.5 opacity-30 cursor-not-allowed"
+                  >
+                    <PenTool className="w-3 h-3" /> 编辑 Tag <span className="text-[8px] text-[#8d989f] ml-1">Planned</span>
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* 5. 操作规则 */}
         <div className="p-3 bg-[#151a1e] border border-white/[0.07] rounded-[12px] mb-auto">
           <div className="flex items-start gap-2">
             <AlertCircle className="w-4 h-4 text-[#8d989f] shrink-0 mt-0.5" />
@@ -1384,16 +1666,16 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
           </div>
         </div>
 
-        {/* 5. Bottom actions */}
+        {/* 6. Bottom actions */}
         <div className="flex gap-2 mt-4">
-          <button 
+          <button
             onClick={handleOpenEditor}
             disabled={!selectedEntity || (selectedEntity.type !== 'document' && selectedEntity.type !== 'draft' && selectedEntity.type !== 'tip' && selectedEntity.type !== 'mindNode')}
             className={`flex-1 h-[32px] rounded-[8px] text-[12px] font-medium transition-colors flex items-center justify-center gap-1.5 ${selectedEntity && (selectedEntity.type === 'document' || selectedEntity.type === 'draft' || selectedEntity.type === 'tip' || selectedEntity.type === 'mindNode') ? 'bg-white text-[#0b0f11] hover:bg-gray-200' : 'bg-white/10 text-[#8d989f] cursor-not-allowed'}`}
           >
             <PenTool className="w-3.5 h-3.5" /> 打开 Editor
           </button>
-          <button 
+          <button
             onClick={handleOpenInMind}
             className="flex-1 h-[32px] rounded-[8px] bg-white/10 text-white text-[12px] font-medium hover:bg-white/20 transition-colors flex items-center justify-center gap-1.5"
           >

@@ -17,6 +17,11 @@ export type AppEvent =
   | { type: 'mind_edge_created'; edgeId: string }
   | { type: 'mind_edge_updated'; edgeId: string }
   | { type: 'mind_edge_deleted'; edgeId: string }
+  | { type: 'recommendation_applied'; recommendationId: string }
+  | { type: 'recommendation_rejected'; recommendationId: string }
+  | { type: 'recommendation_ignored'; recommendationId: string }
+  | { type: 'collection_updated'; collectionId: string }
+  | { type: 'tag_updated'; tagId: string }
 
 export type AppMode = 'classic' | 'chat'
 
