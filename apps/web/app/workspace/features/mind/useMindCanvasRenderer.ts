@@ -3,7 +3,7 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
 import type { MindGraphSnapshot, MindGraphSnapshotEdge } from './types'
 import type { MindScopeType, MindFilterState } from './useMindGraphInteraction'
-import { NODE_COLOR, BG_COLOR } from './mindGraphStyle'
+import { NODE_COLOR, BG_COLOR, getReadableTextColor } from './mindGraphStyle'
 
 // --- Canvas Render Node ---
 export interface CanvasRenderNode {
@@ -583,6 +583,7 @@ export function useMindCanvasRenderer(
       const fontSize = 10 / cam.zoom
       ctx.font = `${fontSize}px Inter, sans-serif`
       ctx.textAlign = 'center'; ctx.textBaseline = 'top'
+      const labelColor = getReadableTextColor(BG_COLOR, '#E2E8F0')
 
       nodes.forEach(n => {
         ctx.globalAlpha = n.alpha
@@ -612,9 +613,12 @@ export function useMindCanvasRenderer(
         }
         if (labelAlpha > 0.01) {
           ctx.globalAlpha = labelAlpha
-          ctx.fillStyle = '#E2E8F0'
+          ctx.fillStyle = labelColor
+          ctx.shadowColor = 'rgba(0,0,0,0.75)'
+          ctx.shadowBlur = 6 / cam.zoom
           const lbl = n.label.length > 18 ? n.label.slice(0, 18) + '…' : n.label
           ctx.fillText(lbl, n.x, n.y + n.radius + 6 / cam.zoom)
+          ctx.shadowBlur = 0
         }
         ctx.globalAlpha = 1
       })

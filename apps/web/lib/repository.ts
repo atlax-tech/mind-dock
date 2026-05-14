@@ -89,6 +89,12 @@ import type {
   ChatSessionUpdateInput,
 } from '@atlax/domain/ports'
 import { isValidChatSessionInput } from '@atlax/domain/ports'
+import {
+  createEditorContentPayload,
+  normalizeStoredEditorContent,
+  textToTiptapDoc,
+  type TiptapJSONContent,
+} from './editorContentAdapter'
 
 import {
   db,
@@ -334,6 +340,7 @@ function toPersistedEntry(entry: EntryRecord | undefined): PersistedEntry | null
 
   return {
     ...entry,
+    ...normalizeStoredEditorContent(entry),
     id: entry.id,
   }
 }
@@ -2105,7 +2112,44 @@ export async function recordRecentDocumentOpen(input: {
 
 function toPersistedEditorDraft(draft: EditorDraftRecord | undefined): PersistedEditorDraft | null {
   if (!draft || typeof draft.id !== 'number') return null
-  return { ...draft, id: draft.id, status: draft.status ?? 'active' }
+  return {
+    ...draft,
+    ...normalizeStoredEditorContent(draft),
+    id: draft.id,
+    status: draft.status ?? 'active',
+  }
+}
+
+export interface EditorContentInput {
+  contentJson?: TiptapJSONContent | null
+  plainText?: string
+  html?: string
+  markdown?: string
+}
+
+export interface DraftUpdateInput extends EditorContentInput {
+  title?: string
+  content?: string
+  tags?: string[]
+  project?: string | null
+  collectionId?: string | null
+}
+
+function buildEditorContentRecord(
+  content: string,
+  contentFields?: EditorContentInput | null,
+): Required<EditorContentInput> & { content: string } {
+  const payload = createEditorContentPayload(
+    contentFields?.contentJson ?? textToTiptapDoc(contentFields?.markdown ?? contentFields?.plainText ?? content),
+    contentFields?.plainText ?? contentFields?.markdown ?? content,
+  )
+  return {
+    contentJson: payload.contentJson,
+    plainText: contentFields?.plainText ?? payload.plainText,
+    html: contentFields?.html ?? payload.html,
+    markdown: contentFields?.markdown ?? payload.markdown,
+    content: contentFields?.plainText ?? contentFields?.markdown ?? payload.content,
+  }
 }
 
 async function addDraftRecord(
@@ -2114,16 +2158,28 @@ async function addDraftRecord(
   content: string,
   sourceEntryId?: number | null,
   sourceType?: DraftSourceType | null,
+  tags?: string[],
+  project?: string | null,
+  collectionId?: string | null,
+  contentFields?: EditorContentInput | null,
 ): Promise<number> {
   const now = new Date()
+  const normalizedContent = buildEditorContentRecord(content, contentFields)
   const id = await editorDraftsTable.add({
     userId,
     draftKey: 0,
     title,
-    content,
+    content: normalizedContent.content,
+    contentJson: normalizedContent.contentJson,
+    plainText: normalizedContent.plainText,
+    html: normalizedContent.html,
+    markdown: normalizedContent.markdown,
     status: 'active',
     sourceEntryId: sourceEntryId ?? null,
     sourceType: sourceType ?? null,
+    tags: tags ?? [],
+    project: project ?? null,
+    collectionId: collectionId ?? null,
     createdAt: now,
     updatedAt: now,
   })
@@ -2137,8 +2193,12 @@ export async function createDraft(
   content: string = '',
   sourceEntryId?: number | null,
   sourceType?: DraftSourceType | null,
+  tags?: string[],
+  project?: string | null,
+  collectionId?: string | null,
+  contentFields?: EditorContentInput | null,
 ): Promise<PersistedEditorDraft | null> {
-  const id = await addDraftRecord(userId, title, content, sourceEntryId, sourceType)
+  const id = await addDraftRecord(userId, title, content, sourceEntryId, sourceType, tags, project, collectionId, contentFields)
   const saved = await editorDraftsTable.get(id)
   return toPersistedEditorDraft(saved)
 }
@@ -2177,13 +2237,34 @@ export async function getDraft(userId: string, draftId: number): Promise<Persist
 export async function updateDraft(
   userId: string,
   draftId: number,
-  updates: { title?: string; content?: string },
+  updates: DraftUpdateInput,
 ): Promise<PersistedEditorDraft | null> {
   const draft = await editorDraftsTable.get(draftId)
   if (!draft || draft.userId !== userId) return null
   const patch: Partial<EditorDraftRecord> = { updatedAt: new Date() }
   if (updates.title !== undefined) patch.title = updates.title
-  if (updates.content !== undefined) patch.content = updates.content
+  if (
+    updates.content !== undefined ||
+    updates.contentJson !== undefined ||
+    updates.plainText !== undefined ||
+    updates.html !== undefined ||
+    updates.markdown !== undefined
+  ) {
+    const normalizedContent = buildEditorContentRecord(updates.content ?? draft.content, {
+      contentJson: updates.contentJson ?? draft.contentJson ?? null,
+      plainText: updates.plainText ?? updates.content ?? draft.plainText ?? draft.content,
+      html: updates.html,
+      markdown: updates.markdown,
+    })
+    patch.content = normalizedContent.content
+    patch.contentJson = normalizedContent.contentJson
+    patch.plainText = normalizedContent.plainText
+    patch.html = normalizedContent.html
+    patch.markdown = normalizedContent.markdown
+  }
+  if (updates.tags !== undefined) patch.tags = updates.tags
+  if (updates.project !== undefined) patch.project = updates.project
+  if (updates.collectionId !== undefined) patch.collectionId = updates.collectionId
   await editorDraftsTable.update(draftId, patch)
   return toPersistedEditorDraft(await editorDraftsTable.get(draftId))
 }
@@ -2208,7 +2289,8 @@ export async function publishDraftToDocument(
   }
 
   const title = (draft.title || '').trim()
-  const content = (draft.content || '').trim()
+  const draftContent = normalizeStoredEditorContent(draft)
+  const content = (draftContent.plainText || draftContent.content || '').trim()
   const isDefaultTitle = !title || title.toLowerCase() === 'untitled'
   const isEmptyContent = !content
 
@@ -2232,11 +2314,22 @@ export async function publishDraftToDocument(
   if (draft.sourceEntryId != null && publishMode === 'update_original') {
     const existing = await entriesTable.get(draft.sourceEntryId)
     if (existing && existing.userId === userId) {
-      await entriesTable.update(draft.sourceEntryId, {
+      const updatePayload: Record<string, unknown> = {
         title: effectiveTitle,
-        content: draft.content,
+        content: draftContent.content,
+        contentJson: draftContent.contentJson,
+        plainText: draftContent.plainText,
+        html: draftContent.html,
+        markdown: draftContent.markdown,
         archivedAt: now,
-      })
+      }
+      if (Array.isArray(draft.tags)) {
+        updatePayload.tags = draft.tags
+      }
+      if (draft.project !== undefined) {
+        updatePayload.project = draft.project
+      }
+      await entriesTable.update(draft.sourceEntryId, updatePayload)
       entry = toPersistedEntry(await entriesTable.get(draft.sourceEntryId))
     }
   }
@@ -2246,10 +2339,14 @@ export async function publishDraftToDocument(
       userId,
       sourceDockItemId: draft.sourceEntryId ?? 0,
       title: effectiveTitle,
-      content: draft.content,
+      content: draftContent.content,
+      contentJson: draftContent.contentJson,
+      plainText: draftContent.plainText,
+      html: draftContent.html,
+      markdown: draftContent.markdown,
       type: 'note',
-      tags: [],
-      project: null,
+      tags: draft.tags || [],
+      project: draft.project ?? null,
       actions: [],
       createdAt: now,
       archivedAt: now,
@@ -2369,6 +2466,9 @@ export async function saveEditorDraft(
     status: 'active',
     sourceEntryId: null,
     sourceType: null,
+    tags: [],
+    project: null,
+    collectionId: null,
     createdAt: now,
     updatedAt: now,
   })

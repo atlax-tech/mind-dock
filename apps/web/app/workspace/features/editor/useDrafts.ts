@@ -13,6 +13,8 @@ import {
   type DraftSourceType,
   type PublishMode,
   type DiscardMode,
+  type DraftUpdateInput,
+  type EditorContentInput,
 } from '@/lib/repository'
 import { emit } from '@/lib/events'
 import { makeMindNodeId } from '@atlax/domain'
@@ -43,9 +45,13 @@ export function useDrafts(userId: string) {
     content?: string,
     sourceEntryId?: number | null,
     sourceType?: DraftSourceType | null,
+    tags?: string[],
+    project?: string | null,
+    collectionId?: string | null,
+    contentFields?: EditorContentInput | null,
   ): Promise<StoredDraft | null> => {
     if (!userId) return null
-    const draft = await createDraft(userId, title, content, sourceEntryId, sourceType)
+    const draft = await createDraft(userId, title, content, sourceEntryId, sourceType, tags, project, collectionId, contentFields)
     if (draft) {
       setDrafts((prev) => [draft, ...prev])
       emit({ type: 'draft_created', draftId: draft.id })
@@ -53,7 +59,7 @@ export function useDrafts(userId: string) {
     return draft
   }, [userId])
 
-  const handleUpdate = useCallback(async (draftId: number, updates: { title?: string; content?: string }): Promise<StoredDraft | null> => {
+  const handleUpdate = useCallback(async (draftId: number, updates: DraftUpdateInput): Promise<StoredDraft | null> => {
     if (!userId) return null
     const draft = await updateDraft(userId, draftId, updates)
     if (draft) {
@@ -74,8 +80,7 @@ export function useDrafts(userId: string) {
     }
     if (result.draft) {
       setDrafts((prev) => prev.filter((d) => d.id !== draftId))
-      emit({ type: 'draft_updated', draftId })
-      emit({ type: 'archive_completed', dockItemId: 0, sourceType: 'text' })
+      emit({ type: 'draft_deleted', draftId })
       if (result.draft.sourceEntryId != null && publishMode === 'update_original') {
         emit({ type: 'mind_node_updated', nodeId: `entry-${result.draft.sourceEntryId}` })
       } else {
@@ -120,6 +125,14 @@ export function useDrafts(userId: string) {
     setRefreshKey((k) => k + 1)
   }, [])
 
+  const patchDraftLocal = useCallback((draftId: number, updates: Partial<StoredDraft>) => {
+    setDrafts((prev) => prev.map((draft) => (
+      draft.id === draftId
+        ? { ...draft, ...updates, updatedAt: updates.updatedAt ?? new Date() }
+        : draft
+    )))
+  }, [])
+
   return {
     drafts,
     loading,
@@ -129,6 +142,7 @@ export function useDrafts(userId: string) {
     discardDraft: handleDiscard,
     getDraft: handleGet,
     findActiveBySourceEntry: handleFindActiveBySourceEntry,
+    patchDraftLocal,
     refresh: forceRefresh,
   }
 }

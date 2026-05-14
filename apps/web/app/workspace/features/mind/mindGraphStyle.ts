@@ -125,6 +125,62 @@ export const DIM_EDGE_OPACITY = 0.03
 
 export const BG_COLOR = '#0a0a0f'
 
+function parseHexColor(color: string): { r: number; g: number; b: number } | null {
+  const normalized = color.trim().replace('#', '')
+  if (!/^[0-9a-fA-F]{3}$|^[0-9a-fA-F]{6}$/.test(normalized)) return null
+  const expanded = normalized.length === 3
+    ? normalized.split('').map((char) => `${char}${char}`).join('')
+    : normalized
+  return {
+    r: Number.parseInt(expanded.slice(0, 2), 16),
+    g: Number.parseInt(expanded.slice(2, 4), 16),
+    b: Number.parseInt(expanded.slice(4, 6), 16),
+  }
+}
+
+function channelToLinear(value: number): number {
+  const normalized = value / 255
+  return normalized <= 0.03928
+    ? normalized / 12.92
+    : ((normalized + 0.055) / 1.055) ** 2.4
+}
+
+function relativeLuminance(color: { r: number; g: number; b: number }): number {
+  return 0.2126 * channelToLinear(color.r) + 0.7152 * channelToLinear(color.g) + 0.0722 * channelToLinear(color.b)
+}
+
+function contrastRatio(a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }): number {
+  const lighter = Math.max(relativeLuminance(a), relativeLuminance(b))
+  const darker = Math.min(relativeLuminance(a), relativeLuminance(b))
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
+function mixWithWhite(color: { r: number; g: number; b: number }, amount: number): { r: number; g: number; b: number } {
+  return {
+    r: Math.round(color.r + (255 - color.r) * amount),
+    g: Math.round(color.g + (255 - color.g) * amount),
+    b: Math.round(color.b + (255 - color.b) * amount),
+  }
+}
+
+function toRgbCss(color: { r: number; g: number; b: number }): string {
+  return `rgb(${color.r}, ${color.g}, ${color.b})`
+}
+
+export function getReadableTextColor(backgroundColor: string, preferredColor = '#e8edf1'): string {
+  const background = parseHexColor(backgroundColor) ?? parseHexColor(BG_COLOR)
+  const preferred = parseHexColor(preferredColor)
+  const white = parseHexColor('#f8fbff')
+  if (!background || !preferred || !white) return '#f8fbff'
+  if (contrastRatio(preferred, background) >= 4.5) return preferredColor
+
+  for (const amount of [0.2, 0.35, 0.5, 0.65, 0.8]) {
+    const mixed = mixWithWhite(preferred, amount)
+    if (contrastRatio(mixed, background) >= 4.5) return toRgbCss(mixed)
+  }
+  return toRgbCss(white)
+}
+
 export function getNodeTypeLabel(nodeType: string): string {
   const labels: Record<string, string> = {
     root: 'World Tree',

@@ -14,6 +14,8 @@ import {
   convertTipToDraft,
   applyRecommendation,
   recordRecommendationFeedback,
+  discardDraft,
+  discardTip,
   type StoredEntry,
   type StoredDraft,
   type StoredTip,
@@ -528,4 +530,42 @@ export async function findRelatedMindNode(userId: string, entity: DockEntity): P
     return findMindNodeByDocumentId(userId, entity.documentId)
   }
   return null
+}
+
+export async function executeDockDiscardDraft(
+  userId: string,
+  draftId: number,
+  onToast?: (msg: string) => void,
+): Promise<boolean> {
+  try {
+    const result = await discardDraft(userId, draftId)
+    if (result) {
+      emit({ type: 'draft_deleted', draftId })
+      return true
+    }
+    onToast?.('Draft 丢弃失败：未找到该 Draft 或无权操作')
+    return false
+  } catch (e) {
+    onToast?.(`Draft 丢弃失败: ${e instanceof Error ? e.message : '未知错误'}`)
+    return false
+  }
+}
+
+export async function executeDockDiscardTip(
+  userId: string,
+  tipId: number,
+  onToast?: (msg: string) => void,
+): Promise<boolean> {
+  try {
+    const result = await discardTip(userId, tipId)
+    if (result) {
+      emit({ type: 'tip_discarded', tipId })
+      return true
+    }
+    onToast?.('Tip 丢弃失败：未找到该 Tip 或无权操作')
+    return false
+  } catch (e) {
+    onToast?.(`Tip 丢弃失败: ${e instanceof Error ? e.message : '未知错误'}`)
+    return false
+  }
 }

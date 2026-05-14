@@ -32,6 +32,7 @@ import type {
   UserBehaviorEventType,
   UserBehaviorSubjectType,
 } from '@atlax/domain'
+import { createEditorContentPayload, textToTiptapDoc, type TiptapJSONContent } from './editorContentAdapter'
 
 export interface DockItemRecord {
   id?: number
@@ -74,6 +75,10 @@ export interface EntryRecord {
   sourceDockItemId: number
   title: string
   content: string
+  contentJson?: TiptapJSONContent | null
+  plainText?: string
+  html?: string
+  markdown?: string
   type: string
   tags: string[]
   project: string | null
@@ -325,9 +330,16 @@ export interface EditorDraftRecord {
   draftKey: number
   title: string
   content: string
+  contentJson?: TiptapJSONContent | null
+  plainText?: string
+  html?: string
+  markdown?: string
   status: DraftStatus
   sourceEntryId?: number | null
   sourceType?: DraftSourceType | null
+  tags: string[]
+  project: string | null
+  collectionId: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -798,6 +810,69 @@ db.version(22).stores({
       await edgesTable.delete(oldEdgeId)
     }
   }
+})
+
+db.version(23).stores({
+  dockItems: '++id, userId, rawText, topic, sourceType, status, createdAt',
+  tags: 'id, userId, name, [userId+name]',
+  entries: '++id, userId, sourceDockItemId, type, archivedAt',
+  chatSessions: '++id, userId, status, pinned, dockItemId, createdAt, updatedAt',
+  widgets: '++id, userId, widgetType, active, createdAt, updatedAt',
+  collections: 'id, userId, collectionType, parentId, createdAt, updatedAt',
+  entryTagRelations: 'id, userId, entryId, tagId, [userId+entryId], [userId+tagId], createdAt',
+  entryRelations: 'id, userId, sourceEntryId, targetEntryId, relationType, [userId+sourceEntryId], [userId+targetEntryId], createdAt',
+  knowledgeEvents: 'id, userId, eventType, targetType, createdAt',
+  temporalActivities: 'id, userId, type, occurredAt, dayKey, weekKey, monthKey, [userId+dayKey], [userId+monthKey], createdAt',
+  mindNodes: 'id, userId, nodeType, state, label, [userId+nodeType], [userId+state], createdAt, updatedAt',
+  mindEdges: 'id, userId, sourceNodeId, targetNodeId, edgeType, [userId+sourceNodeId], [userId+targetNodeId], [userId+edgeType], createdAt, updatedAt',
+  workspaceSessions: 'id, userId, createdAt, updatedAt',
+  workspaceOpenTabs: 'id, userId, sessionId, tabType, documentId, isPinned, isActive, sortOrder, [userId+sessionId], [userId+tabType], [userId+documentId], openedAt, updatedAt',
+  recentDocuments: 'id, userId, documentId, [userId+documentId], lastOpenedAt, openCount, createdAt, updatedAt',
+  editorDrafts: '++id, userId, draftKey, status, sourceEntryId, sourceType, [userId+status], [userId+draftKey], [userId+sourceEntryId], createdAt, updatedAt',
+  tips: '++id, userId, sourceType, status, [userId+status], createdAt, updatedAt',
+  recommendations: 'id, userId, subjectType, status, [userId+status], [userId+subjectType], createdAt, updatedAt',
+  recommendationEvents: 'id, userId, recommendationId, eventType, [userId+recommendationId], [userId+eventType], createdAt',
+  userBehaviorEvents: 'id, userId, eventType, subjectType, [userId+eventType], [userId+subjectType], createdAt',
+}).upgrade(tx => {
+  return tx.table('editorDrafts').toCollection().modify(draft => {
+    if (!draft.tags) draft.tags = []
+    if (draft.project === undefined) draft.project = null
+    if (draft.collectionId === undefined) draft.collectionId = null
+  })
+})
+
+db.version(24).stores({
+  dockItems: '++id, userId, rawText, topic, sourceType, status, createdAt',
+  tags: 'id, userId, name, [userId+name]',
+  entries: '++id, userId, sourceDockItemId, type, archivedAt',
+  chatSessions: '++id, userId, status, pinned, dockItemId, createdAt, updatedAt',
+  widgets: '++id, userId, widgetType, active, createdAt, updatedAt',
+  collections: 'id, userId, collectionType, parentId, createdAt, updatedAt',
+  entryTagRelations: 'id, userId, entryId, tagId, [userId+entryId], [userId+tagId], createdAt',
+  entryRelations: 'id, userId, sourceEntryId, targetEntryId, relationType, [userId+sourceEntryId], [userId+targetEntryId], createdAt',
+  knowledgeEvents: 'id, userId, eventType, targetType, createdAt',
+  temporalActivities: 'id, userId, type, occurredAt, dayKey, weekKey, monthKey, [userId+dayKey], [userId+monthKey], createdAt',
+  mindNodes: 'id, userId, nodeType, state, label, [userId+nodeType], [userId+state], createdAt, updatedAt',
+  mindEdges: 'id, userId, sourceNodeId, targetNodeId, edgeType, [userId+sourceNodeId], [userId+targetNodeId], [userId+edgeType], createdAt, updatedAt',
+  workspaceSessions: 'id, userId, createdAt, updatedAt',
+  workspaceOpenTabs: 'id, userId, sessionId, tabType, documentId, isPinned, isActive, sortOrder, [userId+sessionId], [userId+tabType], [userId+documentId], openedAt, updatedAt',
+  recentDocuments: 'id, userId, documentId, [userId+documentId], lastOpenedAt, openCount, createdAt, updatedAt',
+  editorDrafts: '++id, userId, draftKey, status, sourceEntryId, sourceType, [userId+status], [userId+draftKey], [userId+sourceEntryId], createdAt, updatedAt',
+  tips: '++id, userId, sourceType, status, [userId+status], createdAt, updatedAt',
+  recommendations: 'id, userId, subjectType, status, [userId+status], [userId+subjectType], createdAt, updatedAt',
+  recommendationEvents: 'id, userId, recommendationId, eventType, [userId+recommendationId], [userId+eventType], createdAt',
+  userBehaviorEvents: 'id, userId, eventType, subjectType, [userId+eventType], [userId+subjectType], createdAt',
+}).upgrade(tx => {
+  const migrate = (record: Record<string, unknown>) => {
+    const content = typeof record.content === 'string' ? record.content : ''
+    const payload = createEditorContentPayload(textToTiptapDoc(content), content)
+    if (record.contentJson === undefined) record.contentJson = payload.contentJson
+    if (record.plainText === undefined) record.plainText = payload.plainText
+    if (record.html === undefined) record.html = payload.html
+    if (record.markdown === undefined) record.markdown = payload.markdown
+  }
+  tx.table('entries').toCollection().modify(migrate)
+  tx.table('editorDrafts').toCollection().modify(migrate)
 })
 
 export { db }

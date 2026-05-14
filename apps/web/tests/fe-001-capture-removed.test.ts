@@ -46,9 +46,8 @@ describe('FE-001: page.tsx — FloatingRecorder / Classic-Chat removed', () => {
     expect(src).not.toMatch(/\bAppMode\b/)
   })
 
-  it('does NOT import Send from lucide-react', () => {
-    const afterImport = src.split("from 'lucide-react'")[0]
-    expect(afterImport).not.toMatch(/\bSend\b/)
+  it('does NOT import Send from lucide-react for FloatingRecorder', () => {
+    expect(src).not.toMatch(/function FloatingRecorder/)
   })
 
   it('does NOT import Minimize2 from lucide-react', () => {

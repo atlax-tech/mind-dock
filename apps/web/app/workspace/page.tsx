@@ -21,7 +21,7 @@ import {
   generateMindNodeRecommendations,
   type StoredMindNode,
 } from '@/lib/repository';
-import { useDockData, type DockEntityType, type DockRecommendation, findRelatedMindNode, executeDockEditorOpen, executeRecommendationApply, executeRecommendationReject, executeRecommendationIgnore } from './features/dock/useDockData';
+import { useDockData, type DockEntityType, type DockRecommendation, findRelatedMindNode, executeDockEditorOpen, executeRecommendationApply, executeRecommendationReject, executeRecommendationIgnore, executeDockDiscardDraft, executeDockDiscardTip } from './features/dock/useDockData';
 import type { StoredDraft } from '@/lib/repository'
 import { emit } from '@/lib/events';
 import { isRecommendationPending, isRecommendationResolved, isSupportedCandidateType, describeRecommendationAction, describeRecommendationReason, describeApplyPreview, formatConfidenceLevel, STATUS_LABELS, CANDIDATE_TYPE_LABELS } from '@/lib/recommendation-i18n';
@@ -49,7 +49,6 @@ import {
   Sparkles,
   PanelLeft,
   PanelRight,
-  MoreHorizontal,
   X,
   Bot,
   Puzzle,
@@ -78,6 +77,7 @@ import {
   Lock,
   EyeOff,
   RotateCcw,
+  Send,
 } from 'lucide-react';
 
 // ==========================================
@@ -1014,6 +1014,13 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
   const [selectedRecId, setSelectedRecId] = React.useState<string | null>(null);
   const [relatedMindNode, setRelatedMindNode] = React.useState<StoredMindNode | null>(null);
   const [recActionLoading, setRecActionLoading] = React.useState<string | null>(null);
+  const [confirmDialog, setConfirmDialog] = React.useState<{
+    open: boolean;
+    title: string;
+    message: string;
+    confirmLabel: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   const spaces = dockData.spaces;
   const selectedSpace = spaces.find(s => s.id === selectedSpaceId) || spaces[0] || null;
@@ -1091,6 +1098,44 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
     }
   }, [userId, recActionLoading, onToast, dockRefresh]);
 
+  const handleDiscardDraft = React.useCallback(async () => {
+    if (!selectedEntity?.draftId) return;
+    setConfirmDialog({
+      open: true,
+      title: '丢弃 Draft',
+      message: '此操作不可恢复，Draft 将被永久删除。确定要丢弃吗？',
+      confirmLabel: '确认丢弃',
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        if (!selectedEntity?.draftId) return;
+        const ok = await executeDockDiscardDraft(userId, selectedEntity.draftId, onToast);
+        if (ok) {
+          onToast?.('Draft 已丢弃');
+          dockRefresh();
+        }
+      },
+    });
+  }, [selectedEntity, userId, onToast, dockRefresh]);
+
+  const handleDiscardTip = React.useCallback(async () => {
+    if (!selectedEntity?.tipId) return;
+    setConfirmDialog({
+      open: true,
+      title: '丢弃 Tip',
+      message: '此操作不可恢复，该 Tip 将被永久丢弃。确定要丢弃吗？',
+      confirmLabel: '确认丢弃',
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        if (!selectedEntity?.tipId) return;
+        const ok = await executeDockDiscardTip(userId, selectedEntity.tipId, onToast);
+        if (ok) {
+          onToast?.('Tip 已丢弃');
+          dockRefresh();
+        }
+      },
+    });
+  }, [selectedEntity, userId, onToast, dockRefresh]);
+
   const getRecStatusBadge = (rec: DockRecommendation) => {
     const statusConfig = STATUS_LABELS[rec.status as keyof typeof STATUS_LABELS];
     const isUnsupported = !isSupportedCandidateType(rec.candidateType);
@@ -1166,6 +1211,7 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
   }
 
   return (
+    <>
     <div className="flex w-full h-full bg-[#0b0f11] text-[#e6eaed] overflow-hidden">
       {/* B. Dock sidebar */}
       <div className="w-[224px] bg-[#0d1215] border-r border-white/[0.07] flex flex-col shrink-0">
@@ -1564,9 +1610,22 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
                   </button>
                   <button
                     onClick={handleOpenInMind}
-                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5"
+                    disabled={!relatedMindNode}
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
                   >
-                    <Network className="w-3 h-3" /> 在 Mind 查看
+                    <Network className="w-3 h-3" /> {!relatedMindNode ? '在 Mind 查看 (无关联节点)' : '在 Mind 查看'}
+                  </button>
+                  <button
+                    disabled
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] flex items-center justify-center gap-1.5 opacity-30 cursor-not-allowed"
+                  >
+                    <Archive className="w-3 h-3" /> 归档 <span className="text-[8px] text-[#8d989f] ml-1">Planned</span>
+                  </button>
+                  <button
+                    disabled
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] flex items-center justify-center gap-1.5 opacity-30 cursor-not-allowed"
+                  >
+                    <RotateCcw className="w-3 h-3" /> 恢复 <span className="text-[8px] text-[#8d989f] ml-1">Planned</span>
                   </button>
                 </>
               )}
@@ -1577,13 +1636,20 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
                     disabled={!selectedEntity.draftId}
                     className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#e6eaed] hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
                   >
-                    <PenTool className="w-3 h-3" /> 打开 Editor
+                    <PenTool className="w-3 h-3" /> 在 Editor 中继续
                   </button>
                   <button
                     disabled
                     className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] flex items-center justify-center gap-1.5 opacity-30 cursor-not-allowed"
                   >
-                    <Trash2 className="w-3 h-3" /> 删除 Draft <span className="text-[8px] text-[#8d989f] ml-1">Planned</span>
+                    <Send className="w-3 h-3" /> 发布 <span className="text-[8px] text-[#8d989f] ml-1">Planned</span>
+                  </button>
+                  <button
+                    onClick={handleDiscardDraft}
+                    disabled={!selectedEntity.draftId}
+                    className="w-full h-[28px] rounded-[8px] bg-[#ffb4ab]/10 text-[11px] font-medium text-[#ffb4ab] hover:bg-[#ffb4ab]/20 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    <Trash2 className="w-3 h-3" /> 丢弃 Draft
                   </button>
                 </>
               )}
@@ -1597,10 +1663,11 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
                     <PenTool className="w-3 h-3" /> 转 Draft 并打开 Editor
                   </button>
                   <button
-                    disabled
-                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] flex items-center justify-center gap-1.5 opacity-30 cursor-not-allowed"
+                    onClick={handleDiscardTip}
+                    disabled={!selectedEntity.tipId}
+                    className="w-full h-[28px] rounded-[8px] bg-[#ffb4ab]/10 text-[11px] font-medium text-[#ffb4ab] hover:bg-[#ffb4ab]/20 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
                   >
-                    <Trash2 className="w-3 h-3" /> 丢弃 Tip <span className="text-[8px] text-[#8d989f] ml-1">Preview</span>
+                    <Trash2 className="w-3 h-3" /> 丢弃 Tip
                   </button>
                 </>
               )}
@@ -1677,13 +1744,52 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
           </button>
           <button
             onClick={handleOpenInMind}
-            className="flex-1 h-[32px] rounded-[8px] bg-white/10 text-white text-[12px] font-medium hover:bg-white/20 transition-colors flex items-center justify-center gap-1.5"
+            disabled={!relatedMindNode}
+            className="flex-1 h-[32px] rounded-[8px] bg-white/10 text-[12px] font-medium hover:bg-white/20 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
           >
-            <Network className="w-3.5 h-3.5" /> 在 Mind 查看
+            <Network className="w-3.5 h-3.5" /> {!relatedMindNode ? '在 Mind 查看 (无节点)' : '在 Mind 查看'}
           </button>
         </div>
       </div>
     </div>
+
+    {confirmDialog && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div
+          className="absolute inset-0 bg-[#0b0f11]/60 backdrop-blur-sm"
+          onClick={() => setConfirmDialog(null)}
+        />
+        <div className="relative w-[380px] bg-[#1c2023]/90 backdrop-blur-[40px] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
+            <h3 className="text-sm font-medium text-white">{confirmDialog?.title}</h3>
+            <button
+              onClick={() => setConfirmDialog(null)}
+              className="p-1 rounded-md hover:bg-white/10 text-[#899298] hover:text-white transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="px-5 py-4">
+            <p className="text-[12px] text-[#899298] leading-relaxed">{confirmDialog?.message}</p>
+          </div>
+          <div className="px-5 py-3 border-t border-white/[0.07] flex gap-2">
+            <button
+              onClick={() => setConfirmDialog(null)}
+              className="flex-1 py-2 rounded-lg bg-white/5 text-[11px] text-[#899298] hover:text-white hover:bg-white/10 transition-colors"
+            >
+              取消
+            </button>
+            <button
+              onClick={() => confirmDialog?.onConfirm()}
+              className="flex-1 py-2 rounded-lg bg-[#ffb4ab]/10 border border-[#ffb4ab]/20 text-[11px] text-[#ffb4ab] hover:bg-[#ffb4ab]/20 transition-colors"
+            >
+              {confirmDialog?.confirmLabel}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 };
 
@@ -2336,14 +2442,14 @@ const DailyBriefingView = ({ brief, briefLoading }: { brief: DailyBriefData; bri
 
 export default function WorkspacePage() {
   const [activeTab, setActiveTab] = useState('home');
-  const [showSourcePacket, setShowSourcePacket] = useState(true);
-  const [showInspector, setShowInspector] = useState(true);
-  const [showOptionsDropdown, setShowOptionsDropdown] = useState(false);
+  const [showSourcePacket, setShowSourcePacket] = useState(false);
+  const [showInspector, setShowInspector] = useState(false);
   const [userId, setUserId] = useState('_legacy');
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [isNodeSelected, setIsNodeSelected] = useState(false);
   const [pendingOpenDraftId, setPendingOpenDraftId] = useState<number | null>(null);
   const [pendingOpenEntryId, setPendingOpenEntryId] = useState<number | null>(null);
+  const [activeEditorMeta, setActiveEditorMeta] = useState<{ id: number | null; title: string; status: string }>({ id: null, title: 'Untitled', status: 'idle' });
 
   useEffect(() => {
     // Reset selection state when switching tabs
@@ -2432,7 +2538,13 @@ export default function WorkspacePage() {
             return (
               <div
                 key={item.id}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => {
+                  if (item.id === 'editor') {
+                    setShowSourcePacket(false)
+                    setShowInspector(false)
+                  }
+                  setActiveTab(item.id)
+                }}
                 className={`group cursor-pointer flex items-center justify-center w-[32px] h-[32px] rounded-[8px] relative transition-all ${isActive ? 'text-[#86d7ff] bg-white/5' : 'text-[#8d989f] hover:text-white hover:bg-white/5'}`}
               >
                 {isActive && (
@@ -2472,65 +2584,16 @@ export default function WorkspacePage() {
             <>
               {/* 编辑器特定面包屑导航 */}
               <div className="flex items-center gap-2 text-sm">
-                <span className="text-[#899298] hover:text-white cursor-pointer transition-colors">Atlax</span>
+                <span className="text-[#899298]/75 hover:text-white cursor-pointer transition-colors">Atlax</span>
                 <span className="text-[#899298]">/</span>
-                <span className="text-[#899298] hover:text-white cursor-pointer transition-colors">编辑器</span>
+                <span className="text-[#899298]/75 hover:text-white cursor-pointer transition-colors">编辑器</span>
                 <span className="text-[#899298]">/</span>
-                <span className="text-white font-medium cursor-pointer">空间界面作为认知...</span>
+                <span className="max-w-[320px] truncate text-xs font-medium text-[#d8dde2] cursor-pointer" title={activeEditorMeta.title}>
+                  {activeEditorMeta.title || 'Untitled'}
+                </span>
               </div>
 
-              {/* 编辑器特定操作按钮 */}
-              <div className="flex items-center gap-3">
-                {/* 更多选项按钮 (下拉菜单) */}
-                <div className="relative">
-                  <button
-                    onClick={() => setShowOptionsDropdown(!showOptionsDropdown)}
-                    className={`p-2 rounded-full border transition-colors ${showOptionsDropdown ? 'bg-white/10 border-white/20 text-white' : 'bg-white/5 border-white/10 text-[#899298] hover:bg-white/10 hover:text-white'}`}
-                  >
-                    <MoreHorizontal className="w-4 h-4" />
-                  </button>
-
-                  {/* 抽屉列表 / 下拉菜单 */}
-                  {showOptionsDropdown && (
-                    <div className="absolute right-0 top-full mt-2 w-48 bg-[#1c2023]/90 backdrop-blur-[20px] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50 animate-in fade-in slide-in-from-top-2 duration-200">
-                      <div className="py-1 flex flex-col">
-                        <button
-                          onClick={() => { setShowSourcePacket(!showSourcePacket); setShowOptionsDropdown(false); }}
-                          className="px-4 py-2.5 text-xs text-[#899298] hover:text-white hover:bg-white/5 flex items-center justify-between transition-colors text-left w-full"
-                        >
-                          <div className="flex items-center gap-3">
-                            <PanelLeft className="w-4 h-4" /> <span>源数据包</span>
-                          </div>
-                          <span className="text-[10px] bg-white/10 px-1.5 py-0.5 rounded">{showSourcePacket ? '隐藏' : '显示'}</span>
-                        </button>
-                        <button
-                          onClick={() => { setShowInspector(!showInspector); setShowOptionsDropdown(false); }}
-                          className="px-4 py-2.5 text-xs text-[#899298] hover:text-white hover:bg-white/5 flex items-center justify-between transition-colors text-left w-full"
-                        >
-                          <div className="flex items-center gap-3">
-                            <PanelRight className="w-4 h-4" /> <span>检查器</span>
-                          </div>
-                          <span className="text-[10px] bg-white/10 px-1.5 py-0.5 rounded">{showInspector ? '隐藏' : '显示'}</span>
-                        </button>
-                        <div className="h-px bg-white/10 my-1"></div>
-                        <button className="px-4 py-2.5 text-xs text-[#899298] hover:text-white hover:bg-white/5 flex items-center gap-3 transition-colors text-left w-full">
-                          <Database className="w-4 h-4" /> <span>本地</span>
-                        </button>
-                        <button className="px-4 py-2.5 text-xs text-[#899298] hover:text-white hover:bg-white/5 flex items-center gap-3 transition-colors text-left w-full">
-                          <Cloud className="w-4 h-4" /> <span>已保存</span>
-                        </button>
-                        <div className="h-px bg-white/10 my-1"></div>
-                        <button className="px-4 py-2.5 text-xs text-[#e0e3e6] hover:text-white hover:bg-white/5 flex items-center gap-3 transition-colors text-left w-full">
-                          <Share2 className="w-4 h-4" /> <span>分享</span>
-                        </button>
-                        <button className="px-4 py-2.5 text-xs text-white hover:bg-[#86d7ff]/20 bg-[#86d7ff]/10 flex items-center gap-3 transition-colors text-left w-full font-medium">
-                          <Download className="w-4 h-4" /> <span>导出</span>
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
+              <div />
             </>
           ) : (
             <>
@@ -2591,9 +2654,9 @@ export default function WorkspacePage() {
           )}
           {activeTab === 'briefing' && <DailyBriefingView brief={dailyBriefHook.data} briefLoading={dailyBriefHook.loading} />}
           {activeTab === 'toolbox' && <ToolboxView />}
-          {activeTab === 'mind' && <MindView userId={userId} onToast={showToast} onSelectionChange={setIsNodeSelected} onOpenEditor={(documentId, sourceType) => { if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} />}
-          {activeTab === 'dock' && <DockView setActiveTab={setActiveTab} userId={userId} onOpenEditor={(documentId, sourceType) => { if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} onToast={showToast} />}
-          {activeTab === 'editor' && <DraftEditorView userId={userId} showSourcePacket={showSourcePacket} showInspector={showInspector} onToggleSourcePacket={() => setShowSourcePacket(v => !v)} onToggleInspector={() => setShowInspector(v => !v)} onToast={showToast} initialDraftId={pendingOpenDraftId} initialEntryId={pendingOpenEntryId} onInitialDraftConsumed={() => setPendingOpenDraftId(null)} onInitialEntryConsumed={() => setPendingOpenEntryId(null)} />}
+          {activeTab === 'mind' && <MindView userId={userId} onToast={showToast} onSelectionChange={setIsNodeSelected} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} />}
+          {activeTab === 'dock' && <DockView setActiveTab={setActiveTab} userId={userId} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} onToast={showToast} />}
+          {activeTab === 'editor' && <DraftEditorView userId={userId} showSourcePacket={showSourcePacket} showInspector={showInspector} onToggleSourcePacket={() => setShowSourcePacket(v => !v)} onToggleInspector={() => setShowInspector(v => !v)} onToast={showToast} initialDraftId={pendingOpenDraftId} initialEntryId={pendingOpenEntryId} onInitialDraftConsumed={() => setPendingOpenDraftId(null)} onInitialEntryConsumed={() => setPendingOpenEntryId(null)} onActiveDraftMetaChange={setActiveEditorMeta} />}
           {activeTab === 'review' && <ReviewView />}
           {activeTab === 'settings' && <SettingsView />}
         </main>
@@ -2715,8 +2778,9 @@ export default function WorkspacePage() {
 
       {/* Toast 通知 */}
 
-      {!isNodeSelected && (
+      {!isNodeSelected && activeTab !== 'editor' && (
         <QuickCapture
+          hidden={activeTab === 'editor'}
           onSubmit={async (text: string) => {
             const tip = await tipsHook.createTip(text, 'quick-capture')
             if (tip) {

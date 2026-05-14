@@ -5,13 +5,21 @@ import { Sparkles, ArrowUp, X } from 'lucide-react'
 
 interface QuickCaptureProps {
   onSubmit: (text: string) => Promise<void>
+  variant?: 'center' | 'corner'
+  hidden?: boolean
 }
 
-export default function QuickCapture({ onSubmit }: QuickCaptureProps) {
+export default function QuickCapture({ onSubmit, variant = 'center', hidden = false }: QuickCaptureProps) {
   const [expanded, setExpanded] = useState(false)
   const [text, setText] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  if (hidden) return null
+
+  const placementClass = variant === 'corner'
+    ? 'fixed bottom-5 right-5 z-[90]'
+    : 'fixed bottom-6 left-1/2 -translate-x-1/2 z-[90]'
 
   const handleSubmit = async () => {
     const trimmed = text.trim()
@@ -41,7 +49,7 @@ export default function QuickCapture({ onSubmit }: QuickCaptureProps) {
     return (
       <button
         onClick={() => setExpanded(true)}
-        className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[90] flex items-center gap-2 px-5 py-2.5 rounded-full bg-white/[0.04] backdrop-blur-[40px] border border-white/[0.06] hover:border-[#86d7ff]/30 hover:bg-white/[0.06] transition-all duration-300 shadow-[0_8px_32px_rgba(0,0,0,0.3)] group"
+        className={`${placementClass} flex items-center gap-2 px-5 py-2.5 rounded-full bg-white/[0.04] backdrop-blur-[40px] border border-white/[0.06] hover:border-[#86d7ff]/30 hover:bg-white/[0.06] transition-all duration-300 shadow-[0_8px_32px_rgba(0,0,0,0.3)] group`}
       >
         <Sparkles className="w-3.5 h-3.5 text-[#86d7ff]/60 group-hover:text-[#86d7ff] transition-colors duration-300" />
         <span className="text-[11px] text-[#899298] group-hover:text-white/70 transition-colors duration-300 font-light">Capture</span>
@@ -50,7 +58,7 @@ export default function QuickCapture({ onSubmit }: QuickCaptureProps) {
   }
 
   return (
-    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[90] w-full max-w-md px-4">
+    <div className={`${placementClass} ${variant === 'corner' ? 'w-[360px] max-w-[calc(100vw-2.5rem)]' : 'w-full max-w-md px-4'}`}>
       <div className="flex items-center gap-2 px-4 py-3 rounded-[22px] bg-white/[0.06] backdrop-blur-[40px] border border-white/[0.08] shadow-[0_12px_40px_rgba(0,0,0,0.4)] transition-all duration-300">
         <Sparkles className="w-3.5 h-3.5 text-[#86d7ff]/60 shrink-0" />
         <input
