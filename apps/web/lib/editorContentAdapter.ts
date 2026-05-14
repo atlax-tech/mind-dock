@@ -90,7 +90,7 @@ export function jsonToPlainText(node: TiptapJSONContent | null | undefined): str
   if (node.type === 'text') return node.text ?? ''
   if (node.type === 'hardBreak') return '\n'
   const children = node.content?.map(jsonToPlainText).join('') ?? ''
-  if (['paragraph', 'heading', 'blockquote', 'codeBlock', 'listItem', 'taskItem'].includes(node.type ?? '')) {
+  if (['paragraph', 'heading', 'blockquote', 'codeBlock', 'listItem', 'taskItem', 'callout'].includes(node.type ?? '')) {
     return `${children}\n`
   }
   return children
@@ -113,6 +113,8 @@ export function jsonToMarkdown(node: TiptapJSONContent | null | undefined, depth
     }
     case 'blockquote':
       return children.map((child) => jsonToMarkdown(child, depth)).join('\n').split('\n').map((line) => `> ${line}`).join('\n')
+    case 'callout':
+      return children.map((child) => jsonToMarkdown(child, depth)).join('\n').split('\n').map((line) => `> [!NOTE]\n> ${line}`).join('\n')
     case 'codeBlock':
       return `\`\`\`\n${children.map((child) => child.text ?? '').join('')}\n\`\`\``
     case 'bulletList':
@@ -151,6 +153,8 @@ export function jsonToHtml(node: TiptapJSONContent | null | undefined): string {
     }
     case 'blockquote':
       return `<blockquote>${children}</blockquote>`
+    case 'callout':
+      return `<div data-type="callout">${children}</div>`
     case 'codeBlock':
       return `<pre><code>${children}</code></pre>`
     case 'bulletList':

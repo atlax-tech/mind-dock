@@ -9,8 +9,44 @@
 ---
 
 <!-- ============================================ -->
-<!-- 分割线：MIND-REAL-006 Round 6 (入口收拢、死代码清理与合入前稳定化) -->
+<!-- 分割线：EDITOR-BLOCK-001 Round 1 (Block Insert Menu 第一版真实可用功能) -->
 <!-- ============================================ -->
+
+## EDITOR-BLOCK-001+Round 1 devlog -- Block Insert Menu 第一版实现
+
+**时间戳**: 2026-05-15
+
+**任务目标**:
+实现 Editor Block Insert Menu 的第一版真实可用功能。支持通过 + 按钮（单击/双击）插入 Text/Code/Quote/Callout，处理点击冲突，实现极简 Filter 菜单，并保持 Atlax dark glass 风格。
+
+**改动文件名及行数**:
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `TiptapEditor.tsx` | +280 | 1. 引入 Callout extension；2. BlockHandleController 增加 + 按钮与 insert menu 逻辑；3. 实现单击 after / 双击 before 逻辑并防冲突；4. 实现 BlockInsertMenu 组件含过滤、快捷键、atlax 风格；5. Callout 视觉样式定义。 |
+| `editorContentAdapter.ts` | +20 | 增加 callout 节点在 PlainText/HTML/Markdown 转换中的支持。 |
+
+**技术要点**:
+1. **Callout Extension**: 实现最小可用 callout node，支持 `block+` 内容，数据持久化到 `div[data-type="callout"]`。
+2. **Click/Dblclick Conflict**: 使用 250ms 计时器区分单双击。单击触发下方插入，双击触发上方插入。
+3. **Insert Logic**: 基于当前 hovered block 的 `from/to` pos，使用 `editor.commands.insertContentAt` 真实插入，不产生副作用。
+4. **Visuals**: 采用 Atlax dark glass 材质，阴影、圆角、背景高亮与现有系统一致。搜索框支持实时过滤。
+
+**遇到的问题及解决方式**:
+- Lucide-react 缺少 `FileText` 导入导致编译错误，已补齐。
+- Block handle 位置偏移：由 `-40` 调整为 `-68` 以适应双按钮宽度。
+- **Quote/Callout 插入错误**: 修复了由于 `blockquote` 和 `callout` 节点要求至少包含一个 block 子节点而导致的 `RangeError`。在插入时默认增加了一个空段落。
+
+**自动验证结果**:
+- pnpm lint: 通过
+- pnpm typecheck: 通过
+- pnpm test: 通过
+
+**当前风险及影响范围**:
+- Page 暂时 disabled，等待后续真实数据接入。
+- Callout 样式仅为基础版，后续可增加图标选择。
+
+---
 
 ## MIND-REAL-006+Round 6 devlog -- 入口收拢、死代码清理与合入前稳定化
 

@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { BubbleMenu } from '@tiptap/react/menus'
-import { EditorContent, Extension, type Editor, useEditor } from '@tiptap/react'
+import { EditorContent, Extension, Node as TiptapNode, mergeAttributes, type Editor, useEditor } from '@tiptap/react'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
@@ -13,6 +13,8 @@ import Highlight from '@tiptap/extension-highlight'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
 import {
+  Plus,
+  Search,
   Bold,
   Italic,
   Strikethrough,
@@ -36,6 +38,8 @@ import {
   Trash2,
   Palette,
   Type,
+  Terminal,
+  FileText,
 } from 'lucide-react'
 import {
   createEditorContentPayload,
@@ -114,6 +118,7 @@ const SUPPORTED_BLOCK_TYPES = new Set([
   'horizontalRule',
   'listItem',
   'taskItem',
+  'callout',
 ])
 
 export const SLASH_COMMANDS: SlashCommandItem[] = [
@@ -173,6 +178,28 @@ export const SLASH_COMMANDS: SlashCommandItem[] = [
     command: (editor, range) => editor.chain().focus().deleteRange(range).toggleBlockquote().insertContent('Note').run(),
   },
 ]
+
+export const Callout = TiptapNode.create({
+  name: 'callout',
+  group: 'block',
+  content: 'block+',
+  parseHTML() {
+    return [{ tag: 'div[data-type="callout"]' }]
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ['div', mergeAttributes(HTMLAttributes, { 'data-type': 'callout' }), 0]
+  },
+  addCommands() {
+    return {
+      setCallout: () => ({ commands }: any) => {
+        return commands.setNode(this.name)
+      },
+      toggleCallout: () => ({ commands }: any) => {
+        return commands.toggleNode(this.name, 'paragraph')
+      },
+    } as any
+  },
+})
 
 export const SlashCommand = Extension.create({
   name: 'slashCommand',
@@ -428,6 +455,7 @@ export function TiptapEditor({
       placeholder: placeholder ?? 'Start writing, or press / for blocks.',
     }),
     SlashCommand,
+    Callout,
   ], [placeholder])
 
   const editor = useEditor({
@@ -729,6 +757,31 @@ export function TiptapEditor({
           height: 0;
           pointer-events: none;
         }
+        .tiptap-editor .ProseMirror [data-type="callout"] {
+          margin: 1.25rem 0;
+          padding: 1.1rem 1.25rem;
+          border-radius: 0.85rem;
+          background: rgba(255, 255, 255, 0.025);
+          border: 1px solid rgba(255, 255, 255, 0.06);
+          color: #e0e3e6;
+          position: relative;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+        .tiptap-editor .ProseMirror [data-type="callout"]::before {
+          content: '💡';
+          position: absolute;
+          left: -12px;
+          top: -10px;
+          font-size: 1.1rem;
+          background: #1c2023;
+          width: 28px;
+          height: 28px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 8px;
+          border: 1px solid rgba(255, 255, 255, 0.1);
+        }
       `}</style>
     </div>
   )
@@ -743,14 +796,17 @@ function BlockHandleController({ editor }: { editor: Editor }) {
   const [handleStyle, setHandleStyle] = useState<React.CSSProperties>({})
   const [dropStyle, setDropStyle] = useState<React.CSSProperties | null>(null)
   const [copied, setCopied] = useState(false)
+  const [insertMenuOpen, setInsertMenuOpen] = useState(false)
+  const [insertPlacement, setInsertPlacement] = useState<BlockMovePlacement>('after')
   const handleRef = useRef<HTMLDivElement | null>(null)
+  const clickTimerRef = useRef<number | null>(null)
   const rafRef = useRef<number | null>(null)
   const pendingPositionTargetRef = useRef<BlockHandleTarget | null>(null)
   const lastHandleKeyRef = useRef('')
   const selectedDomRef = useRef<HTMLElement | null>(null)
 
   const activeTarget = selectedTarget ?? hoverTarget
-  const visible = Boolean(activeTarget || menuOpen || dragState)
+  const visible = Boolean(activeTarget || menuOpen || insertMenuOpen || dragState)
 
   const positionHandle = (target: BlockHandleTarget | null) => {
     if (!target?.dom) return
@@ -759,7 +815,7 @@ function BlockHandleController({ editor }: { editor: Editor }) {
     const lineCenter = Math.min(Math.max(blockRect.height / 2, 13), 20)
     const nextStyle: React.CSSProperties = {
       position: 'fixed',
-      left: rootRect.left - 40,
+      left: rootRect.left - 68,
       top: blockRect.top + lineCenter - 14,
     }
     if (handleRef.current) {
@@ -825,23 +881,34 @@ function BlockHandleController({ editor }: { editor: Editor }) {
       schedulePosition()
     }
     const onMouseDown = (event: MouseEvent) => {
-      if (menuOpen && handleRef.current && !handleRef.current.contains(event.target as Node)) {
+      if (handleRef.current && !handleRef.current.contains(event.target as any)) {
         setMenuOpen(false)
+        setInsertMenuOpen(false)
+        setCopied(false)
+        setSelectedTarget(null)
+      }
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMenuOpen(false)
+        setInsertMenuOpen(false)
         setCopied(false)
         setSelectedTarget(null)
       }
     }
     document.addEventListener('pointermove', onPointerMove, { passive: true })
     document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('keydown', onKeyDown)
     window.addEventListener('scroll', onScrollOrResize, true)
     window.addEventListener('resize', onScrollOrResize)
     return () => {
       document.removeEventListener('pointermove', onPointerMove)
       document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('scroll', onScrollOrResize, true)
       window.removeEventListener('resize', onScrollOrResize)
     }
-  }, [editor, menuOpen, dragState])
+  }, [editor, menuOpen, insertMenuOpen, dragState])
 
   useEffect(() => {
     if (!dragState) return
@@ -906,8 +973,29 @@ function BlockHandleController({ editor }: { editor: Editor }) {
 
   const closeMenu = () => {
     setMenuOpen(false)
+    setInsertMenuOpen(false)
     setCopied(false)
     editor.commands.focus()
+  }
+
+  const handlePlusClick = (target: BlockHandleTarget | null) => {
+    if (!target) return
+    if (clickTimerRef.current) {
+      window.clearTimeout(clickTimerRef.current)
+      clickTimerRef.current = null
+      setInsertPlacement('before')
+      setSelectedTarget(target)
+      setInsertMenuOpen(true)
+      setMenuOpen(false)
+    } else {
+      clickTimerRef.current = window.setTimeout(() => {
+        clickTimerRef.current = null
+        setInsertPlacement('after')
+        setSelectedTarget(target)
+        setInsertMenuOpen(true)
+        setMenuOpen(false)
+      }, 250)
+    }
   }
 
   const turnInto = (type: 'paragraph' | 'h1' | 'h2' | 'h3' | 'quote' | 'code') => {
@@ -948,29 +1036,48 @@ function BlockHandleController({ editor }: { editor: Editor }) {
         style={handleStyle}
         onMouseDown={(event) => event.preventDefault()}
       >
-        <button
-          type="button"
-          draggable
-          aria-label="Block actions"
-          className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/[0.06] bg-[#12171a]/70 text-[#65727a] shadow-lg backdrop-blur-xl transition-colors hover:border-white/10 hover:bg-[#1c2023]/90 hover:text-[#86d7ff]"
-          onClick={() => {
-            const target = activeTarget
-            if (!target) return
-            setSelectedTarget(target)
-            setMenuOpen(true)
-            schedulePosition(target)
-          }}
-          onDragStart={(event) => {
-            const target = activeTarget
-            if (!target) return
-            setSelectedTarget(target)
-            setDragState({ source: target })
-            event.dataTransfer.effectAllowed = 'move'
-            event.dataTransfer.setData('text/plain', `block-${target.from}`)
-          }}
-        >
-          <GripVertical className="h-3.5 w-3.5" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/[0.06] bg-[#12171a]/70 text-[#65727a] shadow-lg backdrop-blur-xl transition-colors hover:border-white/10 hover:bg-[#1c2023]/90 hover:text-[#86d7ff]"
+            onClick={() => handlePlusClick(activeTarget)}
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            draggable
+            aria-label="Block actions"
+            className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/[0.06] bg-[#12171a]/70 text-[#65727a] shadow-lg backdrop-blur-xl transition-colors hover:border-white/10 hover:bg-[#1c2023]/90 hover:text-[#86d7ff]"
+            onClick={() => {
+              const target = activeTarget
+              if (!target) return
+              setSelectedTarget(target)
+              setMenuOpen(true)
+              setInsertMenuOpen(false)
+              schedulePosition(target)
+            }}
+            onDragStart={(event) => {
+              const target = activeTarget
+              if (!target) return
+              setSelectedTarget(target)
+              setDragState({ source: target })
+              event.dataTransfer.effectAllowed = 'move'
+              event.dataTransfer.setData('text/plain', `block-${target.from}`)
+            }}
+          >
+            <GripVertical className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        {insertMenuOpen && selectedTarget && (
+          <BlockInsertMenu
+            editor={editor}
+            target={selectedTarget}
+            placement={insertPlacement}
+            onClose={() => setInsertMenuOpen(false)}
+          />
+        )}
 
         {menuOpen && selectedTarget && (
           <div
@@ -1046,6 +1153,101 @@ function BlockHandleController({ editor }: { editor: Editor }) {
         />
       )}
     </>
+  )
+}
+
+function BlockInsertMenu({
+  editor,
+  target,
+  placement,
+  onClose,
+}: {
+  editor: Editor
+  target: BlockHandleTarget
+  placement: BlockMovePlacement
+  onClose: () => void
+}) {
+  const [filter, setFilter] = useState('')
+
+  const items = [
+    { title: 'Page', label: 'Page', icon: FileText, disabled: true, group: 'Suggested' },
+    { title: 'Code', label: 'Code', icon: FileCode, group: 'Suggested', action: () => editor.chain().focus().insertContentAt(placement === 'after' ? target.to : target.from, { type: 'codeBlock' }).run() },
+    { title: 'Quote', label: 'Quote', icon: Quote, group: 'Suggested', action: () => editor.chain().focus().insertContentAt(placement === 'after' ? target.to : target.from, { type: 'blockquote', content: [{ type: 'paragraph' }] }).run() },
+    { title: 'Callout', label: 'Callout', icon: Terminal, group: 'Suggested', action: () => editor.chain().focus().insertContentAt(placement === 'after' ? target.to : target.from, { type: 'callout', content: [{ type: 'paragraph' }] }).run() },
+    { title: 'Text', label: 'Text', icon: Pilcrow, group: 'Basic blocks', action: () => editor.chain().focus().insertContentAt(placement === 'after' ? target.to : target.from, { type: 'paragraph' }).run() },
+  ]
+
+  const filteredItems = items.filter(item => 
+    item.label.toLowerCase().includes(filter.toLowerCase()) ||
+    item.title.toLowerCase().includes(filter.toLowerCase())
+  )
+
+  return (
+    <div 
+      className="tiptap-block-insert-menu absolute left-0 top-9 z-[80] w-[260px] rounded-[16px] border border-white/10 bg-[#1c2023]/92 p-1.5 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-[24px]"
+      onMouseDown={e => e.stopPropagation()}
+    >
+      <div className="flex items-center gap-2 px-2.5 py-2 border-b border-white/5 mb-1.5">
+        <Search className="h-3.5 w-3.5 text-[#899298]" />
+        <input
+          autoFocus
+          className="bg-transparent border-none outline-none text-[12px] text-white w-full placeholder:text-[#899298]/50"
+          placeholder="Type to filter..."
+          value={filter}
+          onChange={e => setFilter(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Escape') onClose()
+            if (e.key === 'Enter' && filteredItems.length > 0) {
+               const first = filteredItems[0]
+               if (!first.disabled) {
+                 first.action?.()
+                 onClose()
+               }
+            }
+          }}
+        />
+      </div>
+      
+      <div className="max-h-[320px] overflow-y-auto custom-scrollbar">
+        {['Suggested', 'Basic blocks'].map(group => {
+          const groupItems = filteredItems.filter(i => i.group === group)
+          if (groupItems.length === 0) return null
+          return (
+            <div key={group} className="mb-2 last:mb-0">
+              <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase text-[#899298] tracking-wider">{group}</div>
+              {groupItems.map(item => (
+                <button
+                  key={item.title}
+                  type="button"
+                  disabled={item.disabled}
+                  className={`flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left transition-colors ${
+                    item.disabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-white/[0.08]'
+                  }`}
+                  onClick={() => {
+                    item.action?.()
+                    onClose()
+                  }}
+                >
+                  <div className="flex h-6 w-6 items-center justify-center rounded-md bg-white/[0.04] border border-white/[0.06]">
+                    <item.icon className="h-3.5 w-3.5 text-[#dce3e8]" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[12px] text-[#dce3e8] font-medium leading-tight">
+                      {item.label} {item.disabled && <span className="text-[9px] opacity-60 ml-1">(Later)</span>}
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )
+        })}
+      </div>
+      
+      <div className="mt-1 border-t border-white/5 pt-1 flex items-center justify-between px-2.5 py-1.5">
+         <span className="text-[10px] text-[#899298]">Close menu</span>
+         <span className="text-[9px] text-[#59646b] bg-white/5 px-1 rounded uppercase tracking-tighter">esc</span>
+      </div>
+    </div>
   )
 }
 
