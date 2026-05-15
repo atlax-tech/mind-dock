@@ -24,7 +24,7 @@ import {
   publishDraftToDocument,
   type StoredMindNode,
 } from '@/lib/repository';
-import { useDockData, type DockEntityType, type DockRecommendation, findRelatedMindNode, executeDockEditorOpen, executeRecommendationApply, executeRecommendationReject, executeRecommendationIgnore, executeDockDiscardDraft, executeDockDiscardTip } from './features/dock/useDockData';
+import { useDockData, type DockEntityType, type DockRecommendation, type DockEntity, type DockSpace, findRelatedMindNode, executeDockEditorOpen, executeRecommendationApply, executeRecommendationReject, executeRecommendationIgnore, executeDockDiscardDraft, executeDockDiscardTip } from './features/dock/useDockData';
 import { useDockViewModel, type DockViewMode } from './features/dock/useDockViewModel';
 import type { StoredDraft } from '@/lib/repository'
 import { emit } from '@/lib/events';
@@ -505,7 +505,7 @@ function DockQueueSection({ title, color, count, items, defaultOpen = true }: {
   )
 }
 
-const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId: string; onToast: (msg: string) => void, onSelectionChange: (selected: boolean) => void, onOpenEditor?: (documentId: number, sourceType: 'draft' | 'document') => void }) => {
+const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor, initialFocusNodeId, onFocusNodeConsumed }: { userId: string; onToast: (msg: string) => void, onSelectionChange: (selected: boolean) => void, onOpenEditor?: (documentId: number, sourceType: 'draft' | 'document') => void, initialFocusNodeId?: string | null, onFocusNodeConsumed?: () => void }) => {
   const { nodes: mindNodes, edges: mindEdges, loading, onNodeDragEnd, onDeleteEdge, onCreateEdge, onArchiveNode, onRestoreNode, onChangeParent, hiddenNodes, refresh: refreshMindGraph } = useMindGraph(userId);
   const interaction = useMindGraphInteraction();
   const { state: ixState, actions: ixActions } = interaction;
@@ -514,6 +514,18 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
   useEffect(() => {
     onSelectionChange(!!ixState.selectedNodeId);
   }, [ixState.selectedNodeId, onSelectionChange]);
+
+  useEffect(() => {
+    if (!initialFocusNodeId) return
+    if (loading || mindNodes.length === 0) return
+    const nodeExists = mindNodes.some(n => n.id === initialFocusNodeId)
+    if (nodeExists) {
+      ixActions.setSelectedNode(initialFocusNodeId)
+      ixActions.setFocusedNode(initialFocusNodeId)
+      setSelectedNodeId(initialFocusNodeId)
+    }
+    onFocusNodeConsumed?.()
+  }, [initialFocusNodeId, loading, mindNodes, ixActions, onFocusNodeConsumed])
 
   useEffect(() => {
     if (!userId) return;
@@ -1003,11 +1015,11 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor }: { userId
 
 // 3. 停靠区视图 (Dock View) — 知识结构控制台
 // Phase 3.2 DOCK-REAL-002: 真实 Recommendation Queue + Apply/Reject/Ignore + Inspector Actions
-const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
-  setActiveTab: (tab: string) => void
+const DockView = ({ userId, onOpenEditor, onToast, onFocusMindNode }: {
   userId: string
   onOpenEditor?: (documentId: number, sourceType: 'draft' | 'document') => void
   onToast?: (msg: string) => void
+  onFocusMindNode?: (nodeId: string) => void
 }) => {
   const { data: dockData, loading: dockLoading, error: dockError, refresh: dockRefresh } = useDockData(userId);
   const vm = useDockViewModel(userId);
@@ -1042,8 +1054,51 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
     return map
   }, [dockData.recommendations])
 
+  const recEntityIds = React.useMemo(() => {
+    const ids = new Set<string>()
+    const pendingRecs = dockData.recommendations.filter(r => isRecommendationPending(r.status))
+    pendingRecs.forEach(r => {
+      const sid = String(r.subjectId)
+      dockData.entities.forEach(e => {
+        const eid = String(e.entryId ?? e.draftId ?? e.tipId ?? e.mindNodeId ?? e.collectionId ?? e.tagId ?? '')
+        if (eid && eid === sid) ids.add(e.id)
+      })
+    })
+    return ids
+  }, [dockData.recommendations, dockData.entities])
+
+  const duplicateTagNames = React.useMemo(() => {
+    return new Set(dockData.healthDetails.duplicateTags.map(t => t.name.toLowerCase()))
+  }, [dockData.healthDetails.duplicateTags])
+
   const filteredEntities = React.useMemo(() => {
     let result = dockData.entities
+    
+    const targetSpace = vm.filter.spaceId !== null 
+      ? dockData.spaces.find(s => s.id === vm.filter.spaceId) || null
+      : null
+
+    const matchesSpace = (e: DockEntity, space: DockSpace) => {
+      if (e.type === 'document') return e.project === space.name
+      if (e.type === 'collection') return e.collectionId === space.id || e.title === space.name
+      if (e.type === 'mindNode') {
+        if (e.subtitle === 'project') return e.title === space.name
+        if (e.subtitle === 'document' && e.documentId) {
+          const doc = dockData.rawEntries.find(entry => entry.id === e.documentId)
+          return doc?.project === space.name
+        }
+        return false
+      }
+      if (e.type === 'tag' && e.title) {
+        const tagName = e.title.toLowerCase()
+        return dockData.rawEntries.some(doc => 
+          doc.project === space.name && 
+          doc.tags?.some(t => t.toLowerCase() === tagName)
+        )
+      }
+      return false
+    }
+
     if (vm.dockMode === 'unsorted') {
       result = result.filter(e =>
         e.type === 'tip' ||
@@ -1051,9 +1106,13 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
         (e.type === 'document' && (!e.project || e.project === ''))
       )
     } else if (vm.dockMode === 'spaces') {
-      // Show all entities but group by space
+      if (targetSpace) {
+        result = result.filter(e => matchesSpace(e, targetSpace))
+      } else {
+        result = result.filter(e => e.type === 'collection' || e.type === 'tag' || (e.type === 'mindNode' && (e.subtitle === 'project' || e.subtitle === 'domain')))
+      }
     } else if (vm.dockMode === 'recommendations') {
-      // Show entities that have pending recommendations
+      result = result.filter(e => recEntityIds.has(e.id))
     } else if (vm.dockMode === 'health') {
       if (vm.filter.healthFilter === 'isolated') {
         const isolatedIds = new Set(dockData.healthDetails.isolatedNodes.map(n => `mind-${n.id}`))
@@ -1063,16 +1122,24 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
         const stagnantTipIds = new Set(dockData.healthDetails.stagnantItems.filter(i => !('title' in i)).map(i => `tip-${(i as unknown as { id: number }).id}`))
         result = result.filter(e => stagnantDraftIds.has(e.id) || stagnantTipIds.has(e.id))
       } else if (vm.filter.healthFilter === 'duplicates') {
-        // Show entities tagged with duplicate tags
+        result = result.filter(e => {
+          if (e.type === 'tag' && e.title && duplicateTagNames.has(e.title.toLowerCase())) return true
+          if (e.tags && e.tags.some(t => duplicateTagNames.has(t.toLowerCase()))) return true
+          return false
+        })
       } else if (vm.filter.healthFilter === 'weaklyClassified') {
         const weakEntryIds = new Set(dockData.healthDetails.weaklyClassifiedEntries.map(e => `entry-${e.id}`))
         result = result.filter(e => weakEntryIds.has(e.id))
       }
     }
+
+    if (targetSpace && vm.dockMode !== 'spaces') {
+      result = result.filter(e => matchesSpace(e, targetSpace))
+    }
     result = vm.applyFilters(result, recommendationsMap)
     result = vm.sortEntities(result)
     return result
-  }, [dockData.entities, dockData.healthDetails, vm, recommendationsMap])
+  }, [dockData.entities, dockData.healthDetails, dockData.spaces, dockData.rawEntries, vm, recommendationsMap, recEntityIds, duplicateTagNames])
 
   const modeTitle = React.useMemo(() => {
     switch (vm.dockMode) {
@@ -1119,8 +1186,12 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
       onToast?.('请先选择一个实体')
       return
     }
+    if (selectedEntity.type === 'mindNode' && selectedEntity.mindNodeId) {
+      onFocusMindNode?.(selectedEntity.mindNodeId)
+      return
+    }
     if (relatedMindNode) {
-      setActiveTab('mind')
+      onFocusMindNode?.(relatedMindNode.id)
       return
     }
     try {
@@ -1134,11 +1205,11 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
         state: 'drifting',
       })
       emit({ type: 'mind_node_created', nodeId: node.id })
-      setActiveTab('mind')
+      onFocusMindNode?.(node.id)
     } catch {
       onToast?.('创建 Mind 节点失败')
     }
-  }, [selectedEntity, relatedMindNode, userId, setActiveTab, onToast])
+  }, [selectedEntity, relatedMindNode, userId, onFocusMindNode, onToast])
 
   const handleRecApply = React.useCallback(async (recId: string) => {
     if (recActionLoading) return;
@@ -1265,14 +1336,14 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
       const { mindNode } = await convertTipToMindNode(userId, selectedEntity.tipId)
       if (mindNode) {
         emit({ type: 'mind_node_created', nodeId: mindNode.id })
-        setActiveTab('mind')
+        onFocusMindNode?.(mindNode.id)
       } else {
         onToast?.('创建 Mind 节点失败')
       }
     } catch {
       onToast?.('创建 Mind 节点失败')
     }
-  }, [selectedEntity, userId, setActiveTab, onToast])
+  }, [selectedEntity, userId, onFocusMindNode, onToast])
 
   const getRecStatusBadge = (rec: DockRecommendation) => {
     const statusConfig = STATUS_LABELS[rec.status as keyof typeof STATUS_LABELS];
@@ -1455,9 +1526,9 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
                 className={`h-[32px] px-3 rounded-[8px] border text-[12px] text-[#e6eaed] hover:bg-white/10 transition-colors flex items-center gap-1.5 ${filterOpen ? 'bg-white/10 border-white/20 text-white' : 'bg-white/5 border-white/[0.07]'}`}
               >
                 <Filter className="w-3.5 h-3.5" /> 筛选
-                {(vm.filter.types.length > 0 || vm.filter.statuses.length > 0 || vm.filter.hasRecommendations !== null) && (
+                {(vm.filter.types.length > 0 || vm.filter.statuses.length > 0 || vm.filter.hasRecommendations !== null || vm.filter.spaceId !== null) && (
                   <span className="text-[9px] bg-[#86d7ff]/20 text-[#86d7ff] px-1.5 rounded-full ml-0.5">
-                    {vm.filter.types.length + vm.filter.statuses.length + (vm.filter.hasRecommendations !== null ? 1 : 0)}
+                    {vm.filter.types.length + vm.filter.statuses.length + (vm.filter.hasRecommendations !== null ? 1 : 0) + (vm.filter.spaceId !== null ? 1 : 0)}
                   </span>
                 )}
               </button>
@@ -1514,6 +1585,36 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
                       />
                       有待处理推荐
                     </label>
+                    {spaces.length > 0 && (
+                      <>
+                        <div className="h-px bg-white/10 my-2" />
+                        <div className="text-[10px] font-semibold text-[#899298] uppercase tracking-wider mb-1.5">空间 / 项目</div>
+                        {spaces.map(space => (
+                          <label key={space.id} className="h-[28px] flex items-center gap-2 text-[11px] text-[#e0e3e6] cursor-pointer hover:bg-white/5 rounded px-1">
+                            <input
+                              type="radio"
+                              name="space-filter"
+                              checked={vm.filter.spaceId === space.id}
+                              onChange={() => vm.setSpaceFilter(space.id)}
+                              className="accent-[#86d7ff]"
+                            />
+                            {space.name}
+                          </label>
+                        ))}
+                        {vm.filter.spaceId !== null && (
+                          <label className="h-[28px] flex items-center gap-2 text-[11px] text-[#86d7ff] cursor-pointer hover:bg-white/5 rounded px-1">
+                            <input
+                              type="radio"
+                              name="space-filter"
+                              checked={false}
+                              onChange={() => vm.setSpaceFilter(null)}
+                              className="accent-[#86d7ff]"
+                            />
+                            全部空间
+                          </label>
+                        )}
+                      </>
+                    )}
                     <div className="h-px bg-white/10 my-2" />
                     <button
                       onClick={() => vm.resetFilter()}
@@ -1718,20 +1819,54 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
                 ) : vm.dockMode === 'spaces' ? (
                   <>
                     <FolderTree className="w-8 h-8 mb-3 opacity-30" />
-                    <div className="text-[12px]">暂无空间</div>
-                    <div className="text-[10px] mt-1">创建 Collection 后将自动出现空间</div>
+                    {vm.filter.spaceId !== null ? (
+                      <>
+                        <div className="text-[12px]">当前空间无内容</div>
+                        <div className="text-[10px] mt-1">该空间下暂无文档或相关实体</div>
+                        <button onClick={() => vm.setSpaceFilter(null)} className="mt-2 text-[10px] text-[#86d7ff] hover:underline">返回全部空间</button>
+                      </>
+                    ) : (
+                      <>
+                        <div className="text-[12px]">暂无空间入口</div>
+                        <div className="text-[10px] mt-1">创建 Collection 或为文档设置 Project 后将自动出现空间</div>
+                      </>
+                    )}
                   </>
                 ) : vm.dockMode === 'recommendations' ? (
                   <>
                     <Sparkles className="w-8 h-8 mb-3 opacity-30" />
-                    <div className="text-[12px]">暂无推荐</div>
-                    <div className="text-[10px] mt-1">使用 Mind 视图生成推荐后将在此显示</div>
+                    <div className="text-[12px]">暂无关联推荐的实体</div>
+                    <div className="text-[10px] mt-1">使用 Mind 视图生成推荐后，相关实体将在此显示</div>
                   </>
                 ) : vm.dockMode === 'health' ? (
                   <>
                     <Activity className="w-8 h-8 mb-3 opacity-30" />
-                    <div className="text-[12px]">结构健康，无异常</div>
-                    <div className="text-[10px] mt-1">所有节点已连接，内容活跃，无重复主题</div>
+                    {vm.filter.healthFilter === 'duplicates' ? (
+                      <>
+                        <div className="text-[12px]">无重复主题</div>
+                        <div className="text-[10px] mt-1">所有标签命名唯一，无重复主题</div>
+                      </>
+                    ) : vm.filter.healthFilter === 'isolated' ? (
+                      <>
+                        <div className="text-[12px]">无孤立节点</div>
+                        <div className="text-[10px] mt-1">所有 Mind 节点均已连接</div>
+                      </>
+                    ) : vm.filter.healthFilter === 'stagnant' ? (
+                      <>
+                        <div className="text-[12px]">无停滞内容</div>
+                        <div className="text-[10px] mt-1">所有 Draft 和 Tip 近期均有更新</div>
+                      </>
+                    ) : vm.filter.healthFilter === 'weaklyClassified' ? (
+                      <>
+                        <div className="text-[12px]">无弱归类文档</div>
+                        <div className="text-[10px] mt-1">所有文档均已归类到项目并添加标签</div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="text-[12px]">结构健康，无异常</div>
+                        <div className="text-[10px] mt-1">所有节点已连接，内容活跃，无重复主题</div>
+                      </>
+                    )}
                   </>
                 ) : (
                   <>
@@ -1926,10 +2061,6 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
                   }}
                   className="flex-1 h-[28px] rounded-[8px] bg-[#c8a0f0]/20 text-[#c8a0f0] text-[11px] font-medium hover:bg-[#c8a0f0]/30 transition-colors"
                 >预览方案</button>
-                <button 
-                  onClick={() => onToast?.('请先选择一条推荐')}
-                  className="px-3 h-[28px] rounded-[8px] bg-white/5 text-[#8d989f] text-[11px] font-medium hover:bg-white/10 transition-colors"
-                >忽略</button>
               </div>
             </>
           )}
@@ -2909,6 +3040,7 @@ export default function WorkspacePage() {
   const [isNodeSelected, setIsNodeSelected] = useState(false);
   const [pendingOpenDraftId, setPendingOpenDraftId] = useState<number | null>(null);
   const [pendingOpenEntryId, setPendingOpenEntryId] = useState<number | null>(null);
+  const [pendingMindFocusNodeId, setPendingMindFocusNodeId] = useState<string | null>(null);
   const [activeEditorMeta, setActiveEditorMeta] = useState<{ id: number | null; title: string; status: string }>({ id: null, title: 'Untitled', status: 'idle' });
 
   useEffect(() => {
@@ -3114,8 +3246,8 @@ export default function WorkspacePage() {
           )}
           {activeTab === 'briefing' && <DailyBriefingView brief={dailyBriefHook.data} briefLoading={dailyBriefHook.loading} />}
           {activeTab === 'toolbox' && <ToolboxView />}
-          {activeTab === 'mind' && <MindView userId={userId} onToast={showToast} onSelectionChange={setIsNodeSelected} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} />}
-          {activeTab === 'dock' && <DockView setActiveTab={setActiveTab} userId={userId} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} onToast={showToast} />}
+          {activeTab === 'mind' && <MindView userId={userId} onToast={showToast} onSelectionChange={setIsNodeSelected} initialFocusNodeId={pendingMindFocusNodeId} onFocusNodeConsumed={() => setPendingMindFocusNodeId(null)} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} />}
+          {activeTab === 'dock' && <DockView userId={userId} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} onToast={showToast} onFocusMindNode={(nodeId: string) => { setPendingMindFocusNodeId(nodeId); setActiveTab('mind'); }} />}
           {activeTab === 'editor' && <DraftEditorView userId={userId} showSourcePacket={showSourcePacket} showInspector={showInspector} onToggleSourcePacket={() => setShowSourcePacket(v => !v)} onToggleInspector={() => setShowInspector(v => !v)} onToast={showToast} initialDraftId={pendingOpenDraftId} initialEntryId={pendingOpenEntryId} onInitialDraftConsumed={() => setPendingOpenDraftId(null)} onInitialEntryConsumed={() => setPendingOpenEntryId(null)} onActiveDraftMetaChange={setActiveEditorMeta} />}
           {activeTab === 'review' && <ReviewView />}
           {activeTab === 'settings' && <SettingsView />}
@@ -3238,7 +3370,7 @@ export default function WorkspacePage() {
 
       {/* Toast 通知 */}
 
-      {!isNodeSelected && activeTab !== 'editor' && (
+      {(activeTab === 'dock' || (!isNodeSelected && activeTab !== 'editor')) && (
         <QuickCapture
           hidden={activeTab === 'editor'}
           onSubmit={async (text: string) => {

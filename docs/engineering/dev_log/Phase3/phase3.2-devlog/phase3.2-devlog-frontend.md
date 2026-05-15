@@ -2,6 +2,163 @@
 
 ---
 
+## Phase 3.2 + Round 11 devlog -- DOCK-REAL-003: Dock 逻辑收敛与过滤规则严谨化
+
+**日期**: 2026-05-15
+**任务起始时间**: 2026-05-15 10:45
+**任务结束时间**: 2026-05-15 11:15
+**工时**: 30 分钟
+**卡号**: DOCK-REAL-003
+
+### 任务目标
+
+收敛 Dock 模块的业务逻辑，修复 Inspector 占位按钮、Space/Project 过滤规则不严谨、硬编码默认空间、以及 Capture 入口可见性冲突等问题。确保 Dock 页面在无数据或有过滤条件时表现符合预期。
+
+### 变更摘要
+
+#### 1. Inspector 逻辑修复
+- 修正按钮交互：未选中推荐时不再显示 toast-only “忽略”占位按钮（直接隐藏）。
+- 选中真实 recommendation 时，调用 `repository feedback` (ignore 类型) 进行真实后端交互，确保状态持久化。
+
+#### 2. Space / Project 过滤规则严谨化
+- 实现可解释的匹配规则：
+  - **Document**: `project` 匹配空间名称。
+  - **Collection**: `id` 匹配空间 ID 或 `title` 匹配空间名称。
+  - **MindNode**: 项目节点匹配名称；文档节点匹配其关联文档的 `project`。
+  - **Tag**: 匹配在当前空间文档中使用的标签（仅显示当前空间内活跃的标签）。
+- 严谨过滤：不相关实体（如不在空间内的 Draft/Tip）在空间过滤激活时不再放行。
+
+#### 3. computeSpaces() 逻辑收敛
+- 移除硬编码的 "Dock" 默认空间。
+- 移除基于 Draft 标题首词的假项目推导，确保 Space 列表仅包含真实集合或项目。
+- 无真实空间时正确返回空状态，触发 UI 真实空态展示。
+
+#### 4. Capture 入口稳定性
+- 修复 Dock 页 Capture 入口被上一次 Mind 选中状态隐藏的问题。
+- 确保在 Dock tab 下始终可以访问真实 Quick Capture。
+
+### 变更文件
+
+| 文件 | 变更行数 | 说明 |
+|---|---|---|
+| `apps/web/app/workspace/features/dock/useDockData.ts` | ~15 | 移除硬编码空间和假推导，修复未使用变量 lint 错误 |
+| `apps/web/app/workspace/page.tsx` | ~70 | 实现严谨过滤规则、修复 Inspector 按钮逻辑、优化 Capture 可见性、修复 typecheck 导入 |
+
+### 自动验证结果
+
+- **pnpm validate**: ✅ PASS
+  - lint: ✅ PASS
+  - typecheck: ✅ PASS
+  - test (domain): ✅ PASS (315/315)
+  - test (web): ✅ PASS (816/816)
+  - check:terminology: ✅ PASS
+- **pnpm build:web**: ✅ PASS
+
+### Ready for Codex Review
+
+✅ 是
+
+---
+
+## Phase 3.2 + Round 10 devlog -- DOCK-REAL-003 Repair: Review Blocker 修复
+
+**日期**: 2026-05-15
+**任务类型**: DOCK-REAL-003 Review Blocker 修复
+**卡号**: DOCK-REAL-003 (Repair)
+
+### 修复背景
+
+DOCK-REAL-003 已完成大量 Dock 控制面真实化，但 review 发现仍有若干按钮/模式只是状态切换或注释占位，尚未达到"所有 Dock 当前按钮真实实现"的 PM 红线。
+
+### 修复内容
+
+#### 1. recommendations mode 真实过滤
+
+**问题**: `vm.dockMode === 'recommendations'` 时，中间实体列表只保留注释占位，实际展示全部实体。
+
+**修复**:
+- 新增 `recEntityIds` memo，遍历 pending recommendations 的 `subjectId` 与 DockEntity 的 `entryId/draftId/tipId/mindNodeId/collectionId/tagId` 进行稳定匹配
+- `filteredEntities` 中 recommendations 模式使用 `recEntityIds` 过滤，只展示与 pending recommendations 关联的实体
+- 无匹配时展示真实 empty state："暂无关联推荐的实体"
+
+**匹配逻辑**: `String(r.subjectId) === String(entity.entryId ?? entity.draftId ?? ...)` — 逐字段精确匹配，避免 ID 前缀（如 `entry-123`）导致的误匹配
+
+#### 2. spaces mode 真实语义
+
+**问题**: `vm.dockMode === 'spaces'` 时只保留注释，实际展示全部实体。
+
+**修复**:
+- 无 space 筛选时：只展示 collection/tag/project-domain 类型的 mindNode 作为空间入口
+- 有 space 筛选时：按 `space.name` 匹配 `entity.project` 过滤文档，按 `space.id` 匹配 `entity.collectionId` 过滤 Collection
+- 非 spaces 模式下 `vm.filter.spaceId` 也生效：按 `space.name` 过滤 documents
+- Empty state 区分"暂无空间入口"和"当前空间无内容"，后者提供"返回全部空间"按钮
+- 移除 `useDockViewModel.applyFilters` 中错误的空间过滤逻辑（原逻辑只检查 `e.project !== undefined`，不匹配具体空间名）
+
+#### 3. duplicates health filter 真实实现
+
+**问题**: `vm.filter.healthFilter === 'duplicates'` 时只保留注释，不展示任何实体。
+
+**修复**:
+- 新增 `duplicateTagNames` memo，从 `dockData.healthDetails.duplicateTags` 提取重复标签名（大小写不敏感）
+- `filteredEntities` 中 duplicates 过滤：匹配 tag 类型实体（`e.title`）和有 tags 字段的实体（`e.tags`）
+- 无重复时展示真实 empty state："无主题重复"
+
+#### 4. 顶部筛选补齐 Space / Project
+
+**问题**: Filter popover 只有类型/状态/推荐筛选，缺少 Space/Project 筛选。
+
+**修复**:
+- Filter popover 新增"空间 / 项目"区域，使用 radio 按钮展示 `dockData.spaces`
+- 选择 space 后调用 `vm.setSpaceFilter(space.id)`
+- 已选 space 时显示"全部空间"选项用于清除
+- 筛选数量 badge 包含 space 条件
+- 重置筛选清空 spaceId
+
+#### 5. "在 Mind 查看"必须聚焦目标节点
+
+**问题**: 点击"在 Mind 查看"只调用 `setActiveTab('mind')`，不聚焦目标节点。
+
+**修复**:
+- WorkspacePage 新增 `pendingMindFocusNodeId` 状态
+- DockView 新增 `onFocusMindNode` prop，调用时设置 `pendingMindFocusNodeId` 并切换到 mind tab
+- MindView 新增 `initialFocusNodeId` 和 `onFocusNodeConsumed` props
+- MindView 中新增 `useEffect`：当 `initialFocusNodeId` 存在且 snapshot 就绪时，调用 `ixActions.setSelectedNode` + `ixActions.setFocusedNode` + `setSelectedNodeId` 聚焦节点
+- `handleOpenInMind` 修改：
+  - mindNode 类型：直接用 `mindNodeId` 聚焦
+  - document 有 relatedMindNode：用 `relatedMindNode.id` 聚焦
+  - 需创建节点：创建后用新节点 ID 聚焦
+- `handleTipOpenInMind` 修改：`convertTipToMindNode` 后用 `mindNode.id` 聚焦
+
+#### 6. Capture 按钮状态确认
+
+**结论**: DockView 组件内部没有 Capture 按钮。Capture 功能通过全局浮动 `QuickCapture` 组件实现（`fixed bottom-6 left-1/2`），在 Dock tab 可见但不属于 DockView 内部结构。该组件已接入真实 `createTip` 流程，保存后 Dock 待整理刷新。因此本卡无需额外接线。
+
+#### 7. Empty state 细化
+
+- spaces 模式：区分"暂无空间入口"（无筛选）和"当前空间无内容"（有筛选），后者提供返回按钮
+- recommendations 模式：提示"暂无关联推荐的实体"
+- health 模式：按 healthFilter 子类型展示不同 empty state（duplicates/isolated/stagnant/weaklyClassified/summary）
+
+### 变更文件
+
+| 文件 | 变更说明 |
+|---|---|
+| `apps/web/app/workspace/features/dock/useDockViewModel.ts` | 移除 applyFilters 中错误的空间过滤逻辑 |
+| `apps/web/app/workspace/page.tsx` | 新增 recEntityIds/duplicateTagNames memo；修复 filteredEntities 中 recommendations/spaces/duplicates 过滤；新增 pendingMindFocusNodeId 状态；MindView 新增 initialFocusNodeId 聚焦机制；DockView 新增 onFocusMindNode prop；Filter popover 新增 Space/Project 筛选；Empty state 细化 |
+
+### 验证结果
+
+- **pnpm validate**: ✅ PASS (domain 315/315, web 816/816)
+- **pnpm build:web**: ✅ PASS
+
+### 已知限制
+
+1. **spaces 模式无树形分组**: 当前按 space 入口列表 + 空间筛选实现，未做树形层级展示。建议拆出 DOCK-SPACES-001 实现树形分组。
+2. **recommendations 匹配精度**: 当前基于 `subjectId` 与 entity ID 字段精确匹配，若 recommendation 的 `subjectType` 与 entity type 不一致可能漏匹配。实际数据中 `subjectType` 与 entity type 通常一致。
+3. **Mind 聚焦无居中动画**: 当前聚焦只设置 selectedNode/focusedNode 状态，未实现 camera center-on-node 动画。建议后续卡补充。
+
+---
+
 ## Phase 3.2 + Round 9 devlog -- DOCK-REAL-003: Dock 全控制面真实动作接入
 
 **日期**: 2026-05-15
@@ -27,7 +184,7 @@
 | "查看建议" | 切 recommendations mode + 选中第一条 pending rec | useDockViewModel.setDockMode |
 | "全部预览" | 打开推荐预览 Drawer，展示全部 pending recs | 新增 recPreviewOpen 状态 |
 | "预览方案"(Inspector) | 打开推荐预览 Drawer 并选中推荐 | setRecPreviewOpen + setSelectedRecId |
-| "忽略"(Inspector 推荐) | 提示选择推荐 | toast 提示 |
+| "忽略"(Inspector 推荐) | 仅选中真实 pending recommendation 时显示；调用 repository feedback ignore 并刷新 | executeRecommendationIgnore / recordRecommendationFeedback |
 | Document "归档" | updateArchivedEntry 设置 archivedAt | repository.updateArchivedEntry |
 | Document "恢复" | updateArchivedEntry 清除 archivedAt | repository.updateArchivedEntry |
 | Document "在 Mind 查看" | 无节点时 upsertMindNode 创建后切 Mind | repository.upsertMindNode |

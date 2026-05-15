@@ -221,7 +221,7 @@ function tagToEntity(tag: StoredTag): DockEntity {
   }
 }
 
-function computeSpaces(collections: StoredCollection[], entries: StoredEntry[], drafts: StoredDraft[], mindNodes: StoredMindNode[]): DockSpace[] {
+function computeSpaces(collections: StoredCollection[], entries: StoredEntry[]): DockSpace[] {
   if (collections.length > 0) {
     return collections.map((col, idx) => {
       const entryCount = entries.filter(e => e.project === col.name).length
@@ -238,9 +238,6 @@ function computeSpaces(collections: StoredCollection[], entries: StoredEntry[], 
 
   const projects = new Set<string>()
   entries.forEach(e => { if (e.project) projects.add(e.project) })
-  drafts.forEach(d => { if (d.title) projects.add(d.title.split(' ')[0]) })
-  mindNodes.filter(n => n.nodeType === 'project').forEach(n => projects.add(n.label))
-
   if (projects.size > 0) {
     return Array.from(projects).map((name, idx) => ({
       id: `project-${idx}`,
@@ -252,7 +249,7 @@ function computeSpaces(collections: StoredCollection[], entries: StoredEntry[], 
     }))
   }
 
-  return [{ id: 'default', name: 'Dock', type: 'General', health: '—', recs: 0, active: true }]
+  return []
 }
 
 export function computeHealthDetails(
@@ -561,7 +558,7 @@ export function useDockData(userId: string) {
         ...tags.map(tagToEntity),
       ]
 
-      const spaces = computeSpaces(collections, entries, drafts, mindNodes)
+      const spaces = computeSpaces(collections, entries)
       const signals = computeSignals(tips, entries, drafts, mindNodes, mindEdges, tags, pendingRecCount)
       const healthDetails = computeHealthDetails(entries, drafts, tips, mindNodes, mindEdges, tags)
 

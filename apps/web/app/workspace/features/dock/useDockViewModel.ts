@@ -127,12 +127,6 @@ export function useDockViewModel(userId: string) {
     if (filter.statuses.length > 0) {
       result = result.filter(e => filter.statuses.includes(e.status))
     }
-    if (filter.spaceId !== null) {
-      result = result.filter(e => {
-        if (e.type === 'document') return e.project !== undefined && e.project !== null
-        return true
-      })
-    }
     if (filter.hasRecommendations === true && recommendationsMap) {
       result = result.filter(e => {
         const key = String((e as Record<string, unknown>).entryId ?? (e as Record<string, unknown>).draftId ?? (e as Record<string, unknown>).tipId ?? (e as Record<string, unknown>).mindNodeId ?? (e as Record<string, unknown>).collectionId ?? (e as Record<string, unknown>).tagId)
