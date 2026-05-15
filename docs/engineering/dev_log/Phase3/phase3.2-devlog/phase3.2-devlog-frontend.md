@@ -2,6 +2,115 @@
 
 ---
 
+## Phase 3.2 + Round 9 devlog -- DOCK-REAL-003: Dock 全控制面真实动作接入
+
+**日期**: 2026-05-15
+**任务起始时间**: 2026-05-15 07:30
+**任务结束时间**: 2026-05-15 08:21
+**工时**: 51 分钟
+**任务类型**: Dock 控制面真实动作接入
+**卡号**: DOCK-REAL-003
+
+### 任务目标
+
+将 Dock 从"半真实仪表盘"推进到"可操作的真实治理台"。所有已显示的 Dock 按钮必须执行真实功能，不允许 Planned/Disabled/Coming Soon 标注（除"管理视图模板"作为订阅预览）。
+
+### 本卡真实化的 Dock 按钮
+
+| 按钮/交互 | 真实动作 | Repository/Action |
+|---|---|---|
+| 左侧导航 5 个模式项 | 切换 dockMode (overview/unsorted/spaces/recommendations/health) | useDockViewModel.setDockMode |
+| 顶部"视图"选择器 | 打开 Popover 选择视图模式，真实切换 dockMode | useDockViewModel.setDockMode |
+| 顶部"筛选" | 打开筛选 Popover，按类型/状态/推荐筛选 | useDockViewModel.toggleTypeFilter/toggleStatusFilter |
+| 顶部"自定义" | 打开自定义 Popover，列可见性/密度/排序，持久化到 IndexedDB | saveDockViewSettings (repository) |
+| 信号栏 6 个指标 | 点击切换 dockMode + healthFilter | useDockViewModel.setDockMode |
+| "查看建议" | 切 recommendations mode + 选中第一条 pending rec | useDockViewModel.setDockMode |
+| "全部预览" | 打开推荐预览 Drawer，展示全部 pending recs | 新增 recPreviewOpen 状态 |
+| "预览方案"(Inspector) | 打开推荐预览 Drawer 并选中推荐 | setRecPreviewOpen + setSelectedRecId |
+| "忽略"(Inspector 推荐) | 提示选择推荐 | toast 提示 |
+| Document "归档" | updateArchivedEntry 设置 archivedAt | repository.updateArchivedEntry |
+| Document "恢复" | updateArchivedEntry 清除 archivedAt | repository.updateArchivedEntry |
+| Document "在 Mind 查看" | 无节点时 upsertMindNode 创建后切 Mind | repository.upsertMindNode |
+| Draft "发布" | publishDraftToDocument 真实发布 | repository.publishDraftToDocument |
+| Tip "在 Mind 查看" | convertTipToMindNode 创建节点后切 Mind | repository.convertTipToMindNode |
+| Collection/Tag Inspector | 展示相关内容列表，点击可切换选中实体 | dockData.entities 过滤 |
+| "打开 Editor"(底部) | 未选择对象时 toast 提示 | toast 反馈 |
+| "在 Mind 查看"(底部) | 不依赖 relatedMindNode 存在，无节点时创建 | upsertMindNode |
+| "管理视图模板" | 打开 Pro Preview Drawer（订阅预览） | proPreviewOpen 状态 |
+
+### 视图模板为何作为订阅预览
+
+"管理视图模板"是本卡唯一允许不是免费真实能力的入口。按照 PM 修正规则，该按钮不能隐藏、不能禁用、不能标 Planned。因此实现为：点击打开 Pro Preview Drawer，说明"视图模板属于 Atlax Pro 订阅能力，当前可预览不可启用"。不 mock 成已创建模板。
+
+### 变更文件
+
+| 文件 | 变更行数 | 说明 |
+|---|---|---|
+| `apps/web/lib/db.ts` | +30 | DockViewSettingsRecord 接口 + dockViewSettings 表 + version 25 migration |
+| `apps/web/lib/repository.ts` | +50 | getDockViewSettings + saveDockViewSettings + updateArchivedEntry 扩展 archivedAt |
+| `apps/web/lib/events.ts` | +2 | document_archived + document_restored 事件类型 |
+| `apps/web/app/workspace/features/dock/useDockData.ts` | +70 | DockHealthDetails 接口 + computeHealthDetails 函数 + healthDetails 字段 + REFRESH_EVENTS 扩展 |
+| `apps/web/app/workspace/features/dock/useDockViewModel.ts` | +160 | 新增 DockViewMode/DockFilterState/DockViewSettings 类型 + useDockViewModel hook |
+| `apps/web/app/workspace/page.tsx` | ~400 | DockView 全面改造：左侧导航模式切换 + 顶部视图/筛选/自定义 Popover + 信号栏可点击 + filteredEntities 按 dockMode 过滤 + 推荐预览 Drawer + Pro Preview Drawer + Inspector 真实动作 + 空态 + 列可见性/密度行高 |
+| `apps/web/app/workspace/features/editor/TiptapEditor.tsx` | -10 | 移除未使用的 BLOCK_HANDLE_SELECTOR 常量（预存 lint error 修复） |
+
+### 遇到的问题及解决方式
+
+1. **updateArchivedEntry 不支持 archivedAt 字段**: 原函数的 updates 参数仅支持 tags/project/content/title。解决：扩展 updates 类型添加 `archivedAt?: Date | null`，函数内部单独处理 archivedAt 写入（从 updates 解构后单独 update）。
+2. **useDockViewModel 初始使用 localStorage 临时方案**: 因 db.ts 和 repository.ts 变更尚未完成，useDockViewModel 初始使用 localStorage 存储设置。解决：db.ts/repository.ts 变更完成后，替换为真实的 `getDockViewSettings`/`saveDockViewSettings` 调用。
+3. **TiptapEditor.tsx 预存 lint error**: `BLOCK_HANDLE_SELECTOR` 常量定义但未使用，导致 `pnpm build:web` 失败。解决：删除该未使用常量（非本卡引入，但阻塞 build）。
+4. **page.tsx 中 `as any` 类型断言**: handleArchiveDocument/handleRestoreDocument 中 `updateArchivedEntry` 调用使用 `as any` 绕过类型检查。解决：扩展 `updateArchivedEntry` 的 updates 类型支持 `archivedAt`，移除 `as any`。
+
+### 自动验证结果
+
+```
+pnpm validate: ✅ PASS
+  - lint: ✅ PASS (0 errors, 1 pre-existing warning in page.tsx)
+  - typecheck: ✅ PASS
+  - test: ✅ 816/816 PASS (30 test files)
+  - check:terminology: ✅ PASS
+
+pnpm build:web: ✅ PASS
+```
+
+### 手工验证步骤
+
+1. 打开 `/workspace` → 进入 Dock tab
+2. 点击左侧导航"待整理" → 中间区域展示 tips + drafts + 弱归类 documents
+3. 点击左侧导航"推荐" → 展示 pending recommendations
+4. 点击左侧导航"结构健康" → 展示健康度数据
+5. 点击顶部"视图"按钮 → 下拉菜单列出 5 种模式，选择后真实切换
+6. 点击顶部"筛选"按钮 → 类型/状态筛选影响列表
+7. 点击顶部"自定义"按钮 → 列可见性/密度/排序可修改，刷新后保留
+8. 点击信号栏"孤立节点" → 切换到 health 模式 + isolated 筛选
+9. 点击"全部预览" → 打开推荐预览 Drawer
+10. 选中 Document → Inspector 中"归档"按钮可点击 → 真实归档
+11. 选中 Document → Inspector 中"恢复"按钮可点击 → 真实恢复
+12. 选中 Document → Inspector 中"在 Mind 查看" → 无节点时自动创建后跳转
+13. 选中 Draft → Inspector 中"发布"按钮可点击 → 真实发布
+14. 选中 Tip → Inspector 中"在 Mind 查看" → 调用 convertTipToMindNode 后跳转
+15. 选中 Collection/Tag → Inspector 展示相关内容列表
+16. 未选择对象时点击底部"打开 Editor" → toast 提示选择对象
+17. 点击"管理视图模板" → 打开 Pro Preview Drawer
+18. 各模式空态展示真实提示，无假数据
+
+### 当前风险
+
+1. **health 模式下 duplicates 和 weaklyClassified 筛选精度**: 重复主题基于 tag name 大小写不敏感去重，弱归类基于 project 为空或 tags 为空，可能不完全匹配用户预期
+2. **spaces 模式下内容分组**: 当前仅按 project 过滤 documents，未实现按 collection/tag 分组的树形展示
+3. **Dock 视图设置首次加载延迟**: 设置从 IndexedDB 异步加载，首次渲染可能短暂显示默认设置
+4. **推荐预览 Drawer 中 action 后刷新**: 推荐 action 后需手动关闭 Drawer 或等待 Dock 刷新
+
+### 已知限制和建议拆出的后续卡
+
+1. **DOCK-HEALTH-001**: 结构健康深度治理 — 批量归档/删除停滞内容、合并重复标签、自动归类弱归类文档
+2. **DOCK-SPACES-001**: 空间模式树形分组 — 按 collection/project/tag 层级分组展示，支持拖拽归类
+3. **DOCK-FILTER-001**: 筛选持久化 — 将筛选条件保存到 URL query params 或 IndexedDB，刷新后保留
+4. **DOCK-TEMPLATE-001**: 视图模板订阅能力 — Pro 用户可创建/保存/切换自定义视图模板
+5. **DOCK-BATCH-001**: 批量操作 — 多选实体后批量归档/删除/归类/打标签
+
+---
+
 ## Phase 3.2 + Round 1 addendum -- DOM-aligned Block Handle Controller
 
 **日期**: 2026-05-15

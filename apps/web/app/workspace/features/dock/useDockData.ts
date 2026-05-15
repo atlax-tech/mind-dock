@@ -86,11 +86,22 @@ export interface DockRecommendation {
   evidenceSummary: { evidenceCount: number; evidenceTypes: string[]; matchedValues: string[] }
 }
 
+export interface DockHealthDetails {
+  isolatedNodes: StoredMindNode[]
+  stagnantItems: Array<StoredDraft | StoredTip>
+  duplicateTags: StoredTag[]
+  weaklyClassifiedEntries: StoredEntry[]
+  connectedRatio: number
+  totalNodes: number
+  connectedNodes: number
+}
+
 export interface DockData {
   entities: DockEntity[]
   spaces: DockSpace[]
   signals: DockSignal[]
   recommendations: DockRecommendation[]
+  healthDetails: DockHealthDetails
   rawEntries: StoredEntry[]
   rawDrafts: StoredDraft[]
   rawTips: StoredTip[]
@@ -105,6 +116,7 @@ const REFRESH_EVENTS = [
   'tip_created', 'tip_converted', 'tip_discarded',
   'draft_created', 'draft_updated', 'draft_deleted',
   'archive_completed',
+  'document_archived', 'document_restored',
   'mind_node_created', 'mind_node_updated', 'mind_node_deleted',
   'mind_edge_created', 'mind_edge_updated', 'mind_edge_deleted',
   'recommendation_applied', 'recommendation_rejected', 'recommendation_ignored',
@@ -241,6 +253,65 @@ function computeSpaces(collections: StoredCollection[], entries: StoredEntry[], 
   }
 
   return [{ id: 'default', name: 'Dock', type: 'General', health: '—', recs: 0, active: true }]
+}
+
+export function computeHealthDetails(
+  entries: StoredEntry[],
+  drafts: StoredDraft[],
+  tips: StoredTip[],
+  mindNodes: StoredMindNode[],
+  mindEdges: StoredMindEdge[],
+  tags: StoredTag[],
+): DockHealthDetails {
+  const connectedNodeIds = new Set<string>()
+  mindEdges.forEach(e => {
+    connectedNodeIds.add(e.sourceNodeId)
+    connectedNodeIds.add(e.targetNodeId)
+  })
+
+  const isolatedNodes = mindNodes.filter(n =>
+    !connectedNodeIds.has(n.id) || n.state === 'drifting' || n.state === 'isolated'
+  )
+
+  const now = Date.now()
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000
+  const stagnantItems: Array<StoredDraft | StoredTip> = [
+    ...drafts.filter(d => {
+      const updated = d.updatedAt ?? d.createdAt
+      return updated && (now - updated.getTime()) > sevenDaysMs
+    }),
+    ...tips.filter(t => {
+      const updated = t.updatedAt ?? t.createdAt
+      return updated && (now - updated.getTime()) > sevenDaysMs
+    }),
+  ]
+
+  const seenNames = new Map<string, StoredTag>()
+  const duplicateTags: StoredTag[] = []
+  tags.forEach(t => {
+    const key = t.name.toLowerCase()
+    if (seenNames.has(key)) {
+      duplicateTags.push(t)
+    } else {
+      seenNames.set(key, t)
+    }
+  })
+
+  const weaklyClassifiedEntries = entries.filter(e => !e.project || (e.tags && e.tags.length === 0))
+
+  const totalNodes = mindNodes.length
+  const connectedNodes = mindNodes.filter(n => connectedNodeIds.has(n.id)).length
+  const connectedRatio = totalNodes > 0 ? connectedNodes / totalNodes : 0
+
+  return {
+    isolatedNodes,
+    stagnantItems,
+    duplicateTags,
+    weaklyClassifiedEntries,
+    connectedRatio,
+    totalNodes,
+    connectedNodes,
+  }
 }
 
 function computeSignals(
@@ -433,6 +504,15 @@ export function useDockData(userId: string) {
     spaces: [],
     signals: [],
     recommendations: [],
+    healthDetails: {
+      isolatedNodes: [],
+      stagnantItems: [],
+      duplicateTags: [],
+      weaklyClassifiedEntries: [],
+      connectedRatio: 0,
+      totalNodes: 0,
+      connectedNodes: 0,
+    },
     rawEntries: [],
     rawDrafts: [],
     rawTips: [],
@@ -483,12 +563,14 @@ export function useDockData(userId: string) {
 
       const spaces = computeSpaces(collections, entries, drafts, mindNodes)
       const signals = computeSignals(tips, entries, drafts, mindNodes, mindEdges, tags, pendingRecCount)
+      const healthDetails = computeHealthDetails(entries, drafts, tips, mindNodes, mindEdges, tags)
 
       setData({
         entities,
         spaces,
         signals,
         recommendations,
+        healthDetails,
         rawEntries: entries,
         rawDrafts: drafts,
         rawTips: tips,

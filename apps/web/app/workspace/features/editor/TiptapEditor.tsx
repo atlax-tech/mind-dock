@@ -97,19 +97,6 @@ export interface BlockHandleTarget {
 
 type BlockMovePlacement = 'before' | 'after'
 
-const BLOCK_HANDLE_SELECTOR = [
-  'li[data-type="taskItem"]',
-  'li',
-  'p',
-  'h1',
-  'h2',
-  'h3',
-  'blockquote',
-  'pre',
-  'hr',
-  '[data-type="callout"]',
-].join(',')
-
 const SUPPORTED_BLOCK_TYPES = new Set([
   'paragraph',
   'heading',

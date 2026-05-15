@@ -394,6 +394,25 @@ export interface PersistedUserBehaviorEvent extends UserBehaviorEventRecord {
   id: string
 }
 
+export interface DockViewSettingsRecord {
+  id?: string
+  userId: string
+  columnVisibility: {
+    space: boolean
+    status: boolean
+    tags: boolean
+    recommendations: boolean
+    score: boolean
+  }
+  density: 'compact' | 'standard'
+  defaultSort: 'updatedAt' | 'healthScore' | 'type'
+  updatedAt: Date
+}
+
+export interface PersistedDockViewSettings extends DockViewSettingsRecord {
+  id: string
+}
+
 const FALLBACK_USER_ID = '_legacy'
 
 export function runV8Upgrade(tx: {
@@ -446,6 +465,7 @@ const db = new Dexie('AtlaxDB') as Dexie & {
   recommendations: EntityTable<RecommendationRecord, 'id'>
   recommendationEvents: EntityTable<RecommendationEventRecord, 'id'>
   userBehaviorEvents: EntityTable<UserBehaviorEventRecord, 'id'>
+  dockViewSettings: EntityTable<DockViewSettingsRecord, 'id'>
 }
 
 db.version(1).stores({
@@ -875,6 +895,30 @@ db.version(24).stores({
   tx.table('editorDrafts').toCollection().modify(migrate)
 })
 
+db.version(25).stores({
+  dockItems: '++id, userId, rawText, topic, sourceType, status, createdAt',
+  tags: 'id, userId, name, [userId+name]',
+  entries: '++id, userId, sourceDockItemId, type, archivedAt',
+  chatSessions: '++id, userId, status, pinned, dockItemId, createdAt, updatedAt',
+  widgets: '++id, userId, widgetType, active, createdAt, updatedAt',
+  collections: 'id, userId, collectionType, parentId, createdAt, updatedAt',
+  entryTagRelations: 'id, userId, entryId, tagId, [userId+entryId], [userId+tagId], createdAt',
+  entryRelations: 'id, userId, sourceEntryId, targetEntryId, relationType, [userId+sourceEntryId], [userId+targetEntryId], createdAt',
+  knowledgeEvents: 'id, userId, eventType, targetType, createdAt',
+  temporalActivities: 'id, userId, type, occurredAt, dayKey, weekKey, monthKey, [userId+dayKey], [userId+monthKey], createdAt',
+  mindNodes: 'id, userId, nodeType, state, label, [userId+nodeType], [userId+state], createdAt, updatedAt',
+  mindEdges: 'id, userId, sourceNodeId, targetNodeId, edgeType, [userId+sourceNodeId], [userId+targetNodeId], [userId+edgeType], createdAt, updatedAt',
+  workspaceSessions: 'id, userId, createdAt, updatedAt',
+  workspaceOpenTabs: 'id, userId, sessionId, tabType, documentId, isPinned, isActive, sortOrder, [userId+sessionId], [userId+tabType], [userId+documentId], openedAt, updatedAt',
+  recentDocuments: 'id, userId, documentId, [userId+documentId], lastOpenedAt, openCount, createdAt, updatedAt',
+  editorDrafts: '++id, userId, draftKey, status, sourceEntryId, sourceType, [userId+status], [userId+draftKey], [userId+sourceEntryId], createdAt, updatedAt',
+  tips: '++id, userId, sourceType, status, [userId+status], createdAt, updatedAt',
+  recommendations: 'id, userId, subjectType, status, [userId+status], [userId+subjectType], createdAt, updatedAt',
+  recommendationEvents: 'id, userId, recommendationId, eventType, [userId+recommendationId], [userId+eventType], createdAt',
+  userBehaviorEvents: 'id, userId, eventType, subjectType, [userId+eventType], [userId+subjectType], createdAt',
+  dockViewSettings: 'id, userId, [userId]',
+})
+
 export { db }
 export const dockItemsTable = db.table('dockItems')
 export const capturesTable = dockItemsTable
@@ -898,3 +942,4 @@ export const tipsTable = db.table('tips')
 export const recommendationsTable = db.table('recommendations')
 export const recommendationEventsTable = db.table('recommendationEvents')
 export const userBehaviorEventsTable = db.table('userBehaviorEvents')
+export const dockViewSettingsTable = db.table('dockViewSettings')

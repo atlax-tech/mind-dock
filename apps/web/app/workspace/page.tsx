@@ -19,9 +19,13 @@ import {
   syncMindFirstScreen,
   listDrafts,
   generateMindNodeRecommendations,
+  upsertMindNode,
+  updateArchivedEntry,
+  publishDraftToDocument,
   type StoredMindNode,
 } from '@/lib/repository';
 import { useDockData, type DockEntityType, type DockRecommendation, findRelatedMindNode, executeDockEditorOpen, executeRecommendationApply, executeRecommendationReject, executeRecommendationIgnore, executeDockDiscardDraft, executeDockDiscardTip } from './features/dock/useDockData';
+import { useDockViewModel, type DockViewMode } from './features/dock/useDockViewModel';
 import type { StoredDraft } from '@/lib/repository'
 import { emit } from '@/lib/events';
 import { isRecommendationPending, isRecommendationResolved, isSupportedCandidateType, describeRecommendationAction, describeRecommendationReason, describeApplyPreview, formatConfidenceLevel, STATUS_LABELS, CANDIDATE_TYPE_LABELS } from '@/lib/recommendation-i18n';
@@ -43,12 +47,9 @@ import {
   FolderTree,
   Activity,
   HardDrive,
-  Share2,
   Calendar,
   TerminalSquare,
   Sparkles,
-  PanelLeft,
-  PanelRight,
   X,
   Bot,
   Puzzle,
@@ -1009,11 +1010,16 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
   onToast?: (msg: string) => void
 }) => {
   const { data: dockData, loading: dockLoading, error: dockError, refresh: dockRefresh } = useDockData(userId);
-  const [selectedSpaceId, setSelectedSpaceId] = React.useState<string | null>(null);
+  const vm = useDockViewModel(userId);
   const [selectedEntityId, setSelectedEntityId] = React.useState<string | null>(null);
   const [selectedRecId, setSelectedRecId] = React.useState<string | null>(null);
   const [relatedMindNode, setRelatedMindNode] = React.useState<StoredMindNode | null>(null);
   const [recActionLoading, setRecActionLoading] = React.useState<string | null>(null);
+  const [viewMenuOpen, setViewMenuOpen] = React.useState(false);
+  const [filterOpen, setFilterOpen] = React.useState(false);
+  const [customizeOpen, setCustomizeOpen] = React.useState(false);
+  const [proPreviewOpen, setProPreviewOpen] = React.useState(false);
+  const [recPreviewOpen, setRecPreviewOpen] = React.useState(false);
   const [confirmDialog, setConfirmDialog] = React.useState<{
     open: boolean;
     title: string;
@@ -1023,21 +1029,77 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
   } | null>(null);
 
   const spaces = dockData.spaces;
-  const selectedSpace = spaces.find(s => s.id === selectedSpaceId) || spaces[0] || null;
+  const selectedSpace = spaces.find(s => s.id === vm.filter.spaceId) || spaces[0] || null;
+
+  const pendingRecs = dockData.recommendations.filter(r => isRecommendationPending(r.status));
+
+  const recommendationsMap = React.useMemo(() => {
+    const map = new Map<string, number>()
+    dockData.recommendations.filter(r => isRecommendationPending(r.status)).forEach(r => {
+      const key = String(r.subjectId)
+      map.set(key, (map.get(key) ?? 0) + 1)
+    })
+    return map
+  }, [dockData.recommendations])
 
   const filteredEntities = React.useMemo(() => {
-    if (!selectedSpace) return dockData.entities;
-    const spaceName = selectedSpace.name;
-    return dockData.entities.filter(e => {
-      if (e.type === 'document') return e.project === spaceName || !e.project;
-      if (e.type === 'collection' && e.title === spaceName) return true;
-      return true;
-    });
-  }, [dockData.entities, selectedSpace]);
+    let result = dockData.entities
+    if (vm.dockMode === 'unsorted') {
+      result = result.filter(e =>
+        e.type === 'tip' ||
+        e.type === 'draft' ||
+        (e.type === 'document' && (!e.project || e.project === ''))
+      )
+    } else if (vm.dockMode === 'spaces') {
+      // Show all entities but group by space
+    } else if (vm.dockMode === 'recommendations') {
+      // Show entities that have pending recommendations
+    } else if (vm.dockMode === 'health') {
+      if (vm.filter.healthFilter === 'isolated') {
+        const isolatedIds = new Set(dockData.healthDetails.isolatedNodes.map(n => `mind-${n.id}`))
+        result = result.filter(e => isolatedIds.has(e.id))
+      } else if (vm.filter.healthFilter === 'stagnant') {
+        const stagnantDraftIds = new Set(dockData.healthDetails.stagnantItems.filter(i => 'title' in i).map(i => `draft-${(i as unknown as { id: number }).id}`))
+        const stagnantTipIds = new Set(dockData.healthDetails.stagnantItems.filter(i => !('title' in i)).map(i => `tip-${(i as unknown as { id: number }).id}`))
+        result = result.filter(e => stagnantDraftIds.has(e.id) || stagnantTipIds.has(e.id))
+      } else if (vm.filter.healthFilter === 'duplicates') {
+        // Show entities tagged with duplicate tags
+      } else if (vm.filter.healthFilter === 'weaklyClassified') {
+        const weakEntryIds = new Set(dockData.healthDetails.weaklyClassifiedEntries.map(e => `entry-${e.id}`))
+        result = result.filter(e => weakEntryIds.has(e.id))
+      }
+    }
+    result = vm.applyFilters(result, recommendationsMap)
+    result = vm.sortEntities(result)
+    return result
+  }, [dockData.entities, dockData.healthDetails, vm, recommendationsMap])
+
+  const modeTitle = React.useMemo(() => {
+    switch (vm.dockMode) {
+      case 'overview': return '总览'
+      case 'taskControl': return '任务控制台'
+      case 'unsorted': return '待整理'
+      case 'spaces': return '空间管理'
+      case 'recommendations': return '推荐队列'
+      case 'health': return '结构健康'
+      default: return 'Dock'
+    }
+  }, [vm.dockMode])
+
+  const currentModeLabel = React.useMemo(() => {
+    switch (vm.dockMode) {
+      case 'overview': return '总览'
+      case 'taskControl': return '项目控制'
+      case 'unsorted': return '待整理'
+      case 'spaces': return '空间'
+      case 'recommendations': return '推荐'
+      case 'health': return '结构健康'
+      default: return '—'
+    }
+  }, [vm.dockMode])
 
   const selectedEntity = dockData.entities.find(e => e.id === selectedEntityId) || null;
   const selectedRec = dockData.recommendations.find(r => r.id === selectedRecId) || null;
-  const pendingRecs = dockData.recommendations.filter(r => isRecommendationPending(r.status));
 
   React.useEffect(() => {
     if (selectedEntity && userId) {
@@ -1052,9 +1114,31 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
     await executeDockEditorOpen(selectedEntity, userId, onOpenEditor, onToast);
   }, [selectedEntity, onOpenEditor, userId, onToast]);
 
-  const handleOpenInMind = React.useCallback(() => {
-    setActiveTab('mind');
-  }, [setActiveTab]);
+  const handleOpenInMind = React.useCallback(async () => {
+    if (!selectedEntity) {
+      onToast?.('请先选择一个实体')
+      return
+    }
+    if (relatedMindNode) {
+      setActiveTab('mind')
+      return
+    }
+    try {
+      const label = selectedEntity.title || 'Untitled'
+      const documentId = selectedEntity.entryId ?? selectedEntity.documentId ?? null
+      const node = await upsertMindNode({
+        userId,
+        nodeType: selectedEntity.type === 'document' ? 'document' : selectedEntity.type === 'tip' ? 'fragment' : 'topic',
+        label,
+        documentId,
+        state: 'drifting',
+      })
+      emit({ type: 'mind_node_created', nodeId: node.id })
+      setActiveTab('mind')
+    } catch {
+      onToast?.('创建 Mind 节点失败')
+    }
+  }, [selectedEntity, relatedMindNode, userId, setActiveTab, onToast])
 
   const handleRecApply = React.useCallback(async (recId: string) => {
     if (recActionLoading) return;
@@ -1135,6 +1219,60 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
       },
     });
   }, [selectedEntity, userId, onToast, dockRefresh]);
+
+  const handleArchiveDocument = React.useCallback(async () => {
+    if (!selectedEntity?.entryId) return
+    try {
+      await updateArchivedEntry(userId, selectedEntity.entryId, { archivedAt: new Date() })
+      emit({ type: 'document_archived', entryId: selectedEntity.entryId })
+      onToast?.('文档已归档')
+      dockRefresh()
+    } catch {
+      onToast?.('归档失败')
+    }
+  }, [selectedEntity, userId, onToast, dockRefresh])
+
+  const handleRestoreDocument = React.useCallback(async () => {
+    if (!selectedEntity?.entryId) return
+    try {
+      await updateArchivedEntry(userId, selectedEntity.entryId, { archivedAt: null })
+      emit({ type: 'document_restored', entryId: selectedEntity.entryId })
+      onToast?.('文档已恢复')
+      dockRefresh()
+    } catch {
+      onToast?.('恢复失败')
+    }
+  }, [selectedEntity, userId, onToast, dockRefresh])
+
+  const handlePublishDraft = React.useCallback(async () => {
+    if (!selectedEntity?.draftId) return
+    try {
+      const result = await publishDraftToDocument(userId, selectedEntity.draftId)
+      if (result) {
+        onToast?.('Draft 已发布为 Document')
+        dockRefresh()
+      } else {
+        onToast?.('发布失败')
+      }
+    } catch {
+      onToast?.('发布失败')
+    }
+  }, [selectedEntity, userId, onToast, dockRefresh])
+
+  const handleTipOpenInMind = React.useCallback(async () => {
+    if (!selectedEntity?.tipId) return
+    try {
+      const { mindNode } = await convertTipToMindNode(userId, selectedEntity.tipId)
+      if (mindNode) {
+        emit({ type: 'mind_node_created', nodeId: mindNode.id })
+        setActiveTab('mind')
+      } else {
+        onToast?.('创建 Mind 节点失败')
+      }
+    } catch {
+      onToast?.('创建 Mind 节点失败')
+    }
+  }, [selectedEntity, userId, setActiveTab, onToast])
 
   const getRecStatusBadge = (rec: DockRecommendation) => {
     const statusConfig = STATUS_LABELS[rec.status as keyof typeof STATUS_LABELS];
@@ -1221,36 +1359,44 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
         </div>
         
         <div className="px-3 flex-1 space-y-1">
-          <div className="h-[36px] px-2 rounded-[8px] flex items-center gap-2 cursor-pointer bg-[#86d7ff]/12 border border-[#86d7ff]/30 text-[#86d7ff]">
-            <LayoutDashboard className="w-[14px] h-[14px]" />
-            <span className="text-[12px] font-medium flex-1">任务控制</span>
-          </div>
-          <div className="h-[36px] px-2 rounded-[8px] flex items-center gap-2 cursor-pointer text-[#8d989f] hover:bg-white/5 hover:text-white transition-colors">
-            <Archive className="w-[14px] h-[14px]" />
-            <span className="text-[12px] font-medium flex-1">待整理</span>
-            <span className="text-[10px] bg-white/10 px-1.5 rounded-full">{dockData.rawTips.length}</span>
-          </div>
-          <div className="h-[36px] px-2 rounded-[8px] flex items-center gap-2 cursor-pointer text-[#8d989f] hover:bg-white/5 hover:text-white transition-colors">
-            <FolderTree className="w-[14px] h-[14px]" />
-            <span className="text-[12px] font-medium flex-1">空间</span>
-          </div>
-          <div className="h-[36px] px-2 rounded-[8px] flex items-center gap-2 cursor-pointer text-[#8d989f] hover:bg-white/5 hover:text-white transition-colors">
-            <Sparkles className="w-[14px] h-[14px]" />
-            <span className="text-[12px] font-medium flex-1">推荐</span>
-            <span className="text-[10px] bg-white/10 px-1.5 rounded-full">{pendingRecs.length}</span>
-          </div>
-          <div className="h-[36px] px-2 rounded-[8px] flex items-center gap-2 cursor-pointer text-[#8d989f] hover:bg-white/5 hover:text-white transition-colors">
-            <Activity className="w-[14px] h-[14px]" />
-            <span className="text-[12px] font-medium flex-1">结构健康</span>
-            <span className="text-[10px] bg-[#9cf4d4]/20 text-[#9cf4d4] px-1.5 rounded-full">{dockData.signals.find(s => s.key === 'health')?.value ?? '—'}</span>
-          </div>
+          {([
+            { mode: 'taskControl' as DockViewMode, icon: LayoutDashboard, label: '任务控制' },
+            { mode: 'unsorted' as DockViewMode, icon: Archive, label: '待整理', badge: dockData.rawTips.length },
+            { mode: 'spaces' as DockViewMode, icon: FolderTree, label: '空间' },
+            { mode: 'recommendations' as DockViewMode, icon: Sparkles, label: '推荐', badge: pendingRecs.length },
+            { mode: 'health' as DockViewMode, icon: Activity, label: '结构健康', healthBadge: String(dockData.signals.find(s => s.key === 'health')?.value ?? '—') },
+          ] as const).map(item => {
+            const isActive = vm.dockMode === item.mode
+            return (
+              <div
+                key={item.mode}
+                onClick={() => vm.setDockMode(item.mode)}
+                className={`h-[36px] px-2 rounded-[8px] flex items-center gap-2 cursor-pointer transition-all duration-200 ${isActive ? 'bg-[#86d7ff]/12 border border-[#86d7ff]/30 text-[#86d7ff]' : 'text-[#8d989f] hover:bg-white/5 hover:text-white'}`}
+              >
+                <item.icon className="w-[14px] h-[14px]" />
+                <span className="text-[12px] font-medium flex-1">{item.label}</span>
+                {'badge' in item && item.badge > 0 && (
+                  <span className={`text-[10px] px-1.5 rounded-full ${isActive ? 'bg-[#86d7ff]/20 text-[#86d7ff]' : 'bg-white/10 text-[#8d989f]'}`}>{item.badge}</span>
+                )}
+                {'healthBadge' in item && (
+                  <span className="text-[10px] bg-[#9cf4d4]/20 text-[#9cf4d4] px-1.5 rounded-full">{item.healthBadge}</span>
+                )}
+              </div>
+            )
+          })}
         </div>
 
         <div className="p-3 mb-2">
           <div className="p-3 bg-[#111619] border border-white/[0.07] rounded-[12px] h-[110px] flex flex-col">
             <div className="text-[12px] font-semibold text-white mb-1">自动整理</div>
             <div className="text-[10px] text-[#8d989f] leading-relaxed flex-1 mt-1">{pendingRecs.length} 条待处理建议。确认后才写入结构层。</div>
-            <button className="w-full h-[28px] rounded-[8px] bg-white/10 text-[11px] font-medium text-white hover:bg-white/20 transition-colors mt-2">查看建议</button>
+            <button
+              onClick={() => {
+                vm.setDockMode('recommendations')
+                if (pendingRecs.length > 0) setSelectedRecId(pendingRecs[0].id)
+              }}
+              className="w-full h-[28px] rounded-[8px] bg-white/10 text-[11px] font-medium text-white hover:bg-white/20 transition-colors mt-2"
+            >查看建议</button>
           </div>
         </div>
       </div>
@@ -1262,7 +1408,7 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
         <div className="h-[48px] bg-[#0d1215] border-b border-white/[0.07] px-4 flex items-center justify-between shrink-0">
           <div className="flex flex-col justify-center">
             <div className="text-[9px] text-[#8d989f] uppercase tracking-wider font-semibold">Dock / {selectedSpace?.name ?? '—'}</div>
-            <div className="text-[14px] font-medium text-white mt-0.5">任务控制台</div>
+            <div className="text-[14px] font-medium text-white mt-0.5">{modeTitle}</div>
           </div>
           <div className="flex items-center gap-2">
             {dockError && (
@@ -1270,15 +1416,178 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
                 数据加载异常
               </span>
             )}
-            <button className="h-[32px] px-3 rounded-[8px] bg-white/5 border border-white/[0.07] text-[12px] text-[#e6eaed] hover:bg-white/10 transition-colors flex items-center gap-1.5">
-              <LayoutTemplate className="w-3.5 h-3.5" /> 视图：项目控制
-            </button>
-            <button className="h-[32px] px-3 rounded-[8px] bg-white/5 border border-white/[0.07] text-[12px] text-[#e6eaed] hover:bg-white/10 transition-colors flex items-center gap-1.5">
-              <Filter className="w-3.5 h-3.5" /> 筛选
-            </button>
-            <button className="h-[32px] px-3 rounded-[8px] bg-white/5 border border-white/[0.07] text-[12px] text-[#e6eaed] hover:bg-white/10 transition-colors flex items-center gap-1.5">
-              <Settings className="w-3.5 h-3.5" /> 自定义
-            </button>
+            {/* View selector */}
+            <div className="relative">
+              <button
+                onClick={() => { setViewMenuOpen(!viewMenuOpen); setFilterOpen(false); setCustomizeOpen(false) }}
+                className={`h-[32px] px-3 rounded-[8px] border text-[12px] text-[#e6eaed] hover:bg-white/10 transition-colors flex items-center gap-1.5 ${viewMenuOpen ? 'bg-white/10 border-white/20 text-white' : 'bg-white/5 border-white/[0.07]'}`}
+              >
+                <LayoutTemplate className="w-3.5 h-3.5" /> 视图：{currentModeLabel}
+              </button>
+              {viewMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setViewMenuOpen(false)} />
+                  <div className="absolute right-0 top-full mt-2 w-48 bg-[#1c2023]/90 backdrop-blur-[20px] border border-white/10 rounded-xl z-50 py-1 overflow-hidden">
+                    {([
+                      { mode: 'taskControl' as DockViewMode, label: '项目控制' },
+                      { mode: 'unsorted' as DockViewMode, label: '待整理' },
+                      { mode: 'spaces' as DockViewMode, label: '空间' },
+                      { mode: 'recommendations' as DockViewMode, label: '推荐' },
+                      { mode: 'health' as DockViewMode, label: '结构健康' },
+                    ]).map(opt => (
+                      <div
+                        key={opt.mode}
+                        onClick={() => { vm.setDockMode(opt.mode); setViewMenuOpen(false) }}
+                        className={`h-[32px] px-3 flex items-center text-[12px] cursor-pointer transition-colors ${vm.dockMode === opt.mode ? 'bg-[#86d7ff]/10 text-white' : 'text-[#e0e3e6] hover:bg-white/5'}`}
+                      >
+                        {opt.label}
+                        {vm.dockMode === opt.mode && <span className="ml-auto text-[#86d7ff]">✓</span>}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+            {/* Filter */}
+            <div className="relative">
+              <button
+                onClick={() => { setFilterOpen(!filterOpen); setViewMenuOpen(false); setCustomizeOpen(false) }}
+                className={`h-[32px] px-3 rounded-[8px] border text-[12px] text-[#e6eaed] hover:bg-white/10 transition-colors flex items-center gap-1.5 ${filterOpen ? 'bg-white/10 border-white/20 text-white' : 'bg-white/5 border-white/[0.07]'}`}
+              >
+                <Filter className="w-3.5 h-3.5" /> 筛选
+                {(vm.filter.types.length > 0 || vm.filter.statuses.length > 0 || vm.filter.hasRecommendations !== null) && (
+                  <span className="text-[9px] bg-[#86d7ff]/20 text-[#86d7ff] px-1.5 rounded-full ml-0.5">
+                    {vm.filter.types.length + vm.filter.statuses.length + (vm.filter.hasRecommendations !== null ? 1 : 0)}
+                  </span>
+                )}
+              </button>
+              {filterOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setFilterOpen(false)} />
+                  <div className="absolute right-0 top-full mt-2 w-56 bg-[#1c2023]/90 backdrop-blur-[20px] border border-white/10 rounded-xl z-50 py-2 px-3 overflow-hidden">
+                    <div className="text-[10px] font-semibold text-[#899298] uppercase tracking-wider mb-1.5">类型</div>
+                    {([
+                      { type: 'document' as DockEntityType, label: 'Document' },
+                      { type: 'draft' as DockEntityType, label: 'Draft' },
+                      { type: 'tip' as DockEntityType, label: 'Tip' },
+                      { type: 'mindNode' as DockEntityType, label: 'Mind Node' },
+                      { type: 'collection' as DockEntityType, label: 'Collection' },
+                      { type: 'tag' as DockEntityType, label: 'Tag' },
+                    ]).map(opt => (
+                      <label key={opt.type} className="h-[28px] flex items-center gap-2 text-[11px] text-[#e0e3e6] cursor-pointer hover:bg-white/5 rounded px-1">
+                        <input
+                          type="checkbox"
+                          checked={vm.filter.types.includes(opt.type)}
+                          onChange={() => vm.toggleTypeFilter(opt.type)}
+                          className="accent-[#86d7ff]"
+                        />
+                        {opt.label}
+                      </label>
+                    ))}
+                    <div className="h-px bg-white/10 my-2" />
+                    <div className="text-[10px] font-semibold text-[#899298] uppercase tracking-wider mb-1.5">状态</div>
+                    {([
+                      { status: 'active', label: '活跃' },
+                      { status: 'archived', label: '已归档' },
+                      { status: 'published', label: '已发布' },
+                      { status: 'discarded', label: '已丢弃' },
+                      { status: 'drifting', label: '漂移' },
+                      { status: 'isolated', label: '孤立' },
+                    ]).map(opt => (
+                      <label key={opt.status} className="h-[28px] flex items-center gap-2 text-[11px] text-[#e0e3e6] cursor-pointer hover:bg-white/5 rounded px-1">
+                        <input
+                          type="checkbox"
+                          checked={vm.filter.statuses.includes(opt.status)}
+                          onChange={() => vm.toggleStatusFilter(opt.status)}
+                          className="accent-[#86d7ff]"
+                        />
+                        {opt.label}
+                      </label>
+                    ))}
+                    <div className="h-px bg-white/10 my-2" />
+                    <label className="h-[28px] flex items-center gap-2 text-[11px] text-[#e0e3e6] cursor-pointer hover:bg-white/5 rounded px-1">
+                      <input
+                        type="checkbox"
+                        checked={vm.filter.hasRecommendations === true}
+                        onChange={() => vm.setHasRecommendationsFilter(vm.filter.hasRecommendations === true ? null : true)}
+                        className="accent-[#86d7ff]"
+                      />
+                      有待处理推荐
+                    </label>
+                    <div className="h-px bg-white/10 my-2" />
+                    <button
+                      onClick={() => vm.resetFilter()}
+                      className="w-full h-[28px] rounded-[6px] text-[11px] text-[#899298] hover:bg-white/5 hover:text-white transition-colors"
+                    >
+                      重置筛选
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+            {/* Customize */}
+            <div className="relative">
+              <button
+                onClick={() => { setCustomizeOpen(!customizeOpen); setViewMenuOpen(false); setFilterOpen(false) }}
+                className={`h-[32px] px-3 rounded-[8px] border text-[12px] text-[#e6eaed] hover:bg-white/10 transition-colors flex items-center gap-1.5 ${customizeOpen ? 'bg-white/10 border-white/20 text-white' : 'bg-white/5 border-white/[0.07]'}`}
+              >
+                <Settings className="w-3.5 h-3.5" /> 自定义
+              </button>
+              {customizeOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setCustomizeOpen(false)} />
+                  <div className="absolute right-0 top-full mt-2 w-56 bg-[#1c2023]/90 backdrop-blur-[20px] border border-white/10 rounded-xl z-50 py-2 px-3 overflow-hidden">
+                    <div className="text-[10px] font-semibold text-[#899298] uppercase tracking-wider mb-1.5">列可见性</div>
+                    {([
+                      { key: 'space' as const, label: '空间' },
+                      { key: 'status' as const, label: '状态' },
+                      { key: 'tags' as const, label: '标签' },
+                      { key: 'recommendations' as const, label: '推荐' },
+                      { key: 'score' as const, label: '分数' },
+                    ]).map(col => (
+                      <label key={col.key} className="h-[28px] flex items-center gap-2 text-[11px] text-[#e0e3e6] cursor-pointer hover:bg-white/5 rounded px-1">
+                        <input
+                          type="checkbox"
+                          checked={vm.settings.columnVisibility[col.key]}
+                          onChange={() => vm.updateSettings({ columnVisibility: { ...vm.settings.columnVisibility, [col.key]: !vm.settings.columnVisibility[col.key] } })}
+                          className="accent-[#86d7ff]"
+                        />
+                        {col.label}
+                      </label>
+                    ))}
+                    <div className="h-px bg-white/10 my-2" />
+                    <div className="text-[10px] font-semibold text-[#899298] uppercase tracking-wider mb-1.5">密度</div>
+                    <div className="flex gap-2 mb-2">
+                      {(['compact', 'standard'] as const).map(d => (
+                        <button
+                          key={d}
+                          onClick={() => vm.updateSettings({ density: d })}
+                          className={`flex-1 h-[28px] rounded-[6px] text-[11px] transition-colors ${vm.settings.density === d ? 'bg-[#86d7ff]/10 text-white border border-[#86d7ff]/30' : 'bg-white/5 text-[#8d989f] hover:bg-white/10'}`}
+                        >
+                          {d === 'compact' ? '紧凑' : '标准'}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="text-[10px] font-semibold text-[#899298] uppercase tracking-wider mb-1.5">默认排序</div>
+                    <div className="flex gap-2">
+                      {([
+                        { key: 'updatedAt' as const, label: '更新时间' },
+                        { key: 'healthScore' as const, label: '健康分' },
+                        { key: 'type' as const, label: '类型' },
+                      ]).map(s => (
+                        <button
+                          key={s.key}
+                          onClick={() => vm.updateSettings({ defaultSort: s.key })}
+                          className={`flex-1 h-[28px] rounded-[6px] text-[11px] transition-colors ${vm.settings.defaultSort === s.key ? 'bg-[#86d7ff]/10 text-white border border-[#86d7ff]/30' : 'bg-white/5 text-[#8d989f] hover:bg-white/10'}`}
+                        >
+                          {s.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1286,13 +1595,13 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
         <div className="h-[78px] bg-[#0e1316] border-b border-white/[0.07] flex flex-col justify-center px-4 shrink-0">
           <div className="flex justify-between items-center mb-2">
             <div className="text-[10px] text-[#8d989f] uppercase tracking-wider font-semibold">当前 Library / Space</div>
-            <div className="text-[10px] text-[#86d7ff] cursor-pointer hover:underline">管理视图模板</div>
+            <div className="text-[10px] text-[#86d7ff] cursor-pointer hover:underline" onClick={() => setProPreviewOpen(true)}>管理视图模板</div>
           </div>
           <div className="flex gap-3">
             {spaces.length > 0 ? spaces.map(space => (
               <div 
                 key={space.id}
-                onClick={() => setSelectedSpaceId(space.id)}
+                onClick={() => vm.setSpaceFilter(space.id)}
                 className={`flex-1 h-[54px] rounded-[8px] border p-2 cursor-pointer flex flex-col justify-between transition-colors ${selectedSpace?.id === space.id ? 'border-[#86d7ff]/40 bg-[#86d7ff]/5' : 'border-white/[0.07] hover:border-white/20 bg-white/[0.02]'}`}
               >
                 <div className="flex justify-between items-center">
@@ -1315,14 +1624,28 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
         {/* D3. System signal strip */}
         <div className="h-[68px] border-b border-white/[0.07] flex shrink-0 divide-x divide-white/[0.07]">
           {[
-            { label: '待归类', val: String(dockData.signals.find(s => s.key === 'unsorted')?.value ?? 0), icon: Archive },
-            { label: '待确认建议', val: String(dockData.signals.find(s => s.key === 'pendingRecs')?.value ?? 0), icon: Sparkles },
-            { label: '孤立节点', val: String(dockData.signals.find(s => s.key === 'isolated')?.value ?? 0), icon: Network },
-            { label: '重复主题', val: String(dockData.signals.find(s => s.key === 'duplicates')?.value ?? 0), icon: Layers },
-            { label: '停滞内容', val: String(dockData.signals.find(s => s.key === 'stagnant')?.value ?? 0), icon: Clock },
-            { label: '结构健康', val: String(dockData.signals.find(s => s.key === 'health')?.value ?? '—'), icon: Activity }
+            { key: 'unsorted', label: '待归类', val: String(dockData.signals.find(s => s.key === 'unsorted')?.value ?? 0), icon: Archive },
+            { key: 'pendingRecs', label: '待确认建议', val: String(dockData.signals.find(s => s.key === 'pendingRecs')?.value ?? 0), icon: Sparkles },
+            { key: 'isolated', label: '孤立节点', val: String(dockData.signals.find(s => s.key === 'isolated')?.value ?? 0), icon: Network },
+            { key: 'duplicates', label: '重复主题', val: String(dockData.signals.find(s => s.key === 'duplicates')?.value ?? 0), icon: Layers },
+            { key: 'stagnant', label: '停滞内容', val: String(dockData.signals.find(s => s.key === 'stagnant')?.value ?? 0), icon: Clock },
+            { key: 'health', label: '结构健康', val: String(dockData.signals.find(s => s.key === 'health')?.value ?? '—'), icon: Activity }
           ].map(sig => (
-            <div key={sig.label} className="flex-1 flex items-center justify-center gap-3 hover:bg-white/[0.02] cursor-pointer transition-colors">
+            <div
+              key={sig.key}
+              onClick={() => {
+                const signalActions: Record<string, () => void> = {
+                  unsorted: () => vm.setDockMode('unsorted'),
+                  pendingRecs: () => vm.setDockMode('recommendations'),
+                  isolated: () => vm.setDockMode('health', 'isolated'),
+                  duplicates: () => vm.setDockMode('health', 'duplicates'),
+                  stagnant: () => vm.setDockMode('health', 'stagnant'),
+                  health: () => vm.setDockMode('health', 'summary'),
+                }
+                signalActions[sig.key]?.()
+              }}
+              className="flex-1 flex items-center justify-center gap-3 hover:bg-white/[0.02] cursor-pointer transition-colors"
+            >
               <div className="w-[28px] h-[28px] flex items-center justify-center bg-white/[0.04] rounded-md border border-white/[0.05]">
                 <sig.icon className="w-4 h-4 text-[#8d989f]" />
               </div>
@@ -1339,11 +1662,11 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
           <div className="h-[32px] border-b border-white/[0.055] flex items-center px-4 text-[11px] font-medium text-[#8d989f] bg-[#0b0f11] shrink-0">
             <div className="w-[32px]"></div>
             <div className="flex-1 min-w-[150px]">文档 / 节点</div>
-            <div className="w-[120px]">空间</div>
-            <div className="w-[80px]">状态</div>
-            <div className="w-[140px]">标签</div>
-            <div className="w-[160px]">建议</div>
-            <div className="w-[60px] text-right">分数</div>
+            {vm.settings.columnVisibility.space && <div className="w-[120px]">空间</div>}
+            {vm.settings.columnVisibility.status && <div className="w-[80px]">状态</div>}
+            {vm.settings.columnVisibility.tags && <div className="w-[140px]">标签</div>}
+            {vm.settings.columnVisibility.recommendations && <div className="w-[160px]">建议</div>}
+            {vm.settings.columnVisibility.score && <div className="w-[60px] text-right">分数</div>}
           </div>
           
           <div className="flex-1 overflow-y-auto custom-scrollbar">
@@ -1356,7 +1679,7 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
               <div 
                 key={entity.id}
                 onClick={() => setSelectedEntityId(entity.id)}
-                className={`h-[54px] border-b border-white/[0.055] flex items-center px-4 cursor-pointer transition-colors ${selectedEntityId === entity.id ? 'bg-[#86d7ff]/[0.07]' : 'hover:bg-white/[0.02]'}`}
+                className={`${vm.settings.density === 'compact' ? 'h-[40px]' : 'h-[54px]'} border-b border-white/[0.055] flex items-center px-4 cursor-pointer transition-colors ${selectedEntityId === entity.id ? 'bg-[#86d7ff]/[0.07]' : 'hover:bg-white/[0.02]'}`}
               >
                 <div className="w-[32px] flex items-center justify-start text-[#8d989f]">
                   {getTypeIcon(entity.type)}
@@ -1365,28 +1688,57 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
                   <div className="text-[12px] font-medium text-[#e6eaed] truncate mb-0.5">{entity.title}</div>
                   <div className="text-[10px] text-[#8d989f] truncate">{getTypeLabel(entity.type)}</div>
                 </div>
-                <div className="w-[120px] text-[12px] text-[#8d989f] truncate pr-2">{entity.project ?? '—'}</div>
-                <div className="w-[80px]">
+                {vm.settings.columnVisibility.space && <div className="w-[120px] text-[12px] text-[#8d989f] truncate pr-2">{entity.project ?? '—'}</div>}
+                {vm.settings.columnVisibility.status && <div className="w-[80px]">
                   <span className={`text-[10px] px-1.5 py-0.5 rounded border ${getStatusStyle(entity.status)}`}>
                     {getStatusLabel(entity.status)}
                   </span>
-                </div>
-                <div className="w-[140px] text-[10px] text-[#8d989f] truncate pr-2">{entity.tags && entity.tags.length > 0 ? entity.tags.map(t => `#${t}`).join(' ') : '—'}</div>
-                <div className="w-[160px] text-[11px] text-[#e6eaed] truncate pr-2">
+                </div>}
+                {vm.settings.columnVisibility.tags && <div className="w-[140px] text-[10px] text-[#8d989f] truncate pr-2">{entity.tags && entity.tags.length > 0 ? entity.tags.map(t => `#${t}`).join(' ') : '—'}</div>}
+                {vm.settings.columnVisibility.recommendations && <div className="w-[160px] text-[11px] text-[#e6eaed] truncate pr-2">
                   {entityRecs.length > 0
                     ? describeRecommendationAction(entityRecs[0].candidateType, entityRecs[0].candidateId)
                     : '—'}
-                </div>
-                <div className="w-[60px] text-right text-[12px] font-medium text-[#8d989f]">
+                </div>}
+                {vm.settings.columnVisibility.score && <div className="w-[60px] text-right text-[12px] font-medium text-[#8d989f]">
                   {entityRecs.length > 0
                     ? `${Math.round(entityRecs[0].confidenceScore * 100)}%`
                     : '—'}
-                </div>
+                </div>}
               </div>
               );
             }) : (
-              <div className="flex-1 flex items-center justify-center py-12 text-[12px] text-[#8d989f]">
-                暂无内容。创建 Document、Draft 或 Tip 后将在此显示。
+              <div className="flex-1 flex flex-col items-center justify-center py-12 text-[#8d989f]">
+                {vm.dockMode === 'unsorted' ? (
+                  <>
+                    <Archive className="w-8 h-8 mb-3 opacity-30" />
+                    <div className="text-[12px]">待整理区为空</div>
+                    <div className="text-[10px] mt-1">所有内容都已归类，或尚未创建 Tip / Draft</div>
+                  </>
+                ) : vm.dockMode === 'spaces' ? (
+                  <>
+                    <FolderTree className="w-8 h-8 mb-3 opacity-30" />
+                    <div className="text-[12px]">暂无空间</div>
+                    <div className="text-[10px] mt-1">创建 Collection 后将自动出现空间</div>
+                  </>
+                ) : vm.dockMode === 'recommendations' ? (
+                  <>
+                    <Sparkles className="w-8 h-8 mb-3 opacity-30" />
+                    <div className="text-[12px]">暂无推荐</div>
+                    <div className="text-[10px] mt-1">使用 Mind 视图生成推荐后将在此显示</div>
+                  </>
+                ) : vm.dockMode === 'health' ? (
+                  <>
+                    <Activity className="w-8 h-8 mb-3 opacity-30" />
+                    <div className="text-[12px]">结构健康，无异常</div>
+                    <div className="text-[10px] mt-1">所有节点已连接，内容活跃，无重复主题</div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-[12px]">暂无内容</div>
+                    <div className="text-[10px] mt-1">创建 Document、Draft 或 Tip 后将在此显示</div>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -1401,7 +1753,10 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
                 <span className="text-[9px] text-[#86d7ff] bg-[#86d7ff]/10 px-1.5 rounded-full">{pendingRecs.length} 条待处理</span>
               )}
             </div>
-            <div className="text-[10px] text-[#86d7ff] cursor-pointer hover:underline">全部预览</div>
+            <div 
+              onClick={() => setRecPreviewOpen(true)}
+              className="text-[10px] text-[#86d7ff] cursor-pointer hover:underline"
+            >全部预览</div>
           </div>
           <div className="flex gap-3 overflow-x-auto min-w-0">
             {dockData.recommendations.length > 0 ? dockData.recommendations.map(rec => {
@@ -1560,8 +1915,21 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
             <>
               <div className="text-[11px] text-[#e6eaed] mb-3">选择推荐队列中的建议查看详情</div>
               <div className="flex gap-2">
-                <button className="flex-1 h-[28px] rounded-[8px] bg-[#c8a0f0]/20 text-[#c8a0f0] text-[11px] font-medium hover:bg-[#c8a0f0]/30 transition-colors opacity-50 cursor-not-allowed">预览方案</button>
-                <button className="px-3 h-[28px] rounded-[8px] bg-white/5 text-[#8d989f] text-[11px] font-medium hover:bg-white/10 transition-colors opacity-50 cursor-not-allowed">忽略</button>
+                <button 
+                  onClick={() => {
+                    if (pendingRecs.length > 0) {
+                      setSelectedRecId(pendingRecs[0].id)
+                      setRecPreviewOpen(true)
+                    } else {
+                      onToast?.('暂无可预览的推荐')
+                    }
+                  }}
+                  className="flex-1 h-[28px] rounded-[8px] bg-[#c8a0f0]/20 text-[#c8a0f0] text-[11px] font-medium hover:bg-[#c8a0f0]/30 transition-colors"
+                >预览方案</button>
+                <button 
+                  onClick={() => onToast?.('请先选择一条推荐')}
+                  className="px-3 h-[28px] rounded-[8px] bg-white/5 text-[#8d989f] text-[11px] font-medium hover:bg-white/10 transition-colors"
+                >忽略</button>
               </div>
             </>
           )}
@@ -1610,22 +1978,21 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
                   </button>
                   <button
                     onClick={handleOpenInMind}
-                    disabled={!relatedMindNode}
-                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5"
                   >
-                    <Network className="w-3 h-3" /> {!relatedMindNode ? '在 Mind 查看 (无关联节点)' : '在 Mind 查看'}
+                    <Network className="w-3 h-3" /> 在 Mind 查看
                   </button>
                   <button
-                    disabled
-                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] flex items-center justify-center gap-1.5 opacity-30 cursor-not-allowed"
+                    onClick={handleArchiveDocument}
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5"
                   >
-                    <Archive className="w-3 h-3" /> 归档 <span className="text-[8px] text-[#8d989f] ml-1">Planned</span>
+                    <Archive className="w-3 h-3" /> 归档
                   </button>
                   <button
-                    disabled
-                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] flex items-center justify-center gap-1.5 opacity-30 cursor-not-allowed"
+                    onClick={handleRestoreDocument}
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5"
                   >
-                    <RotateCcw className="w-3 h-3" /> 恢复 <span className="text-[8px] text-[#8d989f] ml-1">Planned</span>
+                    <RotateCcw className="w-3 h-3" /> 恢复
                   </button>
                 </>
               )}
@@ -1639,10 +2006,10 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
                     <PenTool className="w-3 h-3" /> 在 Editor 中继续
                   </button>
                   <button
-                    disabled
-                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] flex items-center justify-center gap-1.5 opacity-30 cursor-not-allowed"
+                    onClick={handlePublishDraft}
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5"
                   >
-                    <Send className="w-3 h-3" /> 发布 <span className="text-[8px] text-[#8d989f] ml-1">Planned</span>
+                    <Send className="w-3 h-3" /> 发布
                   </button>
                   <button
                     onClick={handleDiscardDraft}
@@ -1661,6 +2028,12 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
                     className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#e6eaed] hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
                   >
                     <PenTool className="w-3 h-3" /> 转 Draft 并打开 Editor
+                  </button>
+                  <button
+                    onClick={handleTipOpenInMind}
+                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Network className="w-3 h-3" /> 在 Mind 查看
                   </button>
                   <button
                     onClick={handleDiscardTip}
@@ -1695,28 +2068,26 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
               )}
               {selectedEntity.type === 'collection' && (
                 <>
-                  <div className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] text-[#8d989f] flex items-center justify-center gap-1.5">
-                    只读 Inspector
+                  <div className="text-[11px] text-[#8d989f] mb-2">
+                    相关内容：{dockData.entities.filter(e => e.type === 'document' && e.project === selectedEntity.title).length} 个文档
                   </div>
-                  <button
-                    disabled
-                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] flex items-center justify-center gap-1.5 opacity-30 cursor-not-allowed"
-                  >
-                    <PenTool className="w-3 h-3" /> 编辑 Collection <span className="text-[8px] text-[#8d989f] ml-1">Planned</span>
-                  </button>
+                  {dockData.entities.filter(e => e.type === 'document' && e.project === selectedEntity.title).slice(0, 5).map(e => (
+                    <div key={e.id} onClick={() => setSelectedEntityId(e.id)} className="text-[11px] text-[#86d7ff] cursor-pointer hover:underline truncate">
+                      {e.title}
+                    </div>
+                  ))}
                 </>
               )}
               {selectedEntity.type === 'tag' && (
                 <>
-                  <div className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] text-[#8d989f] flex items-center justify-center gap-1.5">
-                    只读 Inspector
+                  <div className="text-[11px] text-[#8d989f] mb-2">
+                    相关内容：{dockData.entities.filter(e => e.tags?.includes(selectedEntity.title)).length} 个条目
                   </div>
-                  <button
-                    disabled
-                    className="w-full h-[28px] rounded-[8px] bg-white/5 text-[11px] font-medium text-[#8d989f] flex items-center justify-center gap-1.5 opacity-30 cursor-not-allowed"
-                  >
-                    <PenTool className="w-3 h-3" /> 编辑 Tag <span className="text-[8px] text-[#8d989f] ml-1">Planned</span>
-                  </button>
+                  {dockData.entities.filter(e => e.tags?.includes(selectedEntity.title)).slice(0, 5).map(e => (
+                    <div key={e.id} onClick={() => setSelectedEntityId(e.id)} className="text-[11px] text-[#86d7ff] cursor-pointer hover:underline truncate">
+                      {e.title}
+                    </div>
+                  ))}
                 </>
               )}
             </div>
@@ -1736,22 +2107,111 @@ const DockView = ({ setActiveTab, userId, onOpenEditor, onToast }: {
         {/* 6. Bottom actions */}
         <div className="flex gap-2 mt-4">
           <button
-            onClick={handleOpenEditor}
-            disabled={!selectedEntity || (selectedEntity.type !== 'document' && selectedEntity.type !== 'draft' && selectedEntity.type !== 'tip' && selectedEntity.type !== 'mindNode')}
-            className={`flex-1 h-[32px] rounded-[8px] text-[12px] font-medium transition-colors flex items-center justify-center gap-1.5 ${selectedEntity && (selectedEntity.type === 'document' || selectedEntity.type === 'draft' || selectedEntity.type === 'tip' || selectedEntity.type === 'mindNode') ? 'bg-white text-[#0b0f11] hover:bg-gray-200' : 'bg-white/10 text-[#8d989f] cursor-not-allowed'}`}
+            onClick={() => {
+              if (!selectedEntity) {
+                onToast?.('请先选择一个实体')
+                return
+              }
+              handleOpenEditor()
+            }}
+            className="flex-1 h-[32px] rounded-[8px] bg-white text-[#0b0f11] text-[12px] font-medium hover:bg-gray-200 transition-colors flex items-center justify-center gap-1.5"
           >
             <PenTool className="w-3.5 h-3.5" /> 打开 Editor
           </button>
           <button
             onClick={handleOpenInMind}
-            disabled={!relatedMindNode}
-            className="flex-1 h-[32px] rounded-[8px] bg-white/10 text-[12px] font-medium hover:bg-white/20 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed"
+            className="flex-1 h-[32px] rounded-[8px] bg-white/10 text-[12px] font-medium hover:bg-white/20 transition-colors flex items-center justify-center gap-1.5"
           >
-            <Network className="w-3.5 h-3.5" /> {!relatedMindNode ? '在 Mind 查看 (无节点)' : '在 Mind 查看'}
+            <Network className="w-3.5 h-3.5" /> 在 Mind 查看
           </button>
         </div>
       </div>
     </div>
+
+    {proPreviewOpen && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div
+          className="absolute inset-0 bg-[#0b0f11]/60 backdrop-blur-sm"
+          onClick={() => setProPreviewOpen(false)}
+        />
+        <div className="relative w-[380px] bg-[#1c2023]/90 backdrop-blur-[40px] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
+            <h3 className="text-sm font-medium text-white">视图模板</h3>
+            <button
+              onClick={() => setProPreviewOpen(false)}
+              className="p-1 rounded-md hover:bg-white/10 text-[#899298] hover:text-white transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="px-5 py-6 flex flex-col items-center gap-3">
+            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-[#c8a0f0]/20 to-[#86d7ff]/20 flex items-center justify-center">
+              <Crown className="w-6 h-6 text-[#c8a0f0]" />
+            </div>
+            <div className="text-[14px] font-medium text-white">Atlax Pro 功能</div>
+            <div className="text-[12px] text-[#899298] text-center leading-relaxed">视图模板是 Atlax Pro 订阅功能，可保存和复用自定义的 Dock 视图配置。</div>
+          </div>
+          <div className="px-5 py-3 border-t border-white/[0.07] flex gap-2">
+            <button
+              onClick={() => setProPreviewOpen(false)}
+              className="flex-1 py-2 rounded-lg bg-white/5 text-[11px] text-[#899298] hover:text-white hover:bg-white/10 transition-colors"
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {recPreviewOpen && (
+      <div className="fixed inset-0 z-50 flex justify-end">
+        <div className="absolute inset-0 bg-[#0b0f11]/40 backdrop-blur-sm" onClick={() => setRecPreviewOpen(false)} />
+        <div className="relative w-[480px] h-full bg-[#1c2023]/95 backdrop-blur-[40px] border-l border-white/10 flex flex-col">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
+            <h3 className="text-sm font-medium text-white">推荐预览</h3>
+            <button onClick={() => setRecPreviewOpen(false)} className="p-1 rounded-md hover:bg-white/10 text-[#899298] hover:text-white transition-colors">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-3">
+            {pendingRecs.length > 0 ? pendingRecs.map(rec => (
+              <div key={rec.id} className="p-3 bg-white/[0.03] border border-white/[0.07] rounded-xl">
+                <div className="flex items-center gap-2 mb-2">
+                  <Sparkles className="w-3.5 h-3.5 text-[#c8a0f0]" />
+                  <span className="text-[12px] font-medium text-[#e6eaed]">{describeRecommendationAction(rec.candidateType, rec.candidateId)}</span>
+                </div>
+                <div className="text-[11px] text-[#8d989f] mb-1">目标：{rec.target}</div>
+                <div className="text-[11px] text-[#8d989f] mb-1">原因：{describeRecommendationReason(rec.candidateType, rec.reasonSummary, rec.evidenceSummary)}</div>
+                <div className="text-[11px] text-[#8d989f] mb-2">接受后：{describeApplyPreview(rec.candidateType, rec.candidateId)}</div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-[9px] text-[#8d989f]">可信度: {formatConfidenceLevel(rec.confidenceScore)}</span>
+                  {getRecStatusBadge(rec)}
+                </div>
+                {isRecommendationPending(rec.status) && isSupportedCandidateType(rec.candidateType) && (
+                  <div className="flex gap-2">
+                    <button onClick={() => handleRecApply(rec.id)} disabled={recActionLoading === rec.id} className="h-[24px] px-3 rounded text-[10px] font-medium bg-[#9cf4d4]/10 text-[#9cf4d4] border border-[#9cf4d4]/20 hover:bg-[#9cf4d4]/20 transition-colors disabled:opacity-30">{recActionLoading === rec.id ? '...' : '接受'}</button>
+                    <button onClick={() => handleRecReject(rec.id)} disabled={recActionLoading === rec.id} className="h-[24px] px-3 rounded text-[10px] font-medium bg-white/5 text-[#8d989f] border border-white/10 hover:bg-white/10 transition-colors disabled:opacity-30">拒绝</button>
+                    <button onClick={() => handleRecIgnore(rec.id)} disabled={recActionLoading === rec.id} className="h-[24px] px-3 rounded text-[10px] font-medium bg-white/5 text-[#8d989f] border border-white/10 hover:bg-white/10 transition-colors disabled:opacity-30">忽略</button>
+                  </div>
+                )}
+                {isRecommendationPending(rec.status) && !isSupportedCandidateType(rec.candidateType) && (
+                  <div className="flex gap-2">
+                    <span className="text-[10px] text-yellow-400/80 flex items-center gap-0.5"><AlertCircle className="w-2.5 h-2.5" /> 暂不支持自动应用</span>
+                    <button onClick={() => handleRecIgnore(rec.id)} disabled={recActionLoading === rec.id} className="h-[24px] px-3 rounded text-[10px] font-medium bg-white/5 text-[#8d989f] border border-white/10 hover:bg-white/10 transition-colors disabled:opacity-30">忽略</button>
+                  </div>
+                )}
+              </div>
+            )) : (
+              <div className="flex flex-col items-center justify-center py-12 text-[#8d989f]">
+                <Sparkles className="w-8 h-8 mb-3 opacity-30" />
+                <div className="text-[12px]">暂无待处理推荐</div>
+                <div className="text-[10px] mt-1">使用 Mind 视图生成推荐后将在此显示</div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
 
     {confirmDialog && (
       <div className="fixed inset-0 z-50 flex items-center justify-center">

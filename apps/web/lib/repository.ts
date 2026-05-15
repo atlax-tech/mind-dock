@@ -118,6 +118,7 @@ import {
   workspaceSessionsTable,
   editorDraftsTable,
   tipsTable,
+  dockViewSettingsTable,
   type ChatSessionRecord,
   type CollectionRecord,
   type EntryRecord,
@@ -163,6 +164,8 @@ import {
   type DraftSourceType,
   type TagRecord,
   type WidgetRecord,
+  type DockViewSettingsRecord,
+  type PersistedDockViewSettings,
 } from './db'
 
 export type DockItem = DomainDockItem
@@ -188,6 +191,8 @@ export type { PersistedTip as StoredTip }
 export type { TipSourceType, TipStatus }
 export type { DraftStatus }
 export type { DraftSourceType }
+export type { DockViewSettingsRecord }
+export type { PersistedDockViewSettings as StoredDockViewSettings }
 export type { ChainProvenance }
 export type { CalendarDayResult }
 export type { CalendarMonthOverview }
@@ -776,15 +781,20 @@ export async function getOrCreateTag(userId: string, name: string): Promise<Pers
 export async function updateArchivedEntry(
   userId: string,
   entryId: number,
-  updates: { tags?: string[]; project?: string | null; content?: string; title?: string },
+  updates: { tags?: string[]; project?: string | null; content?: string; title?: string; archivedAt?: Date | null },
 ): Promise<PersistedEntry | null> {
   const entry = await entriesTable.get(entryId)
   if (!entry || entry.userId !== userId) return null
 
-  const { entryPatch, dockSyncPatch } = buildEntryAndDockPatches(updates, entry.sourceDockItemId)
+  const { archivedAt, ...restUpdates } = updates
+  const { entryPatch, dockSyncPatch } = buildEntryAndDockPatches(restUpdates, entry.sourceDockItemId)
 
   if (entryPatch && Object.keys(entryPatch).length > 0) {
     await entriesTable.update(entryId, entryPatch)
+  }
+
+  if (archivedAt !== undefined) {
+    await entriesTable.update(entryId, { archivedAt })
   }
 
   if (dockSyncPatch) {
@@ -4382,4 +4392,59 @@ export async function generateMindNodeRecommendations(
   }
 
   return results
+}
+
+const DEFAULT_DOCK_VIEW_COLUMN_VISIBILITY = {
+  space: true,
+  status: true,
+  tags: true,
+  recommendations: true,
+  score: true,
+} as const
+
+const DEFAULT_DOCK_VIEW_DENSITY = 'standard' as const
+const DEFAULT_DOCK_VIEW_DEFAULT_SORT = 'updatedAt' as const
+
+function toPersistedDockViewSettings(record: DockViewSettingsRecord | undefined): PersistedDockViewSettings | null {
+  if (!record || !record.id) return null
+  return { ...record, id: record.id }
+}
+
+export async function getDockViewSettings(userId: string): Promise<PersistedDockViewSettings | null> {
+  const record = await dockViewSettingsTable
+    .where('userId')
+    .equals(userId)
+    .first()
+  return toPersistedDockViewSettings(record)
+}
+
+export async function saveDockViewSettings(
+  userId: string,
+  settings: Partial<Omit<DockViewSettingsRecord, 'id' | 'userId' | 'updatedAt'>>,
+): Promise<PersistedDockViewSettings> {
+  const now = new Date()
+  const existing = await dockViewSettingsTable
+    .where('userId')
+    .equals(userId)
+    .first()
+
+  if (existing) {
+    await dockViewSettingsTable.update(existing.id as string, {
+      ...settings,
+      updatedAt: now,
+    })
+    return toPersistedDockViewSettings(await dockViewSettingsTable.get(existing.id as string)) as PersistedDockViewSettings
+  }
+
+  const id = `dock-settings-${userId}`
+  const record: DockViewSettingsRecord = {
+    id,
+    userId,
+    columnVisibility: settings.columnVisibility ?? { ...DEFAULT_DOCK_VIEW_COLUMN_VISIBILITY },
+    density: settings.density ?? DEFAULT_DOCK_VIEW_DENSITY,
+    defaultSort: settings.defaultSort ?? DEFAULT_DOCK_VIEW_DEFAULT_SORT,
+    updatedAt: now,
+  }
+  await dockViewSettingsTable.add(record)
+  return toPersistedDockViewSettings(await dockViewSettingsTable.get(id)) as PersistedDockViewSettings
 }

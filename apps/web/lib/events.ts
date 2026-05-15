@@ -20,6 +20,8 @@ export type AppEvent =
   | { type: 'recommendation_applied'; recommendationId: string }
   | { type: 'recommendation_rejected'; recommendationId: string }
   | { type: 'recommendation_ignored'; recommendationId: string }
+  | { type: 'document_archived'; entryId: number }
+  | { type: 'document_restored'; entryId: number }
   | { type: 'collection_updated'; collectionId: string }
   | { type: 'tag_updated'; tagId: string }
 
