@@ -26,6 +26,8 @@ import {
   type RecommendationDockQueueItem,
 } from '@/lib/repository'
 import { subscribe, emit } from '@/lib/events'
+import { isStale } from '@/lib/localHealthReport'
+import { isHidden } from '@/lib/lifecycleGuards'
 import { isRecommendationPending } from '@/lib/recommendation-i18n'
 import type { RecommendationStatus, RecommendationCandidateType, RecommendationSubjectType } from '@atlax/domain'
 
@@ -260,27 +262,23 @@ export function computeHealthDetails(
   mindEdges: StoredMindEdge[],
   tags: StoredTag[],
 ): DockHealthDetails {
+  const visibleNodes = mindNodes.filter(n => !isHidden(n))
+  const visibleNodeIds = new Set(visibleNodes.map(n => n.id))
+  const visibleEdges = mindEdges.filter(e => visibleNodeIds.has(e.sourceNodeId) && visibleNodeIds.has(e.targetNodeId))
   const connectedNodeIds = new Set<string>()
-  mindEdges.forEach(e => {
+  visibleEdges.forEach(e => {
     connectedNodeIds.add(e.sourceNodeId)
     connectedNodeIds.add(e.targetNodeId)
   })
 
-  const isolatedNodes = mindNodes.filter(n =>
-    !connectedNodeIds.has(n.id) || n.state === 'drifting' || n.state === 'isolated'
+  const isolatedNodes = visibleNodes.filter(n =>
+    !connectedNodeIds.has(n.id) && n.nodeType !== 'root'
   )
 
   const now = Date.now()
-  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000
   const stagnantItems: Array<StoredDraft | StoredTip> = [
-    ...drafts.filter(d => {
-      const updated = d.updatedAt ?? d.createdAt
-      return updated && (now - updated.getTime()) > sevenDaysMs
-    }),
-    ...tips.filter(t => {
-      const updated = t.updatedAt ?? t.createdAt
-      return updated && (now - updated.getTime()) > sevenDaysMs
-    }),
+    ...drafts.filter(d => d.status === 'active' && isStale(d.updatedAt, d.createdAt, now)),
+    ...tips.filter(t => t.status === 'active' && isStale(t.updatedAt, t.createdAt, now)),
   ]
 
   const seenNames = new Map<string, StoredTag>()
@@ -296,8 +294,8 @@ export function computeHealthDetails(
 
   const weaklyClassifiedEntries = entries.filter(e => !e.project || (e.tags && e.tags.length === 0))
 
-  const totalNodes = mindNodes.length
-  const connectedNodes = mindNodes.filter(n => connectedNodeIds.has(n.id)).length
+  const totalNodes = visibleNodes.length
+  const connectedNodes = visibleNodes.filter(n => connectedNodeIds.has(n.id)).length
   const connectedRatio = totalNodes > 0 ? connectedNodes / totalNodes : 0
 
   return {
@@ -320,22 +318,25 @@ function computeSignals(
   tags: StoredTag[],
   pendingRecCount: number,
 ): DockSignal[] {
+  const visibleNodes = mindNodes.filter(n => !isHidden(n))
+  const visibleNodeIds = new Set(visibleNodes.map(n => n.id))
+  const visibleEdges = mindEdges.filter(e => visibleNodeIds.has(e.sourceNodeId) && visibleNodeIds.has(e.targetNodeId))
   const connectedNodeIds = new Set<string>()
-  mindEdges.forEach(e => {
+  visibleEdges.forEach(e => {
     connectedNodeIds.add(e.sourceNodeId)
     connectedNodeIds.add(e.targetNodeId)
   })
-  const isolatedNodes = mindNodes.filter(n => !connectedNodeIds.has(n.id) || n.state === 'drifting' || n.state === 'isolated')
+  const isolatedNodes = visibleNodes.filter(n => !connectedNodeIds.has(n.id) && n.nodeType !== 'root')
   const tagNames = new Set(tags.map(t => t.name.toLowerCase()))
   const duplicateTagCount = tags.length - tagNames.size
   const now = Date.now()
-  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000
-  const stagnantCount = [...drafts, ...tips].filter(item => {
-    const updated = item.updatedAt ?? item.createdAt
-    return updated && (now - updated.getTime()) > sevenDaysMs
-  }).length
-  const totalNodes = mindNodes.length
-  const connectedCount = mindNodes.filter(n => connectedNodeIds.has(n.id)).length
+  const stagnantCount = [
+    ...drafts.filter(d => d.status === 'active'),
+    ...tips.filter(t => t.status === 'active'),
+  ].filter(item => isStale(item.updatedAt, item.createdAt, now)).length
+  const weaklyClassifiedCount = entries.filter(e => !e.project || (!e.tags || e.tags.length === 0)).length
+  const totalNodes = visibleNodes.length
+  const connectedCount = visibleNodes.filter(n => connectedNodeIds.has(n.id)).length
   const healthPct = totalNodes > 0 ? Math.round((connectedCount / totalNodes) * 100) : 0
 
   return [
@@ -344,6 +345,7 @@ function computeSignals(
     { label: '孤立节点', value: isolatedNodes.length, key: 'isolated' },
     { label: '重复主题', value: duplicateTagCount, key: 'duplicates' },
     { label: '停滞内容', value: stagnantCount, key: 'stagnant' },
+    { label: '弱归类', value: weaklyClassifiedCount, key: 'weaklyClassified' },
     { label: '结构健康', value: `${healthPct}%`, key: 'health' },
   ]
 }

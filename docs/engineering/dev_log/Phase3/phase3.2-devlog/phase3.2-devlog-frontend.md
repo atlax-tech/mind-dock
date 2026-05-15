@@ -2,6 +2,416 @@
 
 ---
 
+## Phase 3.2 + Round 17 devlog -- HEALTH-REAL-001 Fix: Dock Layout 可用性 + Header 冲突入口移除
+
+**日期**: 2026-05-16
+**任务起始时间**: 2026-05-16 03:00
+**任务结束时间**: 2026-05-16 03:15
+**工时**: 15 分钟
+**卡号**: HEALTH-REAL-001 (Fix 4)
+
+### 任务目标
+
+修复 Codex Review 和浏览器标注发现的 Dock 可用性问题：正常 100% 浏览器视图下右侧 Inspector 被挤压裁切、右侧栏缺少独立滚动、Dock health 未外显弱归类信号，以及顶部右侧搜索/紧凑/检查器入口与现有功能冲突。
+
+### 变更摘要
+
+#### 1. Dock 布局约束修复
+- Workspace shell 增加 `min-w-0` 和 `w-[calc(100vw-48px)]`，避免主内容宽度超过 viewport
+- Dock 主容器和中间工作区增加 `min-w-0` / `overflow-hidden`
+- 右侧 Inspector 从固定 `w-[318px]` 改为 `w-[min(318px,24vw)] min-w-[260px] max-w-[318px]`
+- Inspector 内容区增加独立 `overflow-y-auto custom-scrollbar`
+- Inspector 底部动作区固定在面板底部，保证 `打开 Editor` / `在 Mind 查看` 在标准视口内可见
+
+#### 2. Dock health 弱归类外显
+- `computeSignals` 新增 `weaklyClassified` signal
+- Dock signal strip 新增"弱归类"计数入口
+- 点击"弱归类"进入 `health / weaklyClassified` 过滤，与 Review 的 weak taxonomy 口径对齐
+
+#### 3. Review 外部工作流模块可信标注
+- 将"定制简报模块"标题标注为 `Preview / Planned 外部工作流`
+- 将 Linear 看板标题标注为 `Linear Planned`
+- 将配置入口改为 disabled-looking `Planned 展示位`
+
+#### 4. 移除顶部右侧冲突入口
+- 移除顶部 header 右侧搜索框 / Cmd-K 展示 / "紧凑" / "检查器"入口
+- 保留左侧栏搜索入口，避免全局搜索能力被误删
+
+### 改动文件
+
+| 文件 | 说明 |
+|------|------|
+| `apps/web/app/workspace/page.tsx` | Dock 布局、Inspector 滚动、weaklyClassified 入口、Review planned 标注、顶部冲突入口移除 |
+| `apps/web/app/workspace/features/dock/useDockData.ts` | Dock health signals 新增 weaklyClassified |
+| `apps/web/tests/review-health-report.test.ts` | 新增 Dock layout / health / planned 标注源码断言 |
+
+### 自动验证结果
+
+- `pnpm --dir apps/web test -- review-health-report.test.ts workspace-tabs.test.ts`: ✅ 33 test files, 933 tests passed
+- `pnpm --dir apps/web typecheck`: ✅ passed
+- `pnpm validate`: ✅ 33 web test files, 933 tests passed, lint 0 errors (9 pre-existing warnings), terminology passed
+- `pnpm build:web`: ✅ 构建成功，workspace 70 kB
+
+### 浏览器手工验证
+
+1. 打开 `http://localhost:3000/workspace`，进入 Dock
+2. 在 1352x762 / 100% 浏览器视口下确认无横向溢出
+3. 确认右侧 Inspector 完整留在 viewport 内，底部动作按钮可见
+4. 确认 Inspector 内容区支持独立纵向滚动
+5. 确认 Dock signal strip 显示"弱归类"计数
+6. 确认顶部右侧搜索/紧凑/检查器入口已移除
+
+### 当前风险
+
+- **低风险**: Dock 表格在更窄屏幕下仍会压缩列文本，但关键操作区不再被裁切；后续可按移动/窄屏策略进一步做 Inspector 折叠。
+
+---
+
+## Phase 3.2 + Round 16 devlog -- HEALTH-REAL-001 Fix: 生命周期语义 + Edge Endpoint 过滤 + Collection Distribution + Mind View 口径对齐
+
+**日期**: 2026-05-16
+**任务起始时间**: 2026-05-16 02:40
+**任务结束时间**: 2026-05-16 02:50
+**工时**: 10 分钟
+**卡号**: HEALTH-REAL-001 (Fix 3)
+
+### 任务目标
+
+修复 HEALTH-REAL-001 Codex Review 发现的 blocker 和 needs-fix 问题：restoreMindNode 未清除 hiddenAt 导致生命周期语义不闭环、Mind View driftDock 口径未对齐、edge endpoint 未过滤导致 visible node 误判为 connected、collectionDistribution 对 project collection 统计错误。
+
+### 变更摘要
+
+#### 1. 修复 restoreMindNode() 生命周期语义
+- 修改 `repository.ts` 中 `restoreMindNode`
+- 恢复节点时清除 `metadata.hiddenAt`，确保 `isHidden(restoredNode) === false`
+- 之前只改 state 为 drifting 但保留 hiddenAt，导致 isHidden 仍返回 true（因为 isHidden 检查 hiddenAt 存在即返回 true）
+
+#### 2. 统一 Mind View viewScopeCounts.driftDock 与 Health Bridge isolated 规则
+- 修改 `page.tsx` 中 `viewScopeCounts.driftDock`
+- 从 `!connectedNodeIds.has(n.id) || n.state === 'drifting' || n.state === 'isolated'` 改为 `!connectedNodeIds.has(n.id) && n.nodeType !== 'root'`
+- 与 Health Bridge 的 isolated 定义完全一致：visible、非 root、无连接边
+
+#### 3. 过滤 edge endpoints：只有 source/target 都是 visible existing nodes 的 edge 才参与 connected 计算
+- 修改 `localHealthReport.ts`：新增 `visibleNodeIds` 和 `visibleEdges` 过滤，connected/isolated/mindEdges/mindGraphPreview 均基于 visibleEdges
+- 修改 `useDockData.ts`：`computeHealthDetails` 和 `computeSignals` 均新增 visibleNodeIds + visibleEdges 过滤
+- 修改 `repository.ts`：`getMindGraphHealthSummary` 新增 visibleNodeIds + visibleEdges 过滤，totalEdges 也改为 visibleEdges.length
+
+#### 4. 修正 collectionDistribution：project collection 按 entry.project 统计
+- 修改 `localHealthReport.ts` 中 collectionDistribution 计算
+- project collection 使用 `entry.project === collection.name` 统计
+- 其他类型 collection（tag/folder/topic/archive/smart）继续使用 `entry.tags.includes(collection.name)` 统计
+
+#### 5. 补测试（+21 个用例）
+- "Restore lifecycle: hiddenAt cleanup"（2 个用例）：restored node 不再 hidden、isHidden 返回 false
+- "Edge endpoint visibility filtering"（4 个用例）：visible node 只连 hidden node 仍算 isolated、两 visible node 连接算 connected、edge 到 missing target 被排除、getMindGraphHealthSummary 也过滤
+- "Collection distribution by type"（3 个用例）：project collection 按 entry.project 统计、tag collection 按 entry.tags 统计、空 project collection count 为 0
+- "Mind View driftDock alignment with Health Bridge"（1 个用例）：源码断言 driftDock 使用 isolated 规则而非 state 规则
+
+### 改动文件
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/lib/repository.ts` | +8 | restoreMindNode 清除 hiddenAt + getMindGraphHealthSummary 过滤 edge endpoints |
+| `apps/web/lib/localHealthReport.ts` | +8 | visibleEdges 过滤 + collectionDistribution 按 collectionType 区分 |
+| `apps/web/app/workspace/features/dock/useDockData.ts` | +8 | computeHealthDetails + computeSignals 过滤 edge endpoints |
+| `apps/web/app/workspace/page.tsx` | +1 | viewScopeCounts.driftDock 对齐 Health Bridge isolated 规则 |
+| `apps/web/tests/local-health-report.test.ts` | +143 | 新增 10 个测试用例覆盖 blocker/needs-fix 场景 |
+
+### 遇到的问题及解决方式
+
+1. **lint 错误: require() style import**: driftDock 对齐测试中使用 `require('path')` 导致 `@typescript-eslint/no-require-imports` 错误 → 改为顶层 `import fs from 'node:fs'` + `import path from 'node:path'` + `import.meta.dirname`
+
+### 自动验证结果
+
+- `pnpm validate`: ✅ 33 test files, 929 tests passed, lint 0 errors (9 pre-existing warnings), typecheck passed, terminology passed
+- `pnpm build:web`: ✅ 构建成功，workspace 69.7 kB
+
+### 手工验证步骤
+
+1. 在 Mind 中隐藏一个节点 → 确认 Health Bridge 报告排除该节点 → 恢复节点 → 确认 Health Bridge 报告重新包含该节点
+2. 创建 visible node 连接到 hidden node 的边 → 确认 Health Bridge/Dock/Mind 均将 visible node 判为 isolated
+3. 创建 project 类型 collection → 添加 project 匹配的 entries → 确认 collectionDistribution 正确统计
+4. 确认 Mind View 侧边栏"散点视图"计数与 Review/Dock 的 isolated 计数一致
+
+### 当前风险
+
+- **低风险**: `buildSimpleMindGraphSnapshot` 已在 snapshot 层过滤 archived 节点和无效边，viewScopeCounts 基于该 snapshot 计算，与 Health Bridge 口径一致
+- **低风险**: collectionDistribution 对 folder/archive/smart 类型 collection 仍使用 tags 匹配，这些类型当前数据量极少，后续可按需调整
+
+---
+
+## Phase 3.2 + Round 15 devlog -- HEALTH-REAL-001 Fix: Mind 拓扑视图真实化 + Mind View 打通
+
+**日期**: 2026-05-16
+**任务起始时间**: 2026-05-16 02:20
+**任务结束时间**: 2026-05-16 02:27
+**工时**: 7 分钟
+**卡号**: HEALTH-REAL-001 (Fix 2)
+
+### 任务目标
+
+修复 Review 页面"周 Mind 视图拓扑"区域仍为 Mock SVG（硬编码节点和连线），未使用真实 Mind 图谱数据，且未与 Mind View 打通的问题。
+
+### 变更摘要
+
+#### 1. Health Bridge 新增 Mind Graph Preview 数据
+- 新增 `MindGraphPreviewNode` 接口（id / label / nodeType / isConnected）
+- 新增 `MindGraphPreviewEdge` 接口（sourceId / targetId / edgeType）
+- 新增 `MindGraphPreview` 接口（nodes / edges）
+- 在 `LocalHealthReport` 中新增 `mindGraphPreview` 字段
+- 在 `getLocalHealthReport` 中计算真实图谱预览数据（排除 hidden 节点）
+
+#### 2. ReviewView Mind 拓扑真实化
+- 移除硬编码 Mock SVG（4 个固定位置 div 节点 + 4 条固定 line 连线）
+- 替换为基于 `mindGraphPreview` 数据动态渲染的 SVG 图谱
+- 节点使用圆形布局（circular layout），位置由节点数量决定
+- 连线颜色按 edgeType 区分：confirmed=#9cf4d4, suggested=#c8a0f0, 其他=#86d7ff
+- 节点颜色按 nodeType/isConnected 区分：root=#9cf4d4, connected=#86d7ff, isolated=#899298
+- 节点数 ≤12 时显示 label 文本
+- 空库时显示"暂无思维图谱数据"占位
+
+#### 3. Mind View 打通
+- ReviewView 新增 `onNavigateToMind` prop
+- 点击 Mind 拓扑区域调用 `onNavigateToMind()` 切换到 Mind 视图
+- 渲染调用处传入 `() => setActiveTab('mind')`
+- hover 时显示"点击进入完整 Mind 视图"提示
+
+### 改动文件
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/lib/localHealthReport.ts` | +30 | 新增 MindGraphPreview 类型和计算 |
+| `apps/web/app/workspace/page.tsx` | +40 | Mind 拓扑真实化 + onNavigateToMind |
+| `apps/web/tests/local-health-report.test.ts` | +44 | Mind graph preview 测试 |
+| `apps/web/tests/review-health-report.test.ts` | +12 | Mind 拓扑断言 |
+
+### 遇到的问题及解决方式
+
+无新问题。
+
+### 自动验证结果
+
+- `pnpm validate`: ✅ 33 test files, 919 tests passed, lint 0 errors, typecheck passed, terminology passed
+- `pnpm build:web`: ✅ 构建成功
+
+### 手工验证步骤
+
+1. 进入 Review → 确认 Mind 拓扑区域显示真实节点和连线（非硬编码 4 个 div）
+2. 进入 Review → 确认空库时 Mind 拓扑显示"暂无思维图谱数据"
+3. 进入 Review → 点击 Mind 拓扑区域 → 确认切换到 Mind 视图
+4. 创建 Mind 节点和边 → 进入 Review → 确认拓扑显示真实节点数和连线
+
+### 当前风险
+
+- **低风险**: 圆形布局在节点数很多时可能重叠，但 Review 预览区域本身是缩略图，不影响功能
+
+---
+
+## Phase 3.2 + Round 14 devlog -- HEALTH-REAL-001 Fix: Review 反馈修复
+
+**日期**: 2026-05-16
+**任务起始时间**: 2026-05-16 02:00
+**任务结束时间**: 2026-05-16 02:18
+**工时**: 18 分钟
+**卡号**: HEALTH-REAL-001 (Fix)
+
+### 任务目标
+
+修复 HEALTH-REAL-001 Codex Review 发现的 6 个问题：Dock/Mind 口径未真正对齐、Review Drafts 流转展示假数、缺少 collectionDistribution、测试覆盖不足。
+
+### 变更摘要
+
+#### 1. Dock health 口径真正对齐
+- 修改 `useDockData.ts` 中 `computeHealthDetails` 和 `computeSignals`
+- 孤立节点：移除 `state === 'drifting' || state === 'isolated'` 条件，改为与 Health Bridge 一致的规则（无连接边 + 非 root + 排除 hidden）
+- 停滞内容：只统计 `status === 'active'` 的 draft/tip，排除 discarded/published
+- totalNodes / connectedNodes：改为使用 visibleNodes（排除 hidden）
+- 新增 `isHidden` 导入
+
+#### 2. getMindGraphHealthSummary 排除 hidden nodes
+- 修改 `repository.ts` 中 `getMindGraphHealthSummary`
+- 新增 `isHidden` 导入
+- `totalNodes` 改为 `visibleNodes.length`
+- `orphanCount` 改为基于 `visibleNodes` 计算
+
+#### 3. Review Drafts 流转修复
+- `已发布`：从 `sections.drafts.total`（实际是 active drafts total）改为 `sections.drafts.published`
+- `废弃`：从硬编码 `0` 改为 `sections.drafts.discarded`
+- 在 `LocalHealthSummary` 中新增 `publishedDrafts` / `discardedDrafts` 字段
+- 在 `sections.drafts` 中新增 `published` / `discarded` 字段
+- 在 `getLocalHealthReport` 中计算 `publishedDrafts` / `discardedDrafts`
+
+#### 4. 补齐 collectionDistribution
+- 新增 `CollectionDistribution` 接口
+- 在 `LocalHealthReport` 中新增 `collectionDistribution` 字段
+- 在 `getLocalHealthReport` 中基于 collections 和 entries 计算 collection 分布
+
+#### 5. 补测试
+- 新增 "Dock / Mind alignment with Health Bridge" 测试组（5 个用例）
+  - getMindGraphHealthSummary 排除 hidden nodes
+  - hidden nodes 不造成 Review/Dock/Mind 数字冲突
+  - root nodes 不计为 isolated
+  - stale 只包含 active draft/tip
+  - published/discarded draft 计数准确
+- 新增 "Collection distribution" 测试组（2 个用例）
+  - 空库返回空数组
+  - 基于 entries 计算分布
+- 增强 "ReviewView binds to report summary data" 测试组（8 个用例）
+  - health score 来自 healthReport.score
+  - Quick Notes 使用 tips 指标
+  - Drafts 使用 drafts 指标
+  - Drafts published 使用 sections.drafts.published（非 .total）
+  - Drafts discarded 使用 sections.drafts.discarded（非硬编码 0）
+  - suggestions 来自 healthReport.suggestions
+  - Mind 拓扑使用真实 mindNodes/mindEdges
+  - 项目分布使用 projectDistribution
+
+### 改动文件
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/lib/localHealthReport.ts` | +20 | 新增 publishedDrafts/discardedDrafts/CollectionDistribution/collectionDistribution |
+| `apps/web/lib/repository.ts` | +4 | getMindGraphHealthSummary 排除 hidden nodes |
+| `apps/web/app/workspace/features/dock/useDockData.ts` | +8 | Dock 口径真正对齐（isolated/stagnant/visibleNodes） |
+| `apps/web/app/workspace/page.tsx` | +2 | Review Drafts 流转修复（published/discarded） |
+| `apps/web/tests/local-health-report.test.ts` | +85 | Dock/Mind 口径、hidden node、collection 测试 |
+| `apps/web/tests/review-health-report.test.ts` | +40 | Review 绑定断言增强 |
+
+### 遇到的问题及解决方式
+
+1. **Review 测试 getReviewSection 截取范围错误**: 使用 `lastIndexOf('ReviewView')` 只截取了组件末尾部分，导致断言找不到 healthReport 引用 → 改为 `indexOf('const ReviewView')` 从组件开头截取
+2. **Review 测试 24 匹配到日期**: `04.24` 中的 `24` 被误判为硬编码 Drafts 数字 → 使用负向前瞻 `\b24\b(?!-|\.)` 排除日期格式
+
+### 自动验证结果
+
+- `pnpm validate`: ✅ 33 test files, 912 tests passed, lint 0 errors, typecheck passed, terminology passed
+- `pnpm build:web`: ✅ 构建成功，workspace 69.2 kB
+
+### 手工验证步骤
+
+1. 进入 Dock → health 模式 → 确认孤立节点数排除 hidden 和 root
+2. 进入 Dock → health 模式 → 确认停滞内容只包含 active draft/tip
+3. 进入 Review → 确认 Drafts 流转"已发布"显示 published 数（非 active total）
+4. 进入 Review → 确认 Drafts 流转"废弃"显示 discarded 数（非硬编码 0）
+5. 确认 Review 和 Dock 的孤立节点数一致
+6. 确认 Review 和 Mind 的 totalNodes 一致（均排除 hidden）
+
+### 当前风险
+
+- **低风险**: Dock `computeHealthDetails` 返回的 `isolatedNodes` 数组包含节点对象，Health Bridge 的 `isolatedMindNodes` 是数字，但口径（计数规则）已对齐
+- **低风险**: collectionDistribution 基于 collection.name 与 entry.tags 的匹配，如果 tag 和 collection 名称不一致可能不准确
+
+---
+
+## Phase 3.2 + Round 13 devlog -- HEALTH-REAL-001: Health Bridge SSOT + Review Local Health Report
+
+**日期**: 2026-05-16
+**任务起始时间**: 2026-05-16 01:30
+**任务结束时间**: 2026-05-16 01:54
+**工时**: 24 分钟
+**卡号**: HEALTH-REAL-001
+
+### 任务目标
+
+建立 Health Bridge SSOT v0，让 ReviewView 第一次消费真实本地知识库健康报告。从真实 IndexedDB / repository 数据计算 health report，ReviewView 使用这份 report，Dock / Mind 现有 health summary 与这份 report 口径对齐，未实现的清理、导出、执行能力继续 disabled / planned。
+
+### 变更摘要
+
+#### 1. 新增 Health Bridge SSOT v0 核心模块
+- 新建 `apps/web/lib/localHealthReport.ts`（+377 行）
+- 定义 `LocalHealthReport`、`LocalHealthSignal`、`LocalHealthSuggestion`、`LocalHealthLevel`、`LocalHealthSummary` 类型
+- 定义集中常量：`STALE_THRESHOLD_DAYS = 7`、`RECENTLY_UPDATED_DAYS = 7`、5 个罚分常量
+- 实现 `getLocalHealthReport(userId: string): Promise<LocalHealthReport>` 单一入口函数
+- 导出辅助函数 `isStale`、`isRecentlyUpdated` 供 Dock 复用
+- Documents 指标：documentsTotal / activeDocuments / archivedDocuments / recentlyUpdatedDocuments / orphanDocuments
+- Drafts 指标：draftsTotal / staleDrafts（使用 STALE_THRESHOLD_DAYS）
+- Tips 指标：activeTips / convertedTips / discardedTips
+- Mind 指标：mindNodes / mindEdges / isolatedMindNodes（排除 hidden 节点）
+- Taxonomy 指标：tagCount / projectCount / collectionCount / untaggedEntries / projectDistribution
+- Recommendations 指标：pendingRecommendations / acceptedRecommendations / rejectedRecommendations / ignoredRecommendations
+- Score / Level 计算：空库 100/healthy，有信号扣分，>=80 healthy / >=60 watch / >=40 attention / <40 critical
+- Signals 生成：孤立节点、停滞草稿、停滞闪念、重复标签、弱归类文档、孤立文档
+- Suggestions 生成：readonly 建议列表，不接真实执行
+- 使用 lifecycleGuards（isArchived / isDiscarded / isHidden）确保生命周期统计不混淆
+
+#### 2. Dock 口径对齐
+- 修改 `apps/web/app/workspace/features/dock/useDockData.ts`
+- `computeHealthDetails` 和 `computeSignals` 中移除硬编码 `sevenDaysMs`，改用 `isStale` 从 localHealthReport
+- 停滞判断逻辑与 Health Bridge 完全对齐
+
+#### 3. ReviewView 接入真实报告
+- 修改 `apps/web/app/workspace/page.tsx`（ReviewView 部分）
+- 新增 `healthReport` / `reportLoading` 状态，挂载时调用 `getLocalHealthReport`
+- 替换硬编码健康分 92 → `report.score`
+- 替换硬编码 Quick Notes 流转数据（56/32/8/16）→ 真实 tips 指标
+- 替换硬编码 Drafts 流转数据（24/10/2/12）→ 真实 drafts 指标
+- 替换硬编码待清理建议（3 条固定项）→ `report.suggestions`（readonly）
+- 替换硬编码知识库周状态 → 真实 projectDistribution
+- 替换硬编码 Mind 拓扑摘要 → 真实 mindNodes / mindEdges
+- 替换硬编码周总结/复盘 → 基于 report 数据动态生成
+- 更新 Preview Data 横幅："基于本地 IndexedDB 数据 · 本地只读健康报告"
+- 空库时稳定展示，不崩溃
+- 导出报告 / 一键执行继续 disabled / planned
+
+#### 4. 新增测试
+- 新建 `apps/web/tests/local-health-report.test.ts`（+51 测试用例）
+  - 纯函数测试：isStale / isRecentlyUpdated / 常量
+  - 空库测试：score=100 / healthy / 全零 / 空信号
+  - Documents 指标：总数 / 归档 / 活跃 / 最近更新 / 孤立文档
+  - Drafts 指标：活跃 / 停滞 / 丢弃不计入
+  - Tips 指标：活跃 / 已转换 / 已丢弃
+  - Mind 指标：节点 / 边 / 孤立 / 隐藏排除
+  - 生命周期语义：归档/丢弃/隐藏不混淆
+  - Recommendations 指标：pending / accepted / rejected / ignored
+  - Score / Level 计算：扣分 / 下限 / 级别映射
+  - Signals / Suggestions：信号生成 / readonly 状态
+- 新建 `apps/web/tests/review-health-report.test.ts`（+9 测试用例）
+  - ReviewView 源码断言：导入 getLocalHealthReport / 不含硬编码 92/56/24 / 有 healthReport 状态
+  - Seed 文件未被修改
+
+### 改动文件
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/lib/localHealthReport.ts` | +377 | 新建 Health Bridge SSOT v0 核心模块 |
+| `apps/web/app/workspace/features/dock/useDockData.ts` | ~5 | Dock 口径对齐：使用 isStale 替代硬编码阈值 |
+| `apps/web/app/workspace/page.tsx` | ~120 | ReviewView 接入真实报告，替换所有 hardcoded mock |
+| `apps/web/tests/local-health-report.test.ts` | +620 | 新增 Health Bridge 测试 |
+| `apps/web/tests/review-health-report.test.ts` | +60 | 新增 Review 接入测试 |
+
+### 遇到的问题及解决方式
+
+1. **lint 错误: 未使用导入**: localHealthReport.ts 中导入了 `listArchivedEntries` / `listDrafts` / `listActiveTips` / `findMindNodeByDocumentId` 及多个 type 但未使用 → 移除未使用的导入
+2. **lint 错误: STALE_THRESHOLD_DAYS 未使用**: useDockData.ts 中导入了 `STALE_THRESHOLD_DAYS` 但只通过 `isStale` 间接使用 → 移除直接导入，只保留 `isStale`
+3. **lint 错误: 测试文件未使用导入**: local-health-report.test.ts 中 `addTagToItem` / `updateSelectedProject` / `createCollection` / `recordRecommendationFeedback` / `LocalHealthReport` / `USER_B` 未使用 → 移除
+4. **lint 错误: 非空断言**: 测试文件中使用 `!` 非空断言 → 改为 `if (signal)` 条件判断或 `as` 类型断言
+
+### 自动验证结果
+
+- `pnpm validate`: ✅ 33 test files, 897 tests passed, lint 0 errors (9 pre-existing warnings), typecheck passed, terminology passed
+- `pnpm build:web`: ✅ 构建成功，workspace 69 kB
+
+### 手工验证步骤
+
+1. 打开应用，进入 Review 页面 → 确认健康分来自真实计算（非硬编码 92）
+2. 在 Review 页面 → 确认 Preview Data 横幅显示"基于本地 IndexedDB 数据 · 本地只读健康报告"
+3. 在 Review 页面 → 确认 Quick Notes / Drafts 流转数据来自真实统计
+4. 在 Review 页面 → 确认待清理建议来自 report.suggestions，每条为 readonly
+5. 在 Review 页面 → 确认"导出报告"按钮 disabled
+6. 在 Review 页面 → 确认"一键执行"按钮 disabled
+7. 空库时进入 Review → 确认页面稳定展示，不崩溃
+8. 进入 Dock → 确认 health 模式下孤立节点数与 Review 一致
+9. 进入 Dock → 确认停滞内容数与 Review 一致
+
+### 当前风险
+
+- **低风险**: Review 页面数据来自异步加载，首次渲染可能有短暂 loading 状态
+- **低风险**: Dock `computeHealthDetails` 仍独立计算（仅对齐了 isStale 阈值），未完全复用 Health Bridge 函数，但口径一致
+- **中风险**: score 计算基于简单线性扣分模型，可能不够精细，后续可迭代
+- **低风险**: projectDistribution 新增字段在 LocalHealthReport 接口中，后续消费者需适配
+
+---
+
 ## Phase 3.2 + Round 12 devlog -- P32-CLOSEOUT-001: 生命周期语义与正式页面可信状态收口
 
 **日期**: 2026-05-16

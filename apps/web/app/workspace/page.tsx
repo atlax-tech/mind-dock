@@ -29,6 +29,7 @@ import { useDockViewModel, type DockViewMode } from './features/dock/useDockView
 import type { StoredDraft } from '@/lib/repository'
 import { emit } from '@/lib/events';
 import { isRecommendationPending, isRecommendationResolved, isSupportedCandidateType, describeRecommendationAction, describeRecommendationReason, describeApplyPreview, formatConfidenceLevel, STATUS_LABELS, CANDIDATE_TYPE_LABELS } from '@/lib/recommendation-i18n';
+import { getLocalHealthReport, type LocalHealthReport } from '@/lib/localHealthReport'
 import {
   Home,
   Brain,
@@ -70,6 +71,7 @@ import {
   Trash2,
   PieChart,
   Clock,
+  Tags,
   Filter,
   Plus,
   Wand2,
@@ -572,7 +574,7 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor, initialFoc
       focusMap: snapshot.nodes.length,
       clusterMap: snapshot.nodes.filter(n => parentTypes.has(n.nodeType)).length,
       linkReview: snapshot.edges.filter(e => e.edgeType === 'suggested').length,
-      driftDock: snapshot.nodes.filter(n => !connectedNodeIds.has(n.id) || n.state === 'drifting' || n.state === 'isolated').length,
+      driftDock: snapshot.nodes.filter(n => !connectedNodeIds.has(n.id) && n.nodeType !== 'root').length,
       timelineSnapshot: snapshot.nodes.filter(n => {
         const ts = n.updatedAt ?? n.createdAt;
         if (ts != null) return now - ts < sevenDaysMs;
@@ -1421,7 +1423,7 @@ const DockView = ({ userId, onOpenEditor, onToast, onFocusMindNode }: {
 
   return (
     <>
-    <div className="flex w-full h-full bg-[#0b0f11] text-[#e6eaed] overflow-hidden">
+    <div className="flex w-full h-full min-w-0 bg-[#0b0f11] text-[#e6eaed] overflow-hidden">
       {/* B. Dock sidebar */}
       <div className="w-[224px] bg-[#0d1215] border-r border-white/[0.07] flex flex-col shrink-0">
         <div className="px-4 py-5">
@@ -1439,11 +1441,11 @@ const DockView = ({ userId, onOpenEditor, onToast, onFocusMindNode }: {
           ] as const).map(item => {
             const isActive = vm.dockMode === item.mode
             return (
-              <div
-                key={item.mode}
-                onClick={() => vm.setDockMode(item.mode)}
-                className={`h-[36px] px-2 rounded-[8px] flex items-center gap-2 cursor-pointer transition-all duration-200 ${isActive ? 'bg-[#86d7ff]/12 border border-[#86d7ff]/30 text-[#86d7ff]' : 'text-[#8d989f] hover:bg-white/5 hover:text-white'}`}
-              >
+	              <div
+	                key={item.mode}
+	                onClick={() => vm.setDockMode(item.mode)}
+	                className={`h-[36px] px-2 rounded-[8px] border flex items-center gap-2 cursor-pointer transition-colors duration-150 ${isActive ? 'bg-[#86d7ff]/12 border-[#86d7ff]/30 text-[#86d7ff]' : 'border-transparent text-[#8d989f] hover:bg-white/5 hover:text-white'}`}
+	              >
                 <item.icon className="w-[14px] h-[14px]" />
                 <span className="text-[12px] font-medium flex-1">{item.label}</span>
                 {'badge' in item && item.badge > 0 && (
@@ -1473,7 +1475,7 @@ const DockView = ({ userId, onOpenEditor, onToast, onFocusMindNode }: {
       </div>
 
       {/* D. Central main workspace */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         
         {/* D1. Local toolbar */}
         <div className="h-[48px] bg-[#0d1215] border-b border-white/[0.07] px-4 flex items-center justify-between shrink-0">
@@ -1730,6 +1732,7 @@ const DockView = ({ userId, onOpenEditor, onToast, onFocusMindNode }: {
             { key: 'isolated', label: '孤立节点', val: String(dockData.signals.find(s => s.key === 'isolated')?.value ?? 0), icon: Network },
             { key: 'duplicates', label: '重复主题', val: String(dockData.signals.find(s => s.key === 'duplicates')?.value ?? 0), icon: Layers },
             { key: 'stagnant', label: '停滞内容', val: String(dockData.signals.find(s => s.key === 'stagnant')?.value ?? 0), icon: Clock },
+            { key: 'weaklyClassified', label: '弱归类', val: String(dockData.signals.find(s => s.key === 'weaklyClassified')?.value ?? 0), icon: Tags },
             { key: 'health', label: '结构健康', val: String(dockData.signals.find(s => s.key === 'health')?.value ?? '—'), icon: Activity }
           ].map(sig => (
             <div
@@ -1741,6 +1744,7 @@ const DockView = ({ userId, onOpenEditor, onToast, onFocusMindNode }: {
                   isolated: () => vm.setDockMode('health', 'isolated'),
                   duplicates: () => vm.setDockMode('health', 'duplicates'),
                   stagnant: () => vm.setDockMode('health', 'stagnant'),
+                  weaklyClassified: () => vm.setDockMode('health', 'weaklyClassified'),
                   health: () => vm.setDockMode('health', 'summary'),
                 }
                 signalActions[sig.key]?.()
@@ -1972,7 +1976,8 @@ const DockView = ({ userId, onOpenEditor, onToast, onFocusMindNode }: {
       </div>
 
       {/* E. Right inspector panel */}
-      <div className="w-[318px] bg-[#0d1215] border-l border-white/[0.07] flex flex-col shrink-0 p-4 relative">
+      <div className="w-[min(318px,24vw)] min-w-[260px] max-w-[318px] bg-[#0d1215] border-l border-white/[0.07] flex flex-col shrink-0 relative overflow-hidden">
+        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 pb-3">
         {/* 1. Header */}
         <div className="mb-5">
           <div className="text-[9px] font-semibold text-[#8d989f] uppercase tracking-wider mb-2">Inspector</div>
@@ -2234,9 +2239,10 @@ const DockView = ({ userId, onOpenEditor, onToast, onFocusMindNode }: {
             </div>
           </div>
         </div>
+        </div>
 
         {/* 6. Bottom actions */}
-        <div className="flex gap-2 mt-4">
+        <div className="flex gap-2 p-3 border-t border-white/[0.07] bg-[#0d1215] shrink-0">
           <button
             onClick={() => {
               if (!selectedEntity) {
@@ -2389,10 +2395,26 @@ const DockView = ({ userId, onOpenEditor, onToast, onFocusMindNode }: {
 // 旧 mock EditorView 已移除，真实 Draft 编辑功能见 features/editor/DraftEditorView.tsx
 
 // 5. 回顾视图 (Review View) - 高密度聚合仪表盘
-// 此处为Mock功能，等待后端接入 — 所有统计数据、周总结、复盘内容均为Mock数据
-const ReviewView = () => {
+// 已接入 LocalHealthReport，核心数据面板展示真实 IndexedDB 数据
+const ReviewView = ({ onNavigateToMind }: { onNavigateToMind?: () => void }) => {
   const [isPeriodDropdownOpen, setIsPeriodDropdownOpen] = useState(false);
   const [periodType, setPeriodType] = useState<'日' | '周' | '月' | '年'>('周');
+  const [healthReport, setHealthReport] = useState<LocalHealthReport | null>(null)
+  const [reportLoading, setReportLoading] = useState(true)
+
+  useEffect(() => {
+    const currentUser = getCurrentUser()
+    if (currentUser) {
+      getLocalHealthReport(currentUser.id).then(report => {
+        setHealthReport(report)
+        setReportLoading(false)
+      }).catch(() => {
+        setReportLoading(false)
+      })
+    } else {
+      setReportLoading(false)
+    }
+  }, [])
 
   const periodOptions: ('日' | '周' | '月' | '年')[] = ['日', '周', '月', '年'];
 
@@ -2411,7 +2433,7 @@ const ReviewView = () => {
       <div className="mb-4 mt-2 flex justify-between items-end">
         <div>
           <h1 className="text-2xl font-semibold mb-1 text-white tracking-tight flex items-center gap-2.5">系统回顾与{periodType}报 <span className="text-[9px] bg-[#c8a0f0]/20 text-[#c8a0f0] px-2 py-0.5 rounded-full border border-[#c8a0f0]/30 font-semibold tracking-wider uppercase">Local Preview</span></h1>
-          <p className="text-[#899298] text-[11px]">周期: 2026.05.01 - 2026.05.07 • 维护您的数字花园健康与项目流转</p>
+          <p className="text-[#899298] text-[11px]">{healthReport ? `生成于 ${new Date(healthReport.generatedAt).toLocaleDateString('zh-CN')} · 基于 ${healthReport.source} 数据` : '加载中...'} • 维护您的数字花园健康与项目流转</p>
         </div>
 
         <div className="flex items-center gap-3">
@@ -2476,7 +2498,8 @@ const ReviewView = () => {
       <div className="bg-[#1c2023]/40 backdrop-blur-[20px] border border-white/5 rounded-[16px] overflow-hidden flex flex-col divide-y divide-white/5 mb-6 shadow-xl">
         <div className="px-4 py-2 bg-[#c8a0f0]/5 border-b border-[#c8a0f0]/10 flex items-center gap-1.5">
           <span className="text-[9px] font-semibold tracking-wider text-[#c8a0f0] uppercase">Preview Data</span>
-          <span className="text-[9px] text-[#899298]">· 以下数据为示例，需接入 Health Bridge 后展示真实数据</span>
+          <span className="text-[9px] text-[#899298]">· 基于本地 IndexedDB 数据 · 本地只读健康报告</span>
+          {reportLoading && <span className="text-[9px] text-[#86d7ff] animate-pulse ml-1">加载中...</span>}
         </div>
 
         {/* Row 1: 文本洞察与状态摘要 */}
@@ -2486,18 +2509,18 @@ const ReviewView = () => {
             <div>
               <h3 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase flex items-center gap-1.5 mb-3"><Activity className="w-3 h-3 text-[#9cf4d4]" /> 核心健康度</h3>
               <div className="flex items-end gap-1.5 mb-4">
-                <span className="text-4xl font-bold text-white leading-none">92</span>
+                <span className="text-4xl font-bold text-white leading-none">{reportLoading ? '--' : (healthReport?.score ?? '--')}</span>
                 <span className="text-xs text-[#899298] mb-1">/100</span>
               </div>
             </div>
             <div className="space-y-2">
               <div className="flex justify-between items-center text-[11px]">
                 <span className="text-[#899298]">陈旧捕获</span>
-                <span className="text-[#ffb4ab]">14 条待清</span>
+                <span className="text-[#ffb4ab]">{healthReport ? `${healthReport.summary.staleDrafts + healthReport.summary.activeTips} 条待清` : '--'}</span>
               </div>
               <div className="flex justify-between items-center text-[11px]">
                 <span className="text-[#899298]">标签冗余</span>
-                <span className="text-[#a8c8ff]">3 组建议合并</span>
+                <span className="text-[#a8c8ff]">{healthReport ? `${healthReport.signals.filter(s => s.type === 'duplicate_tags').length} 组建议合并` : '--'}</span>
               </div>
             </div>
           </div>
@@ -2506,7 +2529,12 @@ const ReviewView = () => {
           <div className="p-4">
             <h3 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase mb-3 flex items-center gap-1.5"><FileText className="w-3 h-3 text-[#86d7ff]" /> 本周总结</h3>
             <p className="text-[11px] text-[#e0e3e6] leading-relaxed text-justify">
-              本周您的知识捕获量较上周提升了 <span className="text-[#9cf4d4] font-medium">15%</span>。在“空间计算”领域的探索逐渐深入，相关笔记数量达到 24 篇。整体系统保持健康，但仍有少量碎片信息停留在收件箱中未被处理。
+              {healthReport ? (
+                <>
+                  知识库共有 <span className="text-[#9cf4d4] font-medium">{healthReport.summary.documentsTotal}</span> 篇文档，<span className="text-[#9cf4d4] font-medium">{healthReport.summary.draftsTotal}</span> 篇草稿，<span className="text-[#9cf4d4] font-medium">{healthReport.summary.activeTips}</span> 条待整理闪念。
+                  {healthReport.signals.length > 0 ? `当前有 ${healthReport.signals.length} 个健康信号需要关注。` : '整体系统保持健康。'}
+                </>
+              ) : reportLoading ? '加载中...' : '暂无数据'}
             </p>
           </div>
 
@@ -2514,9 +2542,14 @@ const ReviewView = () => {
           <div className="p-4">
             <h3 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase mb-3 flex items-center gap-1.5"><Target className="w-3 h-3 text-[#c8a0f0]" /> 本周复盘</h3>
             <ul className="space-y-2.5 text-[11px] text-[#e0e3e6]">
-              <li className="flex items-start gap-1.5"><CheckCircle2 className="w-3 h-3 text-[#9cf4d4] shrink-0 mt-0.5" /> 成功构建了本地优先架构的基础知识图谱。</li>
-              <li className="flex items-start gap-1.5"><AlertCircle className="w-3 h-3 text-[#ffb4ab] shrink-0 mt-0.5" /> 对 React 性能优化的学习缺乏深度，笔记多为搬运。</li>
-              <li className="flex items-start gap-1.5"><Sparkles className="w-3 h-3 text-[#86d7ff] shrink-0 mt-0.5" /> 建议下周重点输出一篇关于 UI 设计令牌的文章。</li>
+              {healthReport && healthReport.signals.length > 0 ? healthReport.signals.map((signal) => (
+                <li key={signal.id} className="flex items-start gap-1.5">
+                  {signal.severity === 'warning' || signal.severity === 'critical' ? <AlertCircle className="w-3 h-3 text-[#ffb4ab] shrink-0 mt-0.5" /> : signal.severity === 'info' ? <Sparkles className="w-3 h-3 text-[#86d7ff] shrink-0 mt-0.5" /> : <CheckCircle2 className="w-3 h-3 text-[#9cf4d4] shrink-0 mt-0.5" />}
+                  {signal.title} — {signal.reason}
+                </li>
+              )) : (
+                <li className="flex items-start gap-1.5"><CheckCircle2 className="w-3 h-3 text-[#9cf4d4] shrink-0 mt-0.5" /> 暂无需要复盘的事项。</li>
+              )}
             </ul>
           </div>
 
@@ -2524,18 +2557,14 @@ const ReviewView = () => {
           <div className="p-4 flex flex-col">
             <h3 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase mb-3 flex items-center gap-1.5"><Database className="w-3 h-3 text-white" /> 知识库周状态</h3>
             <div className="space-y-3 flex-1 justify-center flex flex-col">
-              <div className="flex justify-between items-center text-[11px]">
-                <span className="text-[#e0e3e6] flex items-center gap-1.5"><FolderTree className="w-3 h-3 text-[#86d7ff]" /> Atlax 架构</span>
-                <span className="text-[#9cf4d4]">+12 活跃</span>
-              </div>
-              <div className="flex justify-between items-center text-[11px]">
-                <span className="text-[#e0e3e6] flex items-center gap-1.5"><FolderTree className="w-3 h-3 text-[#9cf4d4]" /> 用户研究</span>
-                <span className="text-[#899298]">稳定</span>
-              </div>
-              <div className="flex justify-between items-center text-[11px]">
-                <span className="text-[#e0e3e6] flex items-center gap-1.5"><FolderTree className="w-3 h-3 text-[#c8a0f0]" /> 设计规范</span>
-                <span className="text-[#9cf4d4]">+3 更新</span>
-              </div>
+              {healthReport && healthReport.projectDistribution.length > 0 ? healthReport.projectDistribution.slice(0, 3).map((proj, i) => (
+                <div key={proj.name} className="flex justify-between items-center text-[11px]">
+                  <span className="text-[#e0e3e6] flex items-center gap-1.5"><FolderTree className={`w-3 h-3 ${i === 0 ? 'text-[#86d7ff]' : i === 1 ? 'text-[#9cf4d4]' : 'text-[#c8a0f0]'}`} /> {proj.name}</span>
+                  <span className="text-[#9cf4d4]">{proj.entryCount} 篇</span>
+                </div>
+              )) : (
+                <div className="text-[11px] text-[#899298] text-center">{healthReport ? '暂无项目' : '--'}</div>
+              )}
             </div>
           </div>
         </div>
@@ -2549,13 +2578,13 @@ const ReviewView = () => {
               <span className="text-[8px] text-[#899298] border border-white/10 px-1.5 py-0.5 rounded uppercase">本周</span>
             </div>
             <div className="flex items-center justify-between mt-2 bg-white/[0.02] rounded-xl p-3 border border-white/5">
-              <div className="flex flex-col items-center w-12"><span className="text-sm font-bold text-white">56</span><span className="text-[9px] text-[#899298] mt-0.5">记录</span></div>
+              <div className="flex flex-col items-center w-12"><span className="text-sm font-bold text-white">{healthReport ? healthReport.summary.activeTips + healthReport.summary.convertedTips + healthReport.summary.discardedTips : '--'}</span><span className="text-[9px] text-[#899298] mt-0.5">记录</span></div>
               <ChevronRight className="w-3.5 h-3.5 text-white/10" />
-              <div className="flex flex-col items-center w-12"><span className="text-sm font-bold text-[#9cf4d4]">32</span><span className="text-[9px] text-[#899298] mt-0.5">落库</span></div>
+              <div className="flex flex-col items-center w-12"><span className="text-sm font-bold text-[#9cf4d4]">{healthReport?.summary.convertedTips ?? '--'}</span><span className="text-[9px] text-[#899298] mt-0.5">落库</span></div>
               <ChevronRight className="w-3.5 h-3.5 text-white/10" />
-              <div className="flex flex-col items-center w-12"><span className="text-sm font-bold text-[#ffb4ab]">8</span><span className="text-[9px] text-[#899298] mt-0.5">丢弃</span></div>
+              <div className="flex flex-col items-center w-12"><span className="text-sm font-bold text-[#ffb4ab]">{healthReport?.summary.discardedTips ?? '--'}</span><span className="text-[9px] text-[#899298] mt-0.5">丢弃</span></div>
               <ChevronRight className="w-3.5 h-3.5 text-white/10" />
-              <div className="flex flex-col items-center w-12"><span className="text-sm font-bold text-[#86d7ff]">16</span><span className="text-[9px] text-[#899298] mt-0.5">未处理</span></div>
+              <div className="flex flex-col items-center w-12"><span className="text-sm font-bold text-[#86d7ff]">{healthReport?.summary.activeTips ?? '--'}</span><span className="text-[9px] text-[#899298] mt-0.5">未处理</span></div>
             </div>
           </div>
 
@@ -2566,13 +2595,13 @@ const ReviewView = () => {
               <span className="text-[8px] text-[#899298] border border-white/10 px-1.5 py-0.5 rounded uppercase">本周</span>
             </div>
             <div className="flex items-center justify-between mt-2 bg-white/[0.02] rounded-xl p-3 border border-white/5">
-              <div className="flex flex-col items-center w-12"><span className="text-sm font-bold text-white">24</span><span className="text-[9px] text-[#899298] mt-0.5">起草</span></div>
+              <div className="flex flex-col items-center w-12"><span className="text-sm font-bold text-white">{healthReport?.summary.draftsTotal ?? '--'}</span><span className="text-[9px] text-[#899298] mt-0.5">起草</span></div>
               <ChevronRight className="w-3.5 h-3.5 text-white/10" />
-              <div className="flex flex-col items-center w-12"><span className="text-sm font-bold text-[#9cf4d4]">10</span><span className="text-[9px] text-[#899298] mt-0.5">已发布</span></div>
+              <div className="flex flex-col items-center w-12"><span className="text-sm font-bold text-[#9cf4d4]">{healthReport?.sections.drafts.published ?? '--'}</span><span className="text-[9px] text-[#899298] mt-0.5">已发布</span></div>
               <ChevronRight className="w-3.5 h-3.5 text-white/10" />
-              <div className="flex flex-col items-center w-12"><span className="text-sm font-bold text-[#ffb4ab]">2</span><span className="text-[9px] text-[#899298] mt-0.5">废弃</span></div>
+              <div className="flex flex-col items-center w-12"><span className="text-sm font-bold text-[#ffb4ab]">{healthReport?.sections.drafts.discarded ?? '--'}</span><span className="text-[9px] text-[#899298] mt-0.5">废弃</span></div>
               <ChevronRight className="w-3.5 h-3.5 text-white/10" />
-              <div className="flex flex-col items-center w-12"><span className="text-sm font-bold text-[#a8c8ff]">12</span><span className="text-[9px] text-[#899298] mt-0.5">搁置中</span></div>
+              <div className="flex flex-col items-center w-12"><span className="text-sm font-bold text-[#a8c8ff]">{healthReport?.summary.staleDrafts ?? '--'}</span><span className="text-[9px] text-[#899298] mt-0.5">搁置中</span></div>
             </div>
           </div>
         </div>
@@ -2582,22 +2611,57 @@ const ReviewView = () => {
           {/* 周 Mind 视图 (占2列) */}
           <div className="lg:col-span-2 p-4 flex flex-col">
             <div className="flex justify-between items-center mb-3">
-              <h3 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase flex items-center gap-1.5"><Network className="w-3 h-3 text-[#86d7ff]" /> 周 Mind 视图拓扑 (新增连接)</h3>
-              <span className="text-[9px] text-[#86d7ff] bg-[#86d7ff]/10 border border-[#86d7ff]/20 px-2 py-0.5 rounded-full">+48 边 / +12 节点</span>
+              <h3 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase flex items-center gap-1.5"><Network className="w-3 h-3 text-[#86d7ff]" /> 周 Mind 视图拓扑</h3>
+              <span className="text-[9px] text-[#86d7ff] bg-[#86d7ff]/10 border border-[#86d7ff]/20 px-2 py-0.5 rounded-full">{healthReport?.summary.mindEdges ?? 0} 边 / {healthReport?.summary.mindNodes ?? 0} 节点</span>
             </div>
-            {/* 缩小版网络图谱渲染区 */}
-            <div className="flex-1 bg-black/20 border border-white/5 rounded-xl relative overflow-hidden flex items-center justify-center min-h-[140px] group cursor-pointer">
+            <div
+              className="flex-1 bg-black/20 border border-white/5 rounded-xl relative overflow-hidden flex items-center justify-center min-h-[140px] group cursor-pointer"
+              onClick={() => onNavigateToMind?.()}
+            >
               <div className="absolute inset-0 opacity-20 transition-opacity group-hover:opacity-40" style={{ backgroundImage: 'radial-gradient(circle at 50% 50%, #86d7ff 1px, transparent 1px)', backgroundSize: '20px 20px' }}></div>
-              <span className="absolute z-20 text-[9px] text-white bg-black/50 px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">点击进入完整 3D 视图</span>
+              <span className="absolute z-20 text-[9px] text-white bg-black/50 px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">点击进入完整 Mind 视图</span>
 
-              {/* Mock 节点连线 */}
-              <svg className="absolute inset-0 w-full h-full opacity-40"><line x1="30%" y1="30%" x2="50%" y2="50%" stroke="#86d7ff" strokeWidth="1.5" /><line x1="50%" y1="50%" x2="40%" y2="70%" stroke="#9cf4d4" strokeWidth="1.5" /><line x1="30%" y1="30%" x2="70%" y2="40%" stroke="white" strokeWidth="0.5" /><line x1="70%" y1="40%" x2="50%" y2="50%" stroke="#c8a0f0" strokeWidth="1" /></svg>
-
-              {/* Mock 节点实体 */}
-              <div className="absolute w-3 h-3 rounded-full bg-[#86d7ff] top-[30%] left-[30%] shadow-[0_0_12px_#86d7ff]"></div>
-              <div className="absolute w-4 h-4 rounded-full bg-[#9cf4d4] top-[50%] left-[50%] shadow-[0_0_15px_#9cf4d4]"></div>
-              <div className="absolute w-2.5 h-2.5 rounded-full bg-[#c8a0f0] top-[70%] left-[40%] shadow-[0_0_10px_#c8a0f0]"></div>
-              <div className="absolute w-2 h-2 rounded-full bg-white top-[40%] left-[70%]"></div>
+              {healthReport && healthReport.mindGraphPreview.nodes.length > 0 ? (
+                <svg className="absolute inset-0 w-full h-full" viewBox="0 0 300 140" preserveAspectRatio="xMidYMid meet">
+                  {healthReport.mindGraphPreview.nodes.map((node, i) => {
+                    const total = healthReport.mindGraphPreview.nodes.length
+                    const angle = (2 * Math.PI * i) / total - Math.PI / 2
+                    const cx = 150 + 55 * Math.cos(angle)
+                    const cy = 70 + 45 * Math.sin(angle)
+                    const nodeIdMap = new Map(healthReport.mindGraphPreview.nodes.map((n, idx) => [n.id, idx]))
+                    return (
+                      <g key={node.id}>
+                        {healthReport.mindGraphPreview.edges
+                          .filter(e => e.sourceId === node.id)
+                          .map(e => {
+                            const targetIdx = nodeIdMap.get(e.targetId)
+                            if (targetIdx === undefined) return null
+                            const targetAngle = (2 * Math.PI * targetIdx) / total - Math.PI / 2
+                            const tx = 150 + 55 * Math.cos(targetAngle)
+                            const ty = 70 + 45 * Math.sin(targetAngle)
+                            const strokeColor = e.edgeType === 'confirmed' ? '#9cf4d4' : e.edgeType === 'suggested' ? '#c8a0f0' : '#86d7ff'
+                            return <line key={`${e.sourceId}-${e.targetId}`} x1={cx} y1={cy} x2={tx} y2={ty} stroke={strokeColor} strokeWidth="1" opacity="0.5" />
+                          })
+                        }
+                        <circle
+                          cx={cx} cy={cy}
+                          r={node.nodeType === 'root' ? 6 : node.isConnected ? 4 : 3}
+                          fill={node.nodeType === 'root' ? '#9cf4d4' : node.isConnected ? '#86d7ff' : '#899298'}
+                          opacity={node.isConnected ? 0.8 : 0.4}
+                        />
+                        {total <= 12 && (
+                          <text x={cx} y={cy - 8} textAnchor="middle" fill="#899298" fontSize="6" fontWeight="500">{node.label.slice(0, 8)}</text>
+                        )}
+                      </g>
+                    )
+                  })}
+                </svg>
+              ) : (
+                <div className="z-10 flex flex-col items-center gap-2">
+                  <Network className="w-6 h-6 text-[#899298] opacity-30" />
+                  <span className="text-[10px] text-[#899298]">暂无思维图谱数据</span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -2605,24 +2669,22 @@ const ReviewView = () => {
           <div className="p-4 flex flex-col">
             <div className="flex justify-between items-center mb-3">
               <h3 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase flex items-center gap-1.5"><Trash2 className="w-3 h-3 text-[#ffb4ab]" /> 待清理建议</h3>
-              <button disabled className="text-[9px] text-[#899298] opacity-50 cursor-not-allowed" title="需要 ReviewService 接入后开放">一键执行 (3)</button>
+              <button disabled className="text-[9px] text-[#899298] opacity-50 cursor-not-allowed" title="需要 ReviewService 接入后开放">一键执行 ({healthReport?.suggestions.length ?? 0})</button>
             </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 space-y-1.5">
-              {[
-                { title: "未命名的截图 2026-04-20", type: "孤立文件", action: "删除" },
-                { title: "React 性能优化", type: "内容高度重合", action: "合并" },
-                { title: "标签: 'design' & 'Design'", type: "大小写重复", action: "合一" },
-              ].map((item, i) => (
-                <div key={i} className="bg-white/[0.02] hover:bg-white/5 border border-white/5 rounded-lg p-2.5 flex justify-between items-center group transition-colors cursor-pointer">
+              {healthReport && healthReport.suggestions.length > 0 ? healthReport.suggestions.map((sug) => (
+                <div key={sug.id} className="bg-white/[0.02] hover:bg-white/5 border border-white/5 rounded-lg p-2.5 flex justify-between items-center group transition-colors cursor-pointer">
                   <div className="overflow-hidden flex-1 pr-2">
-                    <p className="text-[11px] text-white truncate mb-0.5">{item.title}</p>
-                    <p className="text-[9px] text-[#ffb4ab]">{item.type}</p>
+                    <p className="text-[11px] text-white truncate mb-0.5">{sug.title}</p>
+                    <p className="text-[9px] text-[#ffb4ab]">{sug.type}</p>
                   </div>
                   <button disabled className="text-[9px] px-2 py-1 rounded bg-white/5 text-[#899298] opacity-50 cursor-not-allowed">
-                    {item.action}
+                    {sug.action}
                   </button>
                 </div>
-              ))}
+              )) : (
+                <div className="text-[11px] text-[#899298] text-center py-4">暂无清理建议</div>
+              )}
             </div>
           </div>
         </div>
@@ -2636,16 +2698,16 @@ const ReviewView = () => {
         {/* 顶栏标识 */}
         <div className="px-5 py-2.5 bg-[#c8a0f0]/5 flex items-center justify-between border-b border-[#c8a0f0]/10">
           <h2 className="text-[10px] font-bold text-[#c8a0f0] uppercase tracking-widest flex items-center gap-1.5">
-            <Crown className="w-3.5 h-3.5" /> 定制简报模块 (外部工作流接入)
+            <Crown className="w-3.5 h-3.5" /> 定制简报模块 (Preview / Planned 外部工作流)
           </h2>
-          <span className="text-[9px] bg-[#c8a0f0]/20 text-[#c8a0f0] px-2 py-0.5 rounded-full border border-[#c8a0f0]/30 cursor-pointer hover:bg-[#c8a0f0]/30 transition-colors">配置展示位</span>
+          <span className="text-[9px] bg-[#c8a0f0]/20 text-[#c8a0f0] px-2 py-0.5 rounded-full border border-[#c8a0f0]/30 cursor-not-allowed opacity-80" title="Planned connector preview; no external workflow is connected">Planned 展示位</span>
         </div>
 
         {/* 外部业务数据网格 */}
         <div className="grid grid-cols-1 lg:grid-cols-3 divide-y lg:divide-y-0 lg:divide-x divide-[#c8a0f0]/10">
           {/* 周项目进度 */}
           <div className="p-5">
-            <h3 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase mb-4 flex items-center gap-1.5"><PieChart className="w-3 h-3 text-white" /> 周项目追踪</h3>
+            <h3 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase mb-4 flex items-center gap-1.5"><PieChart className="w-3 h-3 text-white" /> 周项目追踪 · Preview</h3>
             <div className="mb-4">
               <div className="flex justify-between items-end mb-1.5">
                 <span className="text-[11px] text-white font-medium">Atlax V2.0 Beta 冲刺</span>
@@ -2664,7 +2726,7 @@ const ReviewView = () => {
 
           {/* 看板流转统计 */}
           <div className="p-5">
-            <h3 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase mb-4 flex items-center gap-1.5"><Kanban className="w-3 h-3 text-white" /> 周项目看板 (Linear)</h3>
+            <h3 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase mb-4 flex items-center gap-1.5"><Kanban className="w-3 h-3 text-white" /> 周项目看板 (Linear Planned)</h3>
             <div className="flex gap-2.5 h-16">
               <div className="flex-1 bg-white/[0.02] border border-white/5 rounded-lg flex flex-col items-center justify-center">
                 <span className="text-xl font-bold text-[#9cf4d4]">12</span>
@@ -2684,7 +2746,7 @@ const ReviewView = () => {
           {/* Todo List 进展 */}
           <div className="p-5">
             <div className="flex justify-between items-center mb-3.5">
-              <h3 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase flex items-center gap-1.5"><CheckSquare className="w-3 h-3 text-white" /> 个人 Todo 进展</h3>
+              <h3 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase flex items-center gap-1.5"><CheckSquare className="w-3 h-3 text-white" /> 个人 Todo 进展 · Preview</h3>
               <span className="text-[9px] text-[#9cf4d4] bg-[#9cf4d4]/10 px-1.5 py-0.5 rounded border border-[#9cf4d4]/20">45/52 完成</span>
             </div>
             <div className="space-y-2.5">
@@ -3175,7 +3237,7 @@ export default function WorkspacePage() {
       </aside>
 
       {/* 顶部栏 & 主内容区 */}
-      <div className="flex-1 ml-[48px] flex flex-col h-screen relative z-10">
+      <div className="flex-1 ml-[48px] min-w-0 w-[calc(100vw-48px)] flex flex-col h-screen relative z-10 overflow-hidden">
         {/* C. Top bar */}
         <header className="flex justify-between items-center px-4 h-[44px] bg-[#0b0f11]/90 border-b border-white/[0.07] shrink-0 sticky top-0 z-40 backdrop-blur-md">
           {activeTab === 'editor' ? (
@@ -3217,34 +3279,13 @@ export default function WorkspacePage() {
                 </span>
               </div>
               
-              {/* Right controls */}
-              <div className="flex items-center gap-3">
-                <div className="relative flex items-center">
-                  <Search className="w-3.5 h-3.5 text-[#8d989f] absolute left-2.5" />
-                  <input 
-                    type="text" 
-                    placeholder="搜索文档、空间、标签或命令..." 
-                    className="w-[360px] h-[32px] bg-[#1c2023]/70 border border-white/[0.07] rounded-[8px] pl-8 pr-8 text-[12px] text-[#e6eaed] placeholder:text-[#8d989f] outline-none focus:border-[#86d7ff]/50 transition-colors"
-                    onClick={() => setIsSearchOpen(true)}
-                    readOnly
-                  />
-                  <div className="absolute right-2 flex gap-0.5">
-                    <span className="px-1 py-0.5 bg-white/10 text-[9px] rounded border border-white/10 text-[#8d989f]">⌘</span>
-                    <span className="px-1 py-0.5 bg-white/10 text-[9px] rounded border border-white/10 text-[#8d989f]">K</span>
-                  </div>
-                </div>
-                
-                <div className="flex items-center bg-[#1c2023]/70 border border-white/[0.07] rounded-[8px] p-0.5 h-[32px]">
-                  <button className="px-2.5 h-full rounded-[6px] bg-white/10 text-white text-[12px] font-medium flex items-center justify-center">紧凑</button>
-                  <button className="px-2.5 h-full rounded-[6px] text-[#8d989f] hover:text-white text-[12px] font-medium transition-colors flex items-center justify-center">检查器</button>
-                </div>
-              </div>
+              <div />
             </>
           )}
         </header>
 
         {/* 动态页面内容区 - 如果是 Dock 视图，彻底移除左右边距，实现无缝铺满 */}
-        <main className={`flex-1 ${activeTab === 'editor' || activeTab === 'dock' || activeTab === 'mind' ? 'overflow-hidden pb-0' : 'overflow-y-auto pb-12 custom-scrollbar'} ${activeTab === 'dock' || activeTab === 'mind' ? 'px-0' : 'px-8'}`}>
+        <main className={`flex-1 min-w-0 ${activeTab === 'editor' || activeTab === 'dock' || activeTab === 'mind' ? 'overflow-hidden pb-0' : 'overflow-y-auto pb-12 custom-scrollbar'} ${activeTab === 'dock' || activeTab === 'mind' ? 'px-0' : 'px-8'}`}>
           {activeTab === 'home' && (
             <>
               <HomeView tips={tipsHook.tips} tipsLoading={tipsHook.loading} onConvertTipToDraft={async (tipId: number) => { const result = await tipsHook.convertTipToDraft(tipId); if (result.draftId) emit({ type: 'tip_converted', tipId, draftId: result.draftId }); return result; }} onDiscardTip={async (tipId: number) => { const result = await tipsHook.discardTip(tipId); emit({ type: 'tip_discarded', tipId }); return result; }} onToast={showToast} intelligence={homeIntelligence.data} intelligenceLoading={homeIntelligence.loading} />
@@ -3255,7 +3296,7 @@ export default function WorkspacePage() {
           {activeTab === 'mind' && <MindView userId={userId} onToast={showToast} onSelectionChange={setIsNodeSelected} initialFocusNodeId={pendingMindFocusNodeId} onFocusNodeConsumed={() => setPendingMindFocusNodeId(null)} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} />}
           {activeTab === 'dock' && <DockView userId={userId} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} onToast={showToast} onFocusMindNode={(nodeId: string) => { setPendingMindFocusNodeId(nodeId); setActiveTab('mind'); }} />}
           {activeTab === 'editor' && <DraftEditorView userId={userId} showSourcePacket={showSourcePacket} showInspector={showInspector} onToggleSourcePacket={() => setShowSourcePacket(v => !v)} onToggleInspector={() => setShowInspector(v => !v)} onToast={showToast} initialDraftId={pendingOpenDraftId} initialEntryId={pendingOpenEntryId} onInitialDraftConsumed={() => setPendingOpenDraftId(null)} onInitialEntryConsumed={() => setPendingOpenEntryId(null)} onActiveDraftMetaChange={setActiveEditorMeta} />}
-          {activeTab === 'review' && <ReviewView />}
+          {activeTab === 'review' && <ReviewView onNavigateToMind={() => setActiveTab('mind')} />}
           {activeTab === 'settings' && <SettingsView />}
         </main>
       </div>

@@ -89,7 +89,7 @@ import type {
   ChatSessionUpdateInput,
 } from '@atlax/domain/ports'
 import { isValidChatSessionInput } from '@atlax/domain/ports'
-import { isArchived, assertNotIrreversible } from './lifecycleGuards'
+import { isArchived, assertNotIrreversible, isHidden } from './lifecycleGuards'
 import {
   createEditorContentPayload,
   normalizeStoredEditorContent,
@@ -1771,9 +1771,14 @@ export async function restoreMindNode(userId: string, id: string): Promise<Persi
   const existing = await mindNodesTable.get(id)
   if (!existing || existing.userId !== userId) return null
   if (existing.state !== 'archived') return toPersistedMindNode(existing)
+  const cleanedMetadata = { ...(existing.metadata as Record<string, unknown> | null) }
+  if (cleanedMetadata != null) {
+    delete cleanedMetadata.hiddenAt
+  }
   await mindNodesTable.update(id, {
     state: 'drifting' as MindNodeState,
     updatedAt: new Date(),
+    metadata: cleanedMetadata,
   })
   return toPersistedMindNode(await mindNodesTable.get(id))
 }
@@ -4235,16 +4240,20 @@ export async function getMindGraphHealthSummary(userId: string): Promise<MindGra
   const nodes = await listMindNodes(userId)
   const edges = await listMindEdges(userId)
 
+  const visibleNodes = nodes.filter(n => !isHidden(n))
+  const visibleNodeIds = new Set(visibleNodes.map(n => n.id))
+  const visibleEdges = edges.filter(e => visibleNodeIds.has(e.sourceNodeId) && visibleNodeIds.has(e.targetNodeId))
+
   const connectedNodeIds = new Set<string>()
-  edges.forEach(e => {
+  visibleEdges.forEach(e => {
     connectedNodeIds.add(e.sourceNodeId)
     connectedNodeIds.add(e.targetNodeId)
   })
-  const orphanCount = nodes.filter(n => !connectedNodeIds.has(n.id) && n.nodeType !== 'root').length
+  const orphanCount = visibleNodes.filter(n => !connectedNodeIds.has(n.id) && n.nodeType !== 'root').length
 
-  const suggestedEdgeCount = edges.filter(e => e.edgeType === 'suggested').length
-  const confirmedEdgeCount = edges.filter(e => e.edgeType === 'confirmed').length
-  const conflictEdgeCount = edges.filter(e => e.edgeType === 'conflict').length
+  const suggestedEdgeCount = visibleEdges.filter(e => e.edgeType === 'suggested').length
+  const confirmedEdgeCount = visibleEdges.filter(e => e.edgeType === 'confirmed').length
+  const conflictEdgeCount = visibleEdges.filter(e => e.edgeType === 'conflict').length
 
   const recommendations = await recommendationsTable
     .where('userId').equals(userId)
@@ -4253,8 +4262,8 @@ export async function getMindGraphHealthSummary(userId: string): Promise<MindGra
   const deferredRecommendationCount = recommendations.filter(r => r.status === 'ignored').length
 
   return {
-    totalNodes: nodes.length,
-    totalEdges: edges.length,
+    totalNodes: visibleNodes.length,
+    totalEdges: visibleEdges.length,
     orphanCount,
     suggestedEdgeCount,
     confirmedEdgeCount,
