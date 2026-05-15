@@ -103,6 +103,8 @@ export default function DraftEditorView({
   const [showPublishChoice, setShowPublishChoice] = useState(false)
   const [showDiscardChoice, setShowDiscardChoice] = useState(false)
   const [discardTargetId, setDiscardTargetId] = useState<number | null>(null)
+  const [showDeleteAllConfirm, setShowDeleteAllConfirm] = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
 
   const {
     title,
@@ -291,7 +293,8 @@ export default function DraftEditorView({
     setDiscarding(draftId)
     setShowDiscardChoice(false)
     try {
-      const ok = await handleDiscardDraft(draftId, discardMode)
+      const opts = discardMode === 'delete_all' ? { confirmed: true } : undefined
+      const ok = await handleDiscardDraft(draftId, discardMode, opts)
       if (ok) {
         if (activeDraftId === draftId) {
           setActiveDraftId(null)
@@ -917,7 +920,7 @@ export default function DraftEditorView({
                   </p>
                 </button>
                 <button
-                  onClick={() => executeDiscard(discardTargetId, 'delete_all')}
+                  onClick={() => { setShowDiscardChoice(false); setShowDeleteAllConfirm(true) }}
                   disabled={discarding === discardTargetId}
                   className="w-full p-3.5 rounded-xl bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 transition-colors text-left disabled:opacity-40"
                 >
@@ -937,6 +940,53 @@ export default function DraftEditorView({
                 className="w-full py-2 rounded-lg bg-white/5 text-[11px] text-[#899298] hover:text-white hover:bg-white/10 transition-colors"
               >
                 取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeleteAllConfirm && discardTargetId != null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-[#0b0f11]/60 backdrop-blur-sm"
+            onClick={() => { setShowDeleteAllConfirm(false); setDeleteConfirmText('') }}
+          />
+          <div className="relative w-[420px] bg-[#1c2023]/90 backdrop-blur-[40px] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
+              <h3 className="text-sm font-medium text-red-400">确认不可逆删除</h3>
+              <button
+                onClick={() => { setShowDeleteAllConfirm(false); setDeleteConfirmText('') }}
+                className="p-1 rounded-md hover:bg-white/10 text-[#899298] hover:text-white transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="px-5 py-3">
+              <p className="text-[11px] text-[#ffb4ab] mb-3">此操作将同时删除草稿和原文档，不可恢复。</p>
+              <p className="text-[11px] text-[#899298] mb-3">请输入 <span className="text-white font-mono font-bold">DELETE</span> 以确认：</p>
+              <input
+                type="text"
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-red-500/50 font-mono"
+                placeholder="输入 DELETE"
+                autoFocus
+              />
+            </div>
+            <div className="px-5 py-3 border-t border-white/[0.07] flex gap-2">
+              <button
+                onClick={() => { setShowDeleteAllConfirm(false); setDeleteConfirmText('') }}
+                className="flex-1 py-2 rounded-lg bg-white/5 text-[11px] text-[#899298] hover:text-white hover:bg-white/10 transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => { executeDiscard(discardTargetId, 'delete_all'); setShowDeleteAllConfirm(false); setDeleteConfirmText('') }}
+                disabled={deleteConfirmText !== 'DELETE' || discarding === discardTargetId}
+                className="flex-1 py-2 rounded-lg bg-red-500/20 text-[11px] text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                确认删除
               </button>
             </div>
           </div>

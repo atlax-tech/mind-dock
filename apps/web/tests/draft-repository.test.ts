@@ -484,7 +484,7 @@ describe('draft repository', () => {
       })
 
       const draft = unwrap(await createDraft(USER_A, '修改后标题', '修改后内容', entryId as number, 'entry'))
-      await discardDraft(USER_A, draft.id, 'delete_all')
+      await discardDraft(USER_A, draft.id, 'delete_all', { confirmed: true })
 
       const entryNode = await findMindNodeByDocumentId(USER_A, entryId as number)
       expect(entryNode).toBeNull()
@@ -542,7 +542,7 @@ describe('draft repository', () => {
       })
 
       const draft = unwrap(await createDraft(USER_A, 'A的修改', 'A的内容', entryId as number, 'entry'))
-      await discardDraft(USER_A, draft.id, 'delete_all')
+      await discardDraft(USER_A, draft.id, 'delete_all', { confirmed: true })
 
       const bEntry = await db.table('entries').get(entryId as number)
       expect(bEntry).not.toBeUndefined()

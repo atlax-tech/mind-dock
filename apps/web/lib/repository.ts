@@ -89,6 +89,7 @@ import type {
   ChatSessionUpdateInput,
 } from '@atlax/domain/ports'
 import { isValidChatSessionInput } from '@atlax/domain/ports'
+import { isArchived, assertNotIrreversible } from './lifecycleGuards'
 import {
   createEditorContentPayload,
   normalizeStoredEditorContent,
@@ -429,6 +430,7 @@ export async function listArchivedEntries(userId: string): Promise<PersistedEntr
   const all = await entriesTable.where('userId').equals(userId).reverse().sortBy('archivedAt')
 
   return all.flatMap((entry) => {
+    if (!isArchived(entry)) return []
     const persistedEntry = toPersistedEntry(entry)
     return persistedEntry ? [persistedEntry] : []
   })
@@ -437,6 +439,7 @@ export async function listArchivedEntries(userId: string): Promise<PersistedEntr
 export async function listArchivedEntriesByType(userId: string, type: string): Promise<PersistedEntry[]> {
   const all = await entriesTable.where('userId').equals(userId).and((e) => e.type === type).reverse().sortBy('archivedAt')
   return all.flatMap((entry) => {
+    if (!isArchived(entry)) return []
     const persistedEntry = toPersistedEntry(entry)
     return persistedEntry ? [persistedEntry] : []
   })
@@ -448,6 +451,7 @@ export async function listArchivedEntriesByTag(userId: string, tag: string): Pro
     e.tags.some((t: string) => normalizeTagName(t).toLowerCase() === normalized)
   ).reverse().sortBy('archivedAt')
   return all.flatMap((entry) => {
+    if (!isArchived(entry)) return []
     const persistedEntry = toPersistedEntry(entry)
     return persistedEntry ? [persistedEntry] : []
   })
@@ -456,6 +460,7 @@ export async function listArchivedEntriesByTag(userId: string, tag: string): Pro
 export async function listArchivedEntriesByProject(userId: string, project: string): Promise<PersistedEntry[]> {
   const all = await entriesTable.where('userId').equals(userId).and((e) => e.project === project).reverse().sortBy('archivedAt')
   return all.flatMap((entry) => {
+    if (!isArchived(entry)) return []
     const persistedEntry = toPersistedEntry(entry)
     return persistedEntry ? [persistedEntry] : []
   })
@@ -2421,9 +2426,13 @@ export async function discardDraft(
   userId: string,
   draftId: number,
   discardMode: DiscardMode = 'abandon_changes',
+  options?: { confirmed?: boolean },
 ): Promise<PersistedEditorDraft | null> {
   const draft = await editorDraftsTable.get(draftId)
   if (!draft || draft.userId !== userId) return null
+  if (discardMode === 'delete_all') {
+    assertNotIrreversible('discardDraft:delete_all', options?.confirmed === true)
+  }
   await editorDraftsTable.update(draftId, {
     status: 'discarded',
     updatedAt: new Date(),

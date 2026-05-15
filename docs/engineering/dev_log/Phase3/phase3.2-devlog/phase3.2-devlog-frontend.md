@@ -2,6 +2,106 @@
 
 ---
 
+## Phase 3.2 + Round 12 devlog -- P32-CLOSEOUT-001: 生命周期语义与正式页面可信状态收口
+
+**日期**: 2026-05-16
+**任务起始时间**: 2026-05-16 00:16
+**任务结束时间**: 2026-05-16 00:45
+**工时**: 29 分钟
+**卡号**: P32-CLOSEOUT-001
+
+### 任务目标
+
+解决两类可信度问题：(1) 生命周期语义混乱——Hidden/Archived/Deleted/Discarded 边界不清，Dock archive/restore 恢复语义不闭环，Draft delete_all 可直接不可逆删除原文档；(2) 正式入口展示假状态——Review 全部硬编码 mock 数据但入口像正式功能，Settings 显示 Cloud/E2EE/Sync 假连接状态。
+
+### 变更摘要
+
+#### 1. 新增 lifecycleGuards.ts 生命周期 guard 工具
+- 新建 `apps/web/lib/lifecycleGuards.ts`（+61 行）
+- 定义 LIFECYCLE_HIDDEN / ARCHIVED / DELETED / DISCARDED 语义常量与 LIFECYCLE_SEMANTICS 描述对象
+- 实现 `isArchived(entry)` — 检查 archivedAt != null
+- 实现 `isDiscarded(draftOrTip)` — 检查 status === 'discarded'
+- 实现 `isHidden(mindNode)` — 检查 state === 'archived' 或 metadata.hiddenAt 存在
+- 实现 `assertNotIrreversible(action, confirmed)` — 危险动作断言
+
+#### 2. 修复 listArchivedEntries 语义闭环
+- 修改 `apps/web/lib/repository.ts`（4 处）
+- `listArchivedEntries` / `listArchivedEntriesByType` / `listArchivedEntriesByTag` / `listArchivedEntriesByProject` 均增加 `isArchived` guard 过滤
+- restore 后 entry 不再出现在 archived list
+
+#### 3. Draft delete_all 二次确认加强
+- 修改 `apps/web/lib/repository.ts` — discardDraft 增加 `options?: { confirmed?: boolean }` 参数，delete_all 模式需 assertNotIrreversible guard 通过
+- 修改 `apps/web/app/workspace/features/editor/useDrafts.ts` — handleDiscard 透传 options
+- 修改 `apps/web/app/workspace/features/editor/DraftEditorView.tsx` — 新增二次确认弹窗，要求输入 "DELETE" 确认短语
+- 修改 `apps/web/tests/draft-repository.test.ts` — 已有 delete_all 测试适配 confirmed 参数
+
+#### 4. ReviewView 可信状态收口
+- 修改 `apps/web/app/workspace/page.tsx`（6 处）
+- 页面标题增加 "Local Preview" 徽章
+- "导出报告"按钮 disabled + title 提示
+- "一键执行"清理按钮 disabled + title 提示
+- 待清理建议单项 action 按钮 disabled
+- 往期报告下拉非首项增加 Preview 标注
+- 核心数据面板顶部增加 "Preview Data" 横幅
+
+#### 5. SettingsView 可信状态收口
+- 修改 `apps/web/app/workspace/page.tsx`（5 处）
+- 页面副标题改为"本地模式 · 数据仅存储在当前设备"
+- 金库路径标注"本地模式 · 路径不可更改"，"更改位置"按钮 disabled
+- 离线优先模式标注"始终启用（本地模式）"，开关不可切换
+- Cloud 同步状态改为 "Planned · 需要 Cloud Service 接入"，移除"断开连接"按钮，改为 Planned 徽章
+- 自托管标注 "Planned · 需要 Connector Service 接入"，改为 Planned 徽章
+
+#### 6. 新增测试
+- 新建 `apps/web/tests/lifecycle-guards.test.ts`（+21 测试用例）
+- 覆盖 isArchived / isDiscarded / isHidden / assertNotIrreversible 纯函数测试
+- 覆盖 listArchivedEntries 语义闭环测试（restore 后不再出现）
+- 覆盖 discardDraft delete_all guard 测试（无 confirmed 抛错）
+
+### 改动文件
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/lib/lifecycleGuards.ts` | +61 | 新建生命周期 guard 工具 |
+| `apps/web/lib/repository.ts` | ~10 | listArchivedEntries 语义修复 + discardDraft guard |
+| `apps/web/app/workspace/features/editor/DraftEditorView.tsx` | ~60 | delete_all 二次确认弹窗 |
+| `apps/web/app/workspace/features/editor/useDrafts.ts` | ~3 | handleDiscard 透传 options |
+| `apps/web/app/workspace/page.tsx` | ~30 | ReviewView + SettingsView 可信状态收口 |
+| `apps/web/tests/lifecycle-guards.test.ts` | +180 | 新增测试 |
+| `apps/web/tests/draft-repository.test.ts` | ~2 | 适配 confirmed 参数 |
+
+### 遇到的问题及解决方式
+
+1. **lint 错误**: lifecycleGuards.ts 导入了 `MindNodeRecord` 但未使用 → 移除未使用的导入
+2. **draft-repository.test.ts 失败**: discardDraft 新增了 guard 后，已有 delete_all 测试需传入 `{ confirmed: true }` → 更新测试调用
+
+### 自动验证结果
+
+- `pnpm validate`: ✅ 31 test files, 837 tests passed, lint 0 errors, typecheck passed, terminology passed
+- `pnpm build:web`: ✅ 构建成功，workspace 67 kB
+
+### 手工验证步骤
+
+1. 打开应用，进入 Review 页面 → 确认标题旁有 "Local Preview" 徽章，核心数据面板顶部有 "Preview Data" 横幅
+2. 在 Review 页面 → 确认"导出报告"按钮 disabled 且 hover 有提示
+3. 在 Review 页面 → 确认"一键执行"按钮 disabled 且 hover 有提示
+4. 在 Review 页面 → 确认待清理建议的 action 按钮 disabled
+5. 进入 Settings 页面 → 确认副标题为"本地模式 · 数据仅存储在当前设备"
+6. 在 Settings 页面 → 确认 Cloud 同步状态为 "Planned · 需要 Cloud Service 接入"，无"断开连接"按钮
+7. 在 Settings 页面 → 确认"更改位置"按钮 disabled
+8. 在 Settings 页面 → 确认离线优先模式开关不可切换
+9. 在 Dock 中归档一个 document → 确认出现在 archived list → 恢复 → 确认不再出现在 archived list
+10. 在 Editor 中对源自文档的 Draft 点击"删除草稿及原文档" → 确认弹出二次确认弹窗 → 输入错误文本 → 确认按钮 disabled → 输入 "DELETE" → 确认按钮可点击
+
+### 当前风险
+
+- **低风险**: Review 页面 Preview 标注是纯 UI 层变更，不影响数据流
+- **低风险**: Settings 页面 Planned 标注是纯 UI 层变更，不影响数据流
+- **中风险**: listArchivedEntries 语义修复可能影响依赖该函数的其他模块（useDailyBrief、useHomeIntelligence、local-assistant），但这些模块查询的是已归档 entries 列表，修复后语义更准确，不应产生副作用
+- **低风险**: discardDraft guard 是新增断言，只影响 delete_all 模式，abandon_changes 模式不受影响
+
+---
+
 ## Phase 3.2 + Round 11 devlog -- DOCK-REAL-003: Dock 逻辑收敛与过滤规则严谨化
 
 **日期**: 2026-05-15

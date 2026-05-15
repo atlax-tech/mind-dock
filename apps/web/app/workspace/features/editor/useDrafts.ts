@@ -94,9 +94,9 @@ export function useDrafts(userId: string) {
     }
   }, [userId])
 
-  const handleDiscard = useCallback(async (draftId: number, discardMode: DiscardMode = 'abandon_changes'): Promise<boolean> => {
+  const handleDiscard = useCallback(async (draftId: number, discardMode: DiscardMode = 'abandon_changes', options?: { confirmed?: boolean }): Promise<boolean> => {
     if (!userId) return false
-    const draft = await discardDraft(userId, draftId, discardMode)
+    const draft = await discardDraft(userId, draftId, discardMode, options)
     if (draft) {
       setDrafts((prev) => prev.filter((d) => d.id !== draftId))
       emit({ type: 'draft_deleted', draftId })

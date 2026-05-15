@@ -2410,7 +2410,7 @@ const ReviewView = () => {
       {/* 头部标题与控制区 */}
       <div className="mb-4 mt-2 flex justify-between items-end">
         <div>
-          <h1 className="text-2xl font-semibold mb-1 text-white tracking-tight">系统回顾与{periodType}报</h1>
+          <h1 className="text-2xl font-semibold mb-1 text-white tracking-tight flex items-center gap-2.5">系统回顾与{periodType}报 <span className="text-[9px] bg-[#c8a0f0]/20 text-[#c8a0f0] px-2 py-0.5 rounded-full border border-[#c8a0f0]/30 font-semibold tracking-wider uppercase">Local Preview</span></h1>
           <p className="text-[#899298] text-[11px]">周期: 2026.05.01 - 2026.05.07 • 维护您的数字花园健康与项目流转</p>
         </div>
 
@@ -2452,6 +2452,7 @@ const ReviewView = () => {
                           className={`w-full text-left px-2 py-1.5 rounded-md text-[11px] transition-colors flex items-center justify-between ${idx === 0 ? 'bg-white/10 text-white' : 'text-[#e0e3e6] hover:bg-white/5 hover:text-white'}`}
                         >
                           <span>{item}</span>
+                          {idx !== 0 && <span className="text-[8px] text-[#c8a0f0] ml-1">Preview</span>}
                           {/* 默认第一项为当前选中项 */}
                           {idx === 0 && <CheckCircle2 className="w-3 h-3 text-[#9cf4d4]" />}
                         </button>
@@ -2463,7 +2464,7 @@ const ReviewView = () => {
             )}
           </div>
 
-          <button className="px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-[10px] text-white hover:bg-white/10 transition-colors flex items-center gap-1.5 shadow-[0_0_10px_rgba(255,255,255,0.05)]">
+          <button disabled className="px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-[10px] text-[#899298] flex items-center gap-1.5 cursor-not-allowed opacity-50" title="需要 Health Bridge / ReviewService 接入后开放">
             <Download className="w-3 h-3" /> 导出报告
           </button>
         </div>
@@ -2473,6 +2474,10 @@ const ReviewView = () => {
           核心数据面板 (Core Data Panel) - 纯线条分割
           ========================================== */}
       <div className="bg-[#1c2023]/40 backdrop-blur-[20px] border border-white/5 rounded-[16px] overflow-hidden flex flex-col divide-y divide-white/5 mb-6 shadow-xl">
+        <div className="px-4 py-2 bg-[#c8a0f0]/5 border-b border-[#c8a0f0]/10 flex items-center gap-1.5">
+          <span className="text-[9px] font-semibold tracking-wider text-[#c8a0f0] uppercase">Preview Data</span>
+          <span className="text-[9px] text-[#899298]">· 以下数据为示例，需接入 Health Bridge 后展示真实数据</span>
+        </div>
 
         {/* Row 1: 文本洞察与状态摘要 */}
         <div className="grid grid-cols-1 lg:grid-cols-4 divide-y lg:divide-y-0 lg:divide-x divide-white/5">
@@ -2600,7 +2605,7 @@ const ReviewView = () => {
           <div className="p-4 flex flex-col">
             <div className="flex justify-between items-center mb-3">
               <h3 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase flex items-center gap-1.5"><Trash2 className="w-3 h-3 text-[#ffb4ab]" /> 待清理建议</h3>
-              <button className="text-[9px] text-[#86d7ff] hover:underline">一键执行 (3)</button>
+              <button disabled className="text-[9px] text-[#899298] opacity-50 cursor-not-allowed" title="需要 ReviewService 接入后开放">一键执行 (3)</button>
             </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 space-y-1.5">
               {[
@@ -2613,7 +2618,7 @@ const ReviewView = () => {
                     <p className="text-[11px] text-white truncate mb-0.5">{item.title}</p>
                     <p className="text-[9px] text-[#ffb4ab]">{item.type}</p>
                   </div>
-                  <button className="text-[9px] px-2 py-1 rounded bg-white/5 text-[#899298] opacity-0 group-hover:opacity-100 hover:bg-white/10 hover:text-white transition-all">
+                  <button disabled className="text-[9px] px-2 py-1 rounded bg-white/5 text-[#899298] opacity-50 cursor-not-allowed">
                     {item.action}
                   </button>
                 </div>
@@ -2709,7 +2714,7 @@ const SettingsView = () => (
   <div className="max-w-[600px] mx-auto animate-in fade-in duration-500">
     <div className="mb-6 mt-2">
       <h1 className="text-3xl font-semibold mb-2 text-white tracking-tight">系统设置</h1>
-      <p className="text-[#899298] text-sm">配置您的本地金库与同步偏好。</p>
+      <p className="text-[#899298] text-sm">本地模式 · 数据仅存储在当前设备</p>
     </div>
 
     <div className="space-y-4">
@@ -2721,6 +2726,7 @@ const SettingsView = () => (
         <div className="space-y-5">
           <div>
             <label className="text-xs text-[#899298] block mb-1.5">金库路径</label>
+            <p className="text-[9px] text-[#899298] mt-0.5">本地模式 · 路径不可更改</p>
             <div className="flex gap-2">
               <input
                 type="text"
@@ -2728,15 +2734,15 @@ const SettingsView = () => (
                 value="/Users/Admin/Documents/MindDock_Vault"
                 className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-[#e0e3e6] focus:outline-none focus:border-[#86d7ff]/50"
               />
-              <button className="px-3 py-1.5 bg-white/10 text-white rounded-lg text-xs hover:bg-white/20 transition-colors">更改位置</button>
+              <button disabled className="px-3 py-1.5 bg-white/5 text-[#899298] rounded-lg text-xs cursor-not-allowed opacity-50">更改位置</button>
             </div>
           </div>
           <div className="flex items-center justify-between pt-1">
             <div>
               <p className="text-white text-xs font-medium">离线优先模式</p>
-              <p className="text-[#899298] text-[10px] mt-0.5">所有数据首先保存在本地设备上，确保断网可用。</p>
+              <p className="text-[#899298] text-[10px] mt-0.5">始终启用（本地模式）· 所有数据保存在本地设备上</p>
             </div>
-            <div className="w-8 h-5 bg-[#86d7ff] rounded-full relative cursor-pointer shadow-[0_0_10px_rgba(134,215,255,0.3)]">
+            <div className="w-8 h-5 bg-[#86d7ff] rounded-full relative opacity-70 cursor-not-allowed shadow-[0_0_10px_rgba(134,215,255,0.3)]">
               <div className="absolute top-0.5 right-0.5 w-4 h-4 bg-[#0b0f11] rounded-full"></div>
             </div>
           </div>
@@ -2748,29 +2754,29 @@ const SettingsView = () => (
           <Cloud className="w-4 h-4 text-[#86d7ff]" /> 同步提供商
         </h2>
         <div className="space-y-3">
-          <div className="flex items-center justify-between p-3 border border-[#86d7ff]/30 bg-[#86d7ff]/5 rounded-xl">
+          <div className="flex items-center justify-between p-3 border border-white/10 bg-white/[0.02] rounded-xl">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 bg-white/10 rounded-full flex items-center justify-center">
                 <Cloud className="w-4 h-4 text-[#86d7ff]" />
               </div>
               <div>
                 <p className="text-white text-xs font-medium">Atlax Cloud 同步 (E2EE)</p>
-                <p className="text-[#86d7ff] text-[10px] mt-0.5">已连接并实时同步中</p>
+                <p className="text-[#899298] text-[10px] mt-0.5">Planned · 需要 Cloud Service 接入</p>
               </div>
             </div>
-            <button className="text-xs text-[#899298] hover:text-white">断开连接</button>
+            <span className="text-[9px] bg-[#c8a0f0]/20 text-[#c8a0f0] px-2 py-0.5 rounded-full border border-[#c8a0f0]/30 font-semibold tracking-wider uppercase">Planned</span>
           </div>
-          <div className="flex items-center justify-between p-3 border border-white/10 rounded-xl hover:bg-white/5 cursor-pointer transition-colors">
+          <div className="flex items-center justify-between p-3 border border-white/10 rounded-xl opacity-50 cursor-not-allowed">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 bg-white/5 rounded-full flex items-center justify-center">
                 <HardDrive className="w-4 h-4 text-[#899298]" />
               </div>
               <div>
                 <p className="text-white text-xs font-medium">自托管 (WebDAV / S3)</p>
-                <p className="text-[#899298] text-[10px] mt-0.5">连接到您自己的服务器</p>
+                <p className="text-[#899298] text-[10px] mt-0.5">Planned · 需要 Connector Service 接入</p>
               </div>
             </div>
-            <span className="text-[#899298] text-xs">→</span>
+            <span className="text-[9px] bg-[#c8a0f0]/20 text-[#c8a0f0] px-2 py-0.5 rounded-full border border-[#c8a0f0]/30 font-semibold tracking-wider uppercase">Planned</span>
           </div>
         </div>
       </GlassPanel>
