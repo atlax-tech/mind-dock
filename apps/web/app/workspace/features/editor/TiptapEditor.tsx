@@ -41,6 +41,7 @@ import {
   Terminal,
   FileText,
 } from 'lucide-react'
+import { PasteNormalizer } from './PasteNormalizer'
 import {
   createEditorContentPayload,
   createEmptyTiptapDoc,
@@ -443,6 +444,7 @@ export function TiptapEditor({
     }),
     SlashCommand,
     Callout,
+    PasteNormalizer,
   ], [placeholder])
 
   const editor = useEditor({

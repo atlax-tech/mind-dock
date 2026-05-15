@@ -1315,3 +1315,55 @@ pnpm build:web: ✅ PASS
 ✅ 是
 
 ---
+---
+
+## Phase 3.2 + Round 10 devlog -- Atlax Editor Paste Optimization (Normalizer)
+
+**日期**: 2026-05-15
+**任务起始时间**: 2026-05-15 09:10
+**任务结束时间**: 2026-05-15 09:30
+**工时**: 20 分钟
+**任务类型**: 编辑器粘贴体验优化
+**卡号**: EDITOR-PASTE-001
+
+### 任务目标
+
+优化 Atlax Editor 的粘贴体验，实现从外部（网页、ChatGPT、Notion、Markdown 文件等）复制内容粘贴到 Editor 时，系统能自动将内容结构化并拆分为多个 TipTap blocks（标题、列表、引用、代码块、段落等），避免整块塞入一个 paragraph。
+
+### 变更摘要
+
+#### 1. 新增 PasteNormalizer 模块
+- **文件**: `apps/web/app/workspace/features/editor/PasteNormalizer.ts`
+- **核心逻辑**:
+  - `normalizeHtmlPaste(html)`: 基于 `DOMParser` 的 HTML 清洗，保留语义标签（h1-h3, p, ul/ol/li, blockquote, pre/code, hr, strong/em, a, br），彻底移除 style、class 等外部视觉污染。
+  - `looksLikeMarkdown(text)`: 启发式识别 Markdown 格式。
+  - `parseMarkdownPaste(text)`: 轻量级 Markdown 转 HTML 转换器，支持标题、列表、引用、代码块、分割线。
+  - `splitPlainTextToBlocks(text)`: 针对普通纯文本的段落拆分逻辑（支持双换行或短行拆分）。
+  - `handleEditorPaste(event, editor)`: 粘贴事件分发入口，实现 `text/html` > `Markdown` > `PlainText` 的处理优先级。
+
+#### 2. TipTap Extension 集成
+- 将粘贴逻辑封装为 TipTap `Extension` 和 ProseMirror `Plugin`。
+- 通过 `addProseMirrorPlugins` 钩入 `handlePaste`。
+- **插入行为**:
+  - 使用 `editor.chain().insertContent()` 保证单步撤销（Undo）。
+  - 支持智能替换空 block（若粘贴位置是空的 paragraph，则替换该 block，避免留下多余空行）。
+  - 粘贴后自动 focus 并将光标置于末尾。
+
+### 变更文件
+
+| 文件 | 变更行数 | 说明 |
+|---|---|---|
+| `apps/web/app/workspace/features/editor/PasteNormalizer.ts` | +293 | 新增：独立粘贴处理模块、HTML 清洗、MD 解析、PT 拆分、TipTap 扩展 |
+| `apps/web/app/workspace/features/editor/TiptapEditor.tsx` | +10 | 修改：集成 `PasteNormalizer` 扩展 |
+
+### 验证结果
+
+- **HTML 粘贴**: 从网页复制带样式的标题和列表，粘贴后保留结构但样式自动适配 Atlax Editor 系统。
+- **Markdown 粘贴**: 复制 `# Title` 或 `- item`，自动转换为 Heading 或 List block。
+- **纯文本粘贴**: 包含空行的多段文本被正确拆分为多个 paragraph blocks。
+- **空行替换**: 在空行粘贴，不会在内容上方残留空行。
+- **稳定性**: 不报错，对异常 HTML 有 fallback；一次 Undo 可撤销全量粘贴内容。
+
+### Ready for Codex Review
+
+✅ 是
