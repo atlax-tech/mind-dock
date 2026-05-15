@@ -8,6 +8,7 @@ import QuickCapture from './features/tips/QuickCapture';
 import TipsPanel from './features/tips/TipsPanel';
 import { useHomeIntelligence, type HomeIntelligenceData } from './features/home/useHomeIntelligence';
 import { useDailyBrief, type DailyBriefData } from './features/home/useDailyBrief';
+import { useSpotlightSearch, type SpotlightSearchResult } from './features/home/useSpotlightSearch';
 import { useMindGraph } from './features/mind/useMindGraph';
 import { useMindGraphInteraction } from './features/mind/useMindGraphInteraction';
 import { buildSimpleMindGraphSnapshot } from './features/mind/mindSnapshotBuilder';
@@ -49,7 +50,6 @@ import {
   Activity,
   HardDrive,
   Calendar,
-  TerminalSquare,
   Sparkles,
   X,
   Bot,
@@ -148,9 +148,14 @@ interface HomeViewProps {
   onToast?: (msg: string) => void
   intelligence: HomeIntelligenceData
   intelligenceLoading: boolean
+  onOpenDraft?: (draftId?: number) => void
+  onOpenEntry?: (entryId?: number) => void
+  onOpenDock?: () => void
+  onOpenReview?: () => void
+  onOpenBriefing?: () => void
 }
 
-const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToast, intelligence, intelligenceLoading }: HomeViewProps) => {
+const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToast, intelligence, intelligenceLoading, onOpenDraft, onOpenEntry, onOpenDock, onOpenReview, onOpenBriefing }: HomeViewProps) => {
   const activeSessionCount = intelligence.mindNodeCount + intelligence.activeDraftCount + intelligence.activeTipCount
   return (
     <div className="max-w-[1400px] mx-auto animate-in fade-in duration-500">
@@ -177,7 +182,7 @@ const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToas
                 <Brain className="w-4 h-4 text-[#86d7ff]" />
                 <h2 className="text-base font-medium text-white">活跃思维</h2>
               </div>
-              <button className="px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[10px] font-semibold tracking-wider text-white hover:bg-white/10 transition-colors uppercase">
+              <button onClick={onOpenDock} className="px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[10px] font-semibold tracking-wider text-white hover:bg-white/10 transition-colors uppercase">
                 新会话
               </button>
             </div>
@@ -192,28 +197,34 @@ const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToas
               ) : (
                 <>
                   {intelligence.recentDrafts.slice(0, 2).map((draft) => (
-                    <GlassCard key={`draft-${draft.id}`} className="p-4 relative overflow-hidden group">
+                    <div key={`draft-${draft.id}`} className="cursor-pointer" onClick={() => onOpenDraft?.(draft.id)}>
+                    <GlassCard className="p-4 relative overflow-hidden group">
                       <div className="absolute top-3 right-3 w-1 h-1 rounded-full bg-[#9cf4d4] shadow-[0_0_6px_#9cf4d4]"></div>
                       <h3 className="text-sm text-white font-medium mb-1.5 group-hover:text-[#9cf4d4] transition-colors truncate">{draft.title || '无标题草稿'}</h3>
                       <p className="text-xs text-[#899298] mb-3 leading-relaxed truncate">{draft.content?.slice(0, 60) || '空内容'}</p>
                       <Pill text="草稿" type="active" />
                     </GlassCard>
+                    </div>
                   ))}
                   {intelligence.recentTips.slice(0, 2).map((tip) => (
-                    <GlassCard key={`tip-${tip.id}`} className="p-4 relative overflow-hidden group">
+                    <div key={`tip-${tip.id}`} className="cursor-pointer" onClick={() => onOpenDock?.()}>
+                    <GlassCard className="p-4 relative overflow-hidden group">
                       <div className="absolute top-3 right-3 w-1 h-1 rounded-full bg-[#86d7ff] shadow-[0_0_6px_#86d7ff]"></div>
                       <h3 className="text-sm text-white font-medium mb-1.5 group-hover:text-[#86d7ff] transition-colors truncate">{tip.content.slice(0, 40)}</h3>
                       <p className="text-xs text-[#899298] mb-3 leading-relaxed truncate">{tip.sourceType === 'quick-capture' ? 'Quick Capture' : '手动输入'}</p>
                       <Pill text="Tip" type="design" />
                     </GlassCard>
+                    </div>
                   ))}
                   {intelligence.recentDocuments.slice(0, 2).map((doc) => (
-                    <GlassCard key={`doc-${doc.id}`} className="p-4 relative overflow-hidden group">
+                    <div key={`doc-${doc.id}`} className="cursor-pointer" onClick={() => onOpenEntry?.(doc.id)}>
+                    <GlassCard className="p-4 relative overflow-hidden group">
                       <div className="absolute top-3 right-3 w-1 h-1 rounded-full bg-[#c8a0f0] shadow-[0_0_6px_#c8a0f0]"></div>
                       <h3 className="text-sm text-white font-medium mb-1.5 group-hover:text-[#c8a0f0] transition-colors truncate">{doc.title}</h3>
                       <p className="text-xs text-[#899298] mb-3 leading-relaxed truncate">{doc.type || '文档'}</p>
                       <Pill text="文档" type="research" />
                     </GlassCard>
+                    </div>
                   ))}
                 </>
               )}
@@ -241,7 +252,7 @@ const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToas
                 </div>
               ) : (
                 intelligence.recentDrafts.slice(0, 3).map((draft) => (
-                  <div key={draft.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 transition-colors cursor-pointer group">
+                  <div key={draft.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 transition-colors cursor-pointer group" onClick={() => onOpenDraft?.(draft.id)}>
                     <div className="w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-[#899298] group-hover:text-[#86d7ff] group-hover:border-[#86d7ff]/30 transition-all">
                       <FileText className="w-3.5 h-3.5" />
                     </div>
@@ -300,18 +311,18 @@ const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToas
               )}
             </div>
 
-            <button className="w-full py-2 rounded-full bg-white/5 border border-white/10 text-[10px] font-semibold tracking-wider text-white hover:bg-white/10 transition-colors uppercase">
+            <button onClick={onOpenBriefing} className="w-full py-2 rounded-full bg-white/5 border border-white/10 text-[10px] font-semibold tracking-wider text-white hover:bg-white/10 transition-colors uppercase">
               打开每日简报
             </button>
           </GlassPanel>
 
           {/* 每周回顾提醒 */}
-          <GlassPanel className="p-5 cursor-pointer group">
+          <GlassPanel className="p-5 cursor-pointer group" onClick={onOpenReview}>
             <div className="flex justify-between items-center">
               <div>
-                <p className="text-[9px] font-semibold tracking-wider text-[#899298] uppercase mb-1">回顾提醒</p>
-                <h3 className="text-base font-medium text-white mb-0.5 group-hover:text-[#86d7ff] transition-colors">每周回顾</h3>
-                <p className="text-[11px] text-[#899298]">当您想要闭环时，您的每周回顾已就绪。</p>
+                <p className="text-[9px] font-semibold tracking-wider text-[#899298] uppercase mb-1">健康报告</p>
+                <h3 className="text-base font-medium text-white mb-0.5 group-hover:text-[#86d7ff] transition-colors">健康报告</h3>
+                <p className="text-[11px] text-[#899298]">查看工作区健康度与维护建议。</p>
               </div>
               <div className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center group-hover:bg-[#86d7ff]/20 transition-colors">
                 <span className="text-white text-sm leading-none group-hover:text-[#86d7ff] transition-colors">→</span>
@@ -320,7 +331,7 @@ const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToas
           </GlassPanel>
 
           {/* 待处理数据包 */}
-          <GlassPanel className="p-5">
+          <GlassPanel className="p-5 cursor-pointer group" onClick={onOpenDock}>
             <div className="flex justify-between items-center mb-1.5">
               <div className="flex items-center gap-2">
                 <Archive className="w-4 h-4 text-white" />
@@ -2787,17 +2798,18 @@ const SettingsView = () => (
 
         <div className="space-y-5">
           <div>
-            <label className="text-xs text-[#899298] block mb-1.5">金库路径</label>
-            <p className="text-[9px] text-[#899298] mt-0.5">本地模式 · 路径不可更改</p>
+            <label className="text-xs text-[#899298] block mb-1.5">存储模式</label>
+            <p className="text-[9px] text-[#899298] mt-0.5">当前数据保存在浏览器本地 IndexedDB</p>
             <div className="flex gap-2">
               <input
                 type="text"
                 readOnly
-                value="/Users/Admin/Documents/MindDock_Vault"
+                value="Browser Local Storage Mode"
                 className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-[#e0e3e6] focus:outline-none focus:border-[#86d7ff]/50"
               />
-              <button disabled className="px-3 py-1.5 bg-white/5 text-[#899298] rounded-lg text-xs cursor-not-allowed opacity-50">更改位置</button>
+              <button disabled className="px-3 py-1.5 bg-white/5 text-[#899298] rounded-lg text-xs cursor-not-allowed opacity-50" title="Desktop 打包后再开放真实本地金库路径">更改位置</button>
             </div>
+            <p className="text-[9px] text-[#899298]/60 mt-1.5">Desktop 打包后再开放真实本地金库路径</p>
           </div>
           <div className="flex items-center justify-between pt-1">
             <div>
@@ -2848,7 +2860,7 @@ const SettingsView = () => (
 
 // 7. 每日简报视图 (Daily Briefing View)
 // 真实数据接入：使用 useDailyBrief hook 聚合本地数据
-const DailyBriefingView = ({ brief, briefLoading }: { brief: DailyBriefData; briefLoading: boolean }) => {
+const DailyBriefingView = ({ brief, briefLoading, onOpenDraft, onOpenEntry, onOpenDock, onOpenMind, onOpenReview }: { brief: DailyBriefData; briefLoading: boolean; onOpenDraft?: (draftId?: number) => void; onOpenEntry?: (entryId?: number) => void; onOpenDock?: () => void; onOpenMind?: () => void; onOpenReview?: () => void }) => {
   const currentDate = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
   return (
     <div className="max-w-[1200px] mx-auto animate-in fade-in duration-500 pb-12">
@@ -2875,7 +2887,7 @@ const DailyBriefingView = ({ brief, briefLoading }: { brief: DailyBriefData; bri
               <h2 className="text-xl font-bold text-white tracking-tight uppercase">今日概览</h2>
             </div>
 
-            <div className="aspect-[21/9] border border-white/5 bg-[#1c2023]/40 rounded-sm relative overflow-hidden flex items-center justify-center group mb-5">
+            <div className="aspect-[21/9] border border-white/5 bg-[#1c2023]/40 rounded-sm relative overflow-hidden flex items-center justify-center group mb-5 cursor-pointer hover:border-[#86d7ff]/30 transition-colors" onClick={onOpenMind}>
               <div className="absolute inset-0 opacity-20" style={{ backgroundImage: 'radial-gradient(circle at 50% 50%, #86d7ff 1px, transparent 1px)', backgroundSize: '30px 30px' }}></div>
               <div className="absolute w-40 h-40 border border-[#86d7ff]/20 rounded-full animate-[spin_60s_linear_infinite]"></div>
               <div className="absolute w-60 h-60 border border-white/5 rounded-full animate-[spin_90s_linear_infinite_reverse]"></div>
@@ -2919,7 +2931,7 @@ const DailyBriefingView = ({ brief, briefLoading }: { brief: DailyBriefData; bri
               ) : (
                 <ul className="space-y-3">
                   {brief.recentTips.slice(0, 4).map((tip) => (
-                    <li key={tip.id} className="flex items-start gap-3">
+                    <li key={tip.id} className="flex items-start gap-3 cursor-pointer hover:bg-white/5 rounded-lg p-1 -m-1 transition-colors" onClick={() => onOpenDock?.()}>
                       <CheckCircle2 className="w-4 h-4 text-[#9cf4d4] shrink-0 mt-0.5" />
                       <div>
                         <span className="text-sm text-[#e0e3e6] leading-relaxed">{tip.content.slice(0, 80)}</span>
@@ -2945,7 +2957,7 @@ const DailyBriefingView = ({ brief, briefLoading }: { brief: DailyBriefData; bri
               ) : (
                 <div className="space-y-4">
                   {brief.recentDrafts.slice(0, 3).map((draft) => (
-                    <div key={draft.id} className="group cursor-pointer">
+                    <div key={draft.id} className="group cursor-pointer" onClick={() => onOpenDraft?.(draft.id)}>
                       <h4 className="text-sm font-semibold text-white group-hover:text-[#86d7ff] transition-colors mb-1">{draft.title || '无标题草稿'}</h4>
                       <p className="text-xs text-[#899298] leading-relaxed">
                         {draft.content ? `${draft.content.slice(0, 60)}...` : '空内容'} • {formatRelativeTime(draft.updatedAt)}
@@ -2974,7 +2986,7 @@ const DailyBriefingView = ({ brief, briefLoading }: { brief: DailyBriefData; bri
             ) : (
               <div className="space-y-3">
                 {brief.recentDocuments.slice(0, 5).map((doc) => (
-                  <div key={doc.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 transition-colors cursor-pointer group">
+                  <div key={doc.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 transition-colors cursor-pointer group" onClick={() => onOpenEntry?.(doc.id)}>
                     <div className="w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-[#899298] group-hover:text-[#86d7ff] group-hover:border-[#86d7ff]/30 transition-all">
                       <FileText className="w-3.5 h-3.5" />
                     </div>
@@ -3034,7 +3046,16 @@ const DailyBriefingView = ({ brief, briefLoading }: { brief: DailyBriefData; bri
             ) : (
               <div className="divide-y divide-white/5">
                 {brief.briefHints.map((hint, i) => (
-                  <div key={i} className="py-2.5 flex justify-between items-center group">
+                  <div key={i} className="py-2.5 flex justify-between items-center group cursor-pointer hover:bg-white/5 rounded-lg px-2 -mx-2 transition-colors" onClick={() => {
+                    switch (hint.type) {
+                      case 'tip_pressure': onOpenDock?.(); break;
+                      case 'draft_pressure': onOpenDraft?.(); break;
+                      case 'document_empty': onOpenEntry?.(); break;
+                      case 'mind_empty': onOpenMind?.(); break;
+                      case 'collection_active':
+                      case 'tag_suggestion': onOpenReview?.(); break;
+                    }
+                  }}>
                     <span className={`text-xs ${hint.priority === 'high' ? 'text-[#e0e3e6]' : 'text-[#899298]'} group-hover:text-white transition-colors`}>{hint.label}</span>
                     <span className={`text-[10px] font-mono ${hint.priority === 'high' ? 'text-[#ffb4ab]' : hint.priority === 'medium' ? 'text-[#86d7ff]' : 'text-[#899298]'}`}>{hint.detail}</span>
                   </div>
@@ -3146,6 +3167,7 @@ export default function WorkspacePage() {
   // 聚焦搜索相关状态
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const spotlightSearch = useSpotlightSearch(userId, searchQuery);
 
   const navItems = [
     { id: 'home', icon: Home, label: '主页' },
@@ -3288,10 +3310,10 @@ export default function WorkspacePage() {
         <main className={`flex-1 min-w-0 ${activeTab === 'editor' || activeTab === 'dock' || activeTab === 'mind' ? 'overflow-hidden pb-0' : 'overflow-y-auto pb-12 custom-scrollbar'} ${activeTab === 'dock' || activeTab === 'mind' ? 'px-0' : 'px-8'}`}>
           {activeTab === 'home' && (
             <>
-              <HomeView tips={tipsHook.tips} tipsLoading={tipsHook.loading} onConvertTipToDraft={async (tipId: number) => { const result = await tipsHook.convertTipToDraft(tipId); if (result.draftId) emit({ type: 'tip_converted', tipId, draftId: result.draftId }); return result; }} onDiscardTip={async (tipId: number) => { const result = await tipsHook.discardTip(tipId); emit({ type: 'tip_discarded', tipId }); return result; }} onToast={showToast} intelligence={homeIntelligence.data} intelligenceLoading={homeIntelligence.loading} />
+              <HomeView tips={tipsHook.tips} tipsLoading={tipsHook.loading} onConvertTipToDraft={async (tipId: number) => { const result = await tipsHook.convertTipToDraft(tipId); if (result.draftId) emit({ type: 'tip_converted', tipId, draftId: result.draftId }); return result; }} onDiscardTip={async (tipId: number) => { const result = await tipsHook.discardTip(tipId); emit({ type: 'tip_discarded', tipId }); return result; }} onToast={showToast} intelligence={homeIntelligence.data} intelligenceLoading={homeIntelligence.loading} onOpenDraft={(draftId) => { if (draftId) setPendingOpenDraftId(draftId); setActiveTab('editor'); }} onOpenEntry={(entryId) => { if (entryId) setPendingOpenEntryId(entryId); setActiveTab('editor'); }} onOpenDock={() => setActiveTab('dock')} onOpenReview={() => setActiveTab('review')} onOpenBriefing={() => setActiveTab('briefing')} />
             </>
           )}
-          {activeTab === 'briefing' && <DailyBriefingView brief={dailyBriefHook.data} briefLoading={dailyBriefHook.loading} />}
+          {activeTab === 'briefing' && <DailyBriefingView brief={dailyBriefHook.data} briefLoading={dailyBriefHook.loading} onOpenDraft={(draftId) => { if (draftId) setPendingOpenDraftId(draftId); setActiveTab('editor'); }} onOpenEntry={(entryId) => { if (entryId) setPendingOpenEntryId(entryId); setActiveTab('editor'); }} onOpenDock={() => setActiveTab('dock')} onOpenMind={() => setActiveTab('mind')} onOpenReview={() => setActiveTab('review')} />}
           {activeTab === 'toolbox' && <ToolboxView />}
           {activeTab === 'mind' && <MindView userId={userId} onToast={showToast} onSelectionChange={setIsNodeSelected} initialFocusNodeId={pendingMindFocusNodeId} onFocusNodeConsumed={() => setPendingMindFocusNodeId(null)} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} />}
           {activeTab === 'dock' && <DockView userId={userId} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} onToast={showToast} onFocusMindNode={(nodeId: string) => { setPendingMindFocusNodeId(nodeId); setActiveTab('mind'); }} />}
@@ -3321,7 +3343,7 @@ export default function WorkspacePage() {
                 autoFocus
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                placeholder="搜索 Atlax，或输入命令..."
+                placeholder="搜索 MindDock，或输入命令..."
                 className="flex-1 bg-transparent border-none outline-none text-white text-lg placeholder:text-[#899298]/70 font-medium"
               />
               {searchQuery ? (
@@ -3342,46 +3364,93 @@ export default function WorkspacePage() {
                 <div className="h-px bg-gradient-to-r from-transparent via-white/10 to-transparent mx-4"></div>
 
                 <div className="flex-1 overflow-y-auto custom-scrollbar p-3">
-
-                  {/* 推荐结果模块 */}
-                  <div className="mb-4">
-                    <h4 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase px-3 mb-2">最佳匹配</h4>
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-[#86d7ff]/10 cursor-pointer group transition-colors bg-white/5">
-                        <div className="w-8 h-8 rounded-lg bg-[#86d7ff]/20 flex items-center justify-center text-[#86d7ff] shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)]">
-                          <TerminalSquare className="w-4 h-4" />
-                        </div>
-                        <div className="flex-1">
-                          <h5 className="text-sm font-medium text-white">空间 UI 架构 <span className="text-[#86d7ff]">({searchQuery})</span></h5>
-                          <p className="text-[10px] text-[#899298]">保存在 停靠区 / 设计系统</p>
-                        </div>
-                        <span className="text-[10px] text-[#899298] opacity-0 group-hover:opacity-100 transition-opacity">跳转 ↵</span>
+  {spotlightSearch.loading ? (
+    <div className="py-8 text-center">
+      <p className="text-[11px] text-[#899298]">搜索中...</p>
+    </div>
+  ) : spotlightSearch.results.length === 0 ? (
+    <div className="py-8 text-center">
+      <Search className="w-6 h-6 text-[#899298]/30 mx-auto mb-2" />
+      <p className="text-[11px] text-[#899298]">未找到与「{searchQuery}」相关的结果</p>
+      <p className="text-[10px] text-[#899298]/60 mt-1">尝试其他关键词</p>
+    </div>
+  ) : (
+    <>
+      {(() => {
+        const grouped = spotlightSearch.results.reduce((acc, r) => {
+          const key = r.type === 'draft' || r.type === 'document' ? 'knowledge' : r.type === 'mind_node' ? 'mind' : r.type === 'settings_command' ? 'settings' : 'capture'
+          if (!acc[key]) acc[key] = []
+          acc[key].push(r)
+          return acc
+        }, {} as Record<string, SpotlightSearchResult[]>)
+        return (
+          <>
+            {grouped.knowledge && grouped.knowledge.length > 0 && (
+              <div className="mb-4">
+                <h4 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase px-3 mb-2">知识库</h4>
+                <div className="space-y-1">
+                  {grouped.knowledge.map((result) => (
+                    <div key={`${result.type}-${result.id}`} className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-[#86d7ff]/10 cursor-pointer group transition-colors" onClick={() => { if (result.type === 'draft') { setPendingOpenDraftId(result.targetId as number); } else if (result.type === 'document') { setPendingOpenEntryId(result.targetId as number); } setActiveTab(result.targetTab); setIsSearchOpen(false); }}>
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)] ${result.type === 'draft' ? 'bg-[#9cf4d4]/20 text-[#9cf4d4]' : 'bg-[#86d7ff]/20 text-[#86d7ff]'}`}>
+                        <FileText className="w-4 h-4" />
                       </div>
+                      <div className="flex-1 min-w-0">
+                        <h5 className="text-sm font-medium text-white truncate">{result.title}</h5>
+                        <p className="text-[10px] text-[#899298] truncate">{result.snippet}</p>
+                      </div>
+                      <span className="text-[10px] text-[#899298] opacity-0 group-hover:opacity-100 transition-opacity shrink-0">跳转 ↵</span>
                     </div>
-                  </div>
-
-                  {/* 知识库结果 */}
-                  <div className="mb-2">
-                    <h4 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase px-3 mb-2">相关笔记与捕获</h4>
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-white/10 cursor-pointer group transition-colors">
-                        <FileText className="w-4 h-4 text-[#899298] group-hover:text-white" />
-                        <h5 className="text-sm text-[#e0e3e6] group-hover:text-white flex-1">{searchQuery} 原型设计反馈</h5>
-                        <span className="text-[10px] text-[#899298]">昨天</span>
-                      </div>
-                      <div className="flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-white/10 cursor-pointer group transition-colors">
-                        <Brain className="w-4 h-4 text-[#899298] group-hover:text-[#a8c8ff]" />
-                        <h5 className="text-sm text-[#e0e3e6] group-hover:text-white flex-1">包含 &ldquo;{searchQuery}&rdquo; 的神经元集群</h5>
-                        <span className="text-[10px] text-[#899298]">思维导图</span>
-                      </div>
-                      <div className="flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-white/10 cursor-pointer group transition-colors">
-                        <Settings className="w-4 h-4 text-[#899298] group-hover:text-[#9cf4d4]" />
-                        <h5 className="text-sm text-[#e0e3e6] group-hover:text-white flex-1">搜索 {searchQuery} 相关的同步设置</h5>
-                      </div>
-                    </div>
-                  </div>
-
+                  ))}
                 </div>
+              </div>
+            )}
+            {grouped.capture && grouped.capture.length > 0 && (
+              <div className="mb-4">
+                <h4 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase px-3 mb-2">闪念捕获</h4>
+                <div className="space-y-1">
+                  {grouped.capture.map((result) => (
+                    <div key={`tip-${result.id}`} className="flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-white/10 cursor-pointer group transition-colors" onClick={() => { setActiveTab(result.targetTab); setIsSearchOpen(false); }}>
+                      <Activity className="w-4 h-4 text-[#899298] group-hover:text-[#86d7ff]" />
+                      <h5 className="text-sm text-[#e0e3e6] group-hover:text-white flex-1 truncate">{result.title}</h5>
+                      <span className="text-[10px] text-[#899298] shrink-0">Tip</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {grouped.mind && grouped.mind.length > 0 && (
+              <div className="mb-4">
+                <h4 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase px-3 mb-2">思维图谱</h4>
+                <div className="space-y-1">
+                  {grouped.mind.map((result) => (
+                    <div key={`mind-${result.id}`} className="flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-white/10 cursor-pointer group transition-colors" onClick={() => { setPendingMindFocusNodeId(result.targetId as string); setActiveTab(result.targetTab); setIsSearchOpen(false); }}>
+                      <Brain className="w-4 h-4 text-[#899298] group-hover:text-[#a8c8ff]" />
+                      <h5 className="text-sm text-[#e0e3e6] group-hover:text-white flex-1 truncate">{result.title}</h5>
+                      <span className="text-[10px] text-[#899298] shrink-0">节点</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {grouped.settings && grouped.settings.length > 0 && (
+              <div className="mb-2">
+                <h4 className="text-[10px] font-semibold tracking-wider text-[#899298] uppercase px-3 mb-2">设置</h4>
+                <div className="space-y-1">
+                  {grouped.settings.map((result) => (
+                    <div key={`settings-${result.id}`} className="flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-white/10 cursor-pointer group transition-colors" onClick={() => { setActiveTab(result.targetTab); setIsSearchOpen(false); }}>
+                      <Settings className="w-4 h-4 text-[#899298] group-hover:text-[#9cf4d4]" />
+                      <h5 className="text-sm text-[#e0e3e6] group-hover:text-white flex-1">{result.title}</h5>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )
+      })()}
+    </>
+  )}
+</div>
 
                 {/* 底部操作提示栏 */}
                 <div className="bg-black/20 px-4 py-2 flex items-center justify-between text-[10px] text-[#899298] border-t border-white/5">
@@ -3389,7 +3458,7 @@ export default function WorkspacePage() {
                     <span className="flex items-center gap-1"><span className="px-1 py-0.5 rounded bg-white/10 border border-white/10">↑</span><span className="px-1 py-0.5 rounded bg-white/10 border border-white/10">↓</span> 导航</span>
                     <span className="flex items-center gap-1"><span className="px-1.5 py-0.5 rounded bg-white/10 border border-white/10">↵</span> 确认</span>
                   </div>
-                  <span>Atlax 全局神经搜索</span>
+                  <span>MindDock 本地搜索</span>
                 </div>
               </div>
             )}

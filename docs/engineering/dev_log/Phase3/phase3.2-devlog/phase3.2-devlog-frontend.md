@@ -2,6 +2,117 @@
 
 ---
 
+## Phase 3.2 + Round 18 devlog -- P32-CLOSEOUT-002: Workspace Utility & Home Brief Completion
+
+**日期**: 2026-05-16
+**任务起始时间**: 2026-05-16 04:20
+**任务结束时间**: 2026-05-16 05:10
+**工时**: 50 分钟
+**卡号**: P32-CLOSEOUT-002
+
+### 任务目标
+
+把 Phase 3.2 已接入真实本地数据的页面串起来：Home 主要入口全部可点击、Daily Brief 数据项可跳转、Spotlight 不再展示硬编码假搜索结果、Settings 不再残留 mock/假同步/假路径语义、Workspace 主入口形成可信导航闭环。
+
+### 变更摘要
+
+#### 1. Home 导航打通
+- HomeViewProps 新增 onOpenDraft/onOpenEntry/onOpenDock/onOpenReview/onOpenBriefing 导航回调
+- "打开每日简报" 按钮 → setActiveTab('briefing')
+- 活跃思维区 Draft 卡片 → setPendingOpenDraftId + setActiveTab('editor')
+- 活跃思维区 Document 卡片 → setPendingOpenEntryId + setActiveTab('editor')
+- 活跃思维区 Tip 卡片 → setActiveTab('dock')
+- 最近草稿列表 Draft 项 → setPendingOpenDraftId + setActiveTab('editor')
+- "每周回顾" 更名为 "健康报告" → setActiveTab('review')
+- "待处理数据包" 面板 → setActiveTab('dock')
+- "新会话" 按钮 → setActiveTab('dock')
+
+#### 2. Daily Brief 导航打通
+- DailyBriefingView 新增 onOpenDraft/onOpenEntry/onOpenDock/onOpenMind/onOpenReview 导航回调
+- Draft 项点击 → setPendingOpenDraftId + setActiveTab('editor')
+- Document 项点击 → setPendingOpenEntryId + setActiveTab('editor')
+- Tip 项点击 → setActiveTab('dock')
+- Mind 概览区域点击 → setActiveTab('mind')
+- BriefHint 项点击根据 hint.type 导航：tip_pressure→dock, draft_pressure→editor, document_empty→editor, mind_empty→mind, collection_active/tag_suggestion→review
+- 金库统计已由 useDailyBrief 提供真实数据
+
+#### 3. Spotlight 本地搜索 v0
+- 新增 useSpotlightSearch hook，搜索 Draft/Tip/Document/MindNode/Settings 命令
+- 搜索结果类型定义：{ type, id, title, snippet, targetTab, targetId }
+- Draft 搜索 — listDrafts + title/content 匹配，target = 'editor'
+- Tip 搜索 — listActiveTips + content 匹配，target = 'dock'
+- Document 搜索 — listArchivedEntries + title/content 匹配，target = 'editor'
+- Mind Node 搜索 — listMindNodes + label/metadata.title 匹配，target = 'mind'
+- Settings 命令搜索 — 静态命令列表匹配，target = 'settings'
+- 无结果显示可信空态
+- 搜索结果点击执行导航（设置 pendingOpen* + setActiveTab）
+- 替换 page.tsx 中 Spotlight 硬编码假结果为真实搜索结果渲染
+- 底部栏文本从"Atlax 全局神经搜索"改为"Atlax 本地搜索"
+
+#### 4. Settings 收口
+- 金库路径从 "/Users/Admin/Documents/MindDock_Vault" 改为 "Browser Local Storage Mode"
+- 金库路径区域增加说明 "当前数据保存在浏览器本地 IndexedDB"
+- 增加 "Desktop 打包后再开放真实本地金库路径" 说明
+- Cloud/WebDAV/S3 保持 Planned/Disabled
+
+#### 5. 测试覆盖
+- 新增 spotlight-navigation.test.ts（33 个测试用例）
+- Spotlight 不返回硬编码假结果
+- Spotlight 可搜索真实 Draft/Document/Tip/Mind Node
+- 搜索结果 target 映射正确（targetTab + targetId 来自真实实现）
+- 搜索 cloud/同步 不返回 Cloud 类越界命令结果
+- Settings 不出现假同步/假连接/假路径语义
+- Home/Daily Brief 主要点击入口能产生正确导航意图
+- 不破坏 lifecycle guard
+- 不破坏 Health Bridge
+
+### 改动文件
+
+| 文件 | 改动行数 | 说明 |
+|------|---------|------|
+| `apps/web/app/workspace/features/home/useSpotlightSearch.ts` | +110 | 新增 Spotlight 本地搜索 hook |
+| `apps/web/app/workspace/page.tsx` | ~200 | Home/DailyBrief 导航回调 + Spotlight 真实搜索 + Settings 收口 |
+| `apps/web/tests/spotlight-navigation.test.ts` | +310 | 新增 31 个测试用例 |
+
+### 遇到的问题及解决方式
+
+1. **onOpenMind 未使用 lint 错误**: HomeView 中 onOpenMind prop 声明但未使用（当前 HomeView 无 Mind Node 卡片）→ 从 HomeViewProps 和调用处移除
+2. **MindNodeType 类型错误**: 测试中使用 'concept' 类型不存在 → 改为 'topic'
+3. **Dexie 表名**: drafts 表不存在 → 修正为 editorDrafts
+4. **Spotlight Cloud/同步越界入口**: SETTINGS_COMMANDS 包含 cloud 和 同步 命令，暴露了 Cloud/LLM 等越界入口 → 移除 cloud 和 同步 命令，Spotlight 不应把 Cloud 当成可搜索命令入口
+5. **测试复制逻辑而非测试真实实现**: spotlight-navigation.test.ts 中复制了 SETTINGS_COMMANDS 和 matchText 来测自己的逻辑 → 导出 searchDrafts/searchDocuments/searchTips/searchMindNodes/searchSettingsCommands 函数，测试直接调用真实实现
+6. **SpotlightSearchResult 未使用 lint 错误**: 测试文件导入了 SpotlightSearchResult 类型但未使用 → 移除未使用的导入
+
+### 自动验证结果
+
+- `pnpm validate`: ✅ 34 test files, 967 tests passed, lint 0 errors, typecheck passed, terminology passed
+- `pnpm build:web`: ✅ 构建成功
+
+### 手工验证步骤
+
+1. 打开 `/workspace` → Home 页面 → 点击"打开每日简报" → 切换到 Briefing tab
+2. Home 页面 → 点击活跃思维区 Draft 卡片 → 切换到 Editor 并打开对应 Draft
+3. Home 页面 → 点击活跃思维区 Tip 卡片 → 切换到 Dock
+4. Home 页面 → 点击"健康报告"面板 → 切换到 Review
+5. Home 页面 → 点击"待处理数据包"面板 → 切换到 Dock
+6. Daily Brief → 点击 Draft 项 → 切换到 Editor 并打开对应 Draft
+7. Daily Brief → 点击 Mind 概览区域 → 切换到 Mind
+8. Daily Brief → 点击 BriefHint 项 → 根据 type 切换到对应视图
+9. Cmd+K 打开 Spotlight → 输入关键词 → 显示真实搜索结果（非硬编码假数据）
+10. Spotlight 搜索结果点击 → 切换到对应视图
+11. Spotlight 无结果时显示可信空态
+12. Settings → 金库路径显示 "Browser Local Storage Mode"，不显示假桌面路径
+13. Settings → 包含 IndexedDB 和 Desktop 说明
+
+### 当前风险
+
+- **低风险**: HomeView 活跃思维区无 Mind Node 类型卡片，onOpenMind 未接入 HomeView（Mind 导航通过 DailyBriefingView 提供）
+- **低风险**: Spotlight 搜索使用简单子串匹配，不支持 fuzzy/全文索引，后续可迭代
+- **低风险**: BriefHint 导航中 draft_pressure/document_empty 使用无 ID 的页面级跳转（仅打开 Editor，不定位具体 Draft/Document）
+- **低风险**: Settings "更改位置" 按钮 disabled 但仍显示，用户可能困惑为何不能点击
+
+---
+
 ## Phase 3.2 + Round 17 devlog -- HEALTH-REAL-001 Fix: Dock Layout 可用性 + Header 冲突入口移除
 
 **日期**: 2026-05-16
