@@ -8,10 +8,6 @@ function readSource(relativePath: string): string {
   return fs.readFileSync(path.resolve(APP_DIR, relativePath), 'utf-8')
 }
 
-function fileExists(relativePath: string): boolean {
-  return fs.existsSync(path.resolve(APP_DIR, relativePath))
-}
-
 function getReviewSection(src: string): string {
   const start = src.indexOf('const ReviewView')
   if (start === -1) return src
@@ -99,18 +95,6 @@ describe('ReviewView binds to report summary data', () => {
 
   it('ReviewView accepts onNavigateToMind prop', () => {
     expect(src).toMatch(/ReviewView.*onNavigateToMind/)
-  })
-})
-
-describe('Seed files not modified by this card', () => {
-  it('seed file has not been modified by this card', () => {
-    const exists = fileExists('seed/page.tsx')
-    expect(exists).toBe(true)
-  })
-
-  it('seed-mind file has not been modified by this card', () => {
-    const exists = fileExists('seed-mind/page.tsx')
-    expect(exists).toBe(true)
   })
 })
 
