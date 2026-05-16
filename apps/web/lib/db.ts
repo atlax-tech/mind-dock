@@ -475,6 +475,240 @@ export interface PersistedAppEvent extends AppEventRecord {
   id: string
 }
 
+export interface LocalTextFeatureSnapshotRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  targetType: string
+  targetId: string
+  contentHash: string
+  language: string
+  keywords: string[]
+  entities: string[]
+  compactText: string
+  lengthMetrics: Record<string, number>
+  structureHints: string[]
+  source: string
+  reason: string
+  evidence: string
+  confidence: number
+  safetyLevel: string
+  stale: boolean
+  expiredAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PersistedLocalTextFeatureSnapshot extends LocalTextFeatureSnapshotRecord {
+  id: string
+}
+
+export interface SemanticFeatureSnapshotRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  targetType: string
+  targetId: string
+  contentHash: string
+  modelProvider: string
+  modelName: string
+  modelVersion: string
+  embeddingDim: number
+  embeddingRef: string
+  semanticSummary: string
+  intent: string
+  topics: string[]
+  source: string
+  reason: string
+  evidence: string
+  confidence: number
+  safetyLevel: string
+  stale: boolean
+  expiredAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PersistedSemanticFeatureSnapshot extends SemanticFeatureSnapshotRecord {
+  id: string
+}
+
+export interface PreferenceMemoryRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  candidateType: string
+  candidateId: string
+  shownCount: number
+  acceptedCount: number
+  rejectedCount: number
+  ignoredCount: number
+  modifiedCount: number
+  positiveWeight: number
+  negativeWeight: number
+  lastFeedbackAt: string | null
+  source: string
+  reason: string
+  evidence: string
+  confidence: number
+  safetyLevel: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PersistedPreferenceMemory extends PreferenceMemoryRecord {
+  id: string
+}
+
+export interface HealthSignalRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  signalType: string
+  targetType: string
+  targetId: string
+  severity: string
+  status: string
+  reason: string
+  evidence: string
+  confidence: number
+  safetyLevel: string
+  source: string
+  detectedAt: string
+  resolvedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PersistedHealthSignal extends HealthSignalRecord {
+  id: string
+}
+
+export interface GrowthSignalRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  signalType: string
+  targetType: string
+  targetId: string
+  opportunityType: string
+  status: string
+  reason: string
+  evidence: string
+  confidence: number
+  safetyLevel: string
+  source: string
+  detectedAt: string
+  dismissedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PersistedGrowthSignal extends GrowthSignalRecord {
+  id: string
+}
+
+export interface MaintenanceActionRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  actionType: string
+  targetType: string
+  targetId: string
+  status: string
+  reversible: boolean
+  proposedPatch: Record<string, unknown> | null
+  sourceSignalId: string | null
+  reason: string
+  evidence: string
+  confidence: number
+  safetyLevel: string
+  createdAt: string
+  updatedAt: string
+  executedAt: string | null
+  revertedAt: string | null
+}
+
+export interface PersistedMaintenanceAction extends MaintenanceActionRecord {
+  id: string
+}
+
+export interface ReviewSnapshotRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  scope: string
+  reviewDate: string
+  healthSummary: Record<string, unknown> | null
+  growthSummary: Record<string, unknown> | null
+  recommendationSummary: Record<string, unknown> | null
+  maintenanceSummary: Record<string, unknown> | null
+  generatedAt: string
+  source: string
+  reason: string
+  evidence: string
+  confidence: number
+  safetyLevel: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PersistedReviewSnapshot extends ReviewSnapshotRecord {
+  id: string
+}
+
+export interface DailyBriefSnapshotRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  briefDate: string
+  scope: string
+  yesterdayProgress: Record<string, unknown> | null
+  todayRecommendations: Record<string, unknown> | null
+  knowledgeHealth: Record<string, unknown> | null
+  quickNoteStatus: Record<string, unknown> | null
+  draftStatus: Record<string, unknown> | null
+  mindSummary: Record<string, unknown> | null
+  generatedAt: string
+  source: string
+  reason: string
+  evidence: string
+  confidence: number
+  safetyLevel: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PersistedDailyBriefSnapshot extends DailyBriefSnapshotRecord {
+  id: string
+}
+
+export interface SearchIndexRecordRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  targetType: string
+  targetId: string
+  title: string
+  excerpt: string
+  keywordTokens: string[]
+  semanticRef: string | null
+  contentHash: string
+  stale: boolean
+  expiredAt: string | null
+  source: string
+  reason: string
+  evidence: string
+  confidence: number
+  safetyLevel: string
+  updatedAt: string
+  createdAt: string
+}
+
+export interface PersistedSearchIndexRecord extends SearchIndexRecordRecord {
+  id: string
+}
+
 const db = new Dexie('AtlaxDB') as Dexie & {
   dockItems: EntityTable<DockItemRecord, 'id'>
   tags: EntityTable<TagRecord, 'id'>
@@ -498,6 +732,15 @@ const db = new Dexie('AtlaxDB') as Dexie & {
   userBehaviorEvents: EntityTable<UserBehaviorEventRecord, 'id'>
   dockViewSettings: EntityTable<DockViewSettingsRecord, 'id'>
   appEvents: EntityTable<AppEventRecord, 'id'>
+  localTextFeatureSnapshots: EntityTable<LocalTextFeatureSnapshotRecord, 'id'>
+  semanticFeatureSnapshots: EntityTable<SemanticFeatureSnapshotRecord, 'id'>
+  preferenceMemories: EntityTable<PreferenceMemoryRecord, 'id'>
+  healthSignals: EntityTable<HealthSignalRecord, 'id'>
+  growthSignals: EntityTable<GrowthSignalRecord, 'id'>
+  maintenanceActions: EntityTable<MaintenanceActionRecord, 'id'>
+  reviewSnapshots: EntityTable<ReviewSnapshotRecord, 'id'>
+  dailyBriefSnapshots: EntityTable<DailyBriefSnapshotRecord, 'id'>
+  searchIndexRecords: EntityTable<SearchIndexRecordRecord, 'id'>
 }
 
 db.version(1).stores({
@@ -990,6 +1233,18 @@ db.version(26).stores({
   }
 })
 
+db.version(27).stores({
+  localTextFeatureSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], [userId+workspaceId+stale], [userId+workspaceId+expiredAt]',
+  semanticFeatureSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], [userId+workspaceId+stale], [userId+workspaceId+expiredAt]',
+  preferenceMemories: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+candidateType+candidateId]',
+  healthSignals: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+status]',
+  growthSignals: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+status]',
+  maintenanceActions: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+status]',
+  reviewSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+scope+reviewDate]',
+  dailyBriefSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+briefDate]',
+  searchIndexRecords: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], [userId+workspaceId+stale], [userId+workspaceId+expiredAt]',
+})
+
 export { db }
 export const dockItemsTable = db.table('dockItems')
 export const capturesTable = dockItemsTable
@@ -1015,3 +1270,12 @@ export const recommendationEventsTable = db.table('recommendationEvents')
 export const userBehaviorEventsTable = db.table('userBehaviorEvents')
 export const dockViewSettingsTable = db.table('dockViewSettings')
 export const appEventsTable = db.table('appEvents')
+export const localTextFeatureSnapshotsTable = db.table('localTextFeatureSnapshots')
+export const semanticFeatureSnapshotsTable = db.table('semanticFeatureSnapshots')
+export const preferenceMemoriesTable = db.table('preferenceMemories')
+export const healthSignalsTable = db.table('healthSignals')
+export const growthSignalsTable = db.table('growthSignals')
+export const maintenanceActionsTable = db.table('maintenanceActions')
+export const reviewSnapshotsTable = db.table('reviewSnapshots')
+export const dailyBriefSnapshotsTable = db.table('dailyBriefSnapshots')
+export const searchIndexRecordsTable = db.table('searchIndexRecords')
