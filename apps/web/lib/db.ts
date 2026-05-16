@@ -30,8 +30,9 @@ import type {
   RecommendationCandidateType,
   RecommendationEventType,
   UserBehaviorEventType,
-  UserBehaviorTargetType,
+  UserBehaviorSubjectType,
 } from '@atlax/domain'
+import { createEditorContentPayload, textToTiptapDoc, type TiptapJSONContent } from './editorContentAdapter'
 
 export interface DockItemRecord {
   id?: number
@@ -74,6 +75,10 @@ export interface EntryRecord {
   sourceDockItemId: number
   title: string
   content: string
+  contentJson?: TiptapJSONContent | null
+  plainText?: string
+  html?: string
+  markdown?: string
   type: string
   tags: string[]
   project: string | null
@@ -297,12 +302,44 @@ export interface PersistedRecentDocument extends RecentDocumentRecord {
   id: string
 }
 
+export type TipSourceType = 'text' | 'manual' | 'quick-capture'
+export type TipStatus = 'active' | 'converted' | 'discarded' | 'linked'
+
+export interface TipRecord {
+  id?: number
+  userId: string
+  content: string
+  sourceType: TipSourceType
+  status: TipStatus
+  convertedDraftId: number | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface PersistedTip extends TipRecord {
+  id: number
+}
+
+export type DraftStatus = 'active' | 'published' | 'discarded'
+
+export type DraftSourceType = 'entry' | 'document'
+
 export interface EditorDraftRecord {
   id?: number
   userId: string
   draftKey: number
   title: string
   content: string
+  contentJson?: TiptapJSONContent | null
+  plainText?: string
+  html?: string
+  markdown?: string
+  status: DraftStatus
+  sourceEntryId?: number | null
+  sourceType?: DraftSourceType | null
+  tags: string[]
+  project: string | null
+  collectionId: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -315,7 +352,7 @@ export interface RecommendationRecord {
   id?: string
   userId: string
   subjectType: RecommendationSubjectType
-  subjectId: number
+  subjectId: number | string
   recommendationType: string
   candidateType: RecommendationCandidateType
   candidateId: string
@@ -347,15 +384,32 @@ export interface UserBehaviorEventRecord {
   id?: string
   userId: string
   eventType: UserBehaviorEventType
-  targetType: UserBehaviorTargetType
-  targetId: string | null
-  fromContext: string | null
-  toContext: string | null
+  subjectType: UserBehaviorSubjectType
+  subjectId: string | null
   metadata: Record<string, unknown> | null
   createdAt: Date
 }
 
 export interface PersistedUserBehaviorEvent extends UserBehaviorEventRecord {
+  id: string
+}
+
+export interface DockViewSettingsRecord {
+  id?: string
+  userId: string
+  columnVisibility: {
+    space: boolean
+    status: boolean
+    tags: boolean
+    recommendations: boolean
+    score: boolean
+  }
+  density: 'compact' | 'standard'
+  defaultSort: 'updatedAt' | 'healthScore' | 'type'
+  updatedAt: Date
+}
+
+export interface PersistedDockViewSettings extends DockViewSettingsRecord {
   id: string
 }
 
@@ -407,9 +461,11 @@ const db = new Dexie('AtlaxDB') as Dexie & {
   workspaceOpenTabs: EntityTable<WorkspaceOpenTabRecord, 'id'>
   recentDocuments: EntityTable<RecentDocumentRecord, 'id'>
   editorDrafts: EntityTable<EditorDraftRecord, 'id'>
+  tips: EntityTable<TipRecord, 'id'>
   recommendations: EntityTable<RecommendationRecord, 'id'>
   recommendationEvents: EntityTable<RecommendationEventRecord, 'id'>
   userBehaviorEvents: EntityTable<UserBehaviorEventRecord, 'id'>
+  dockViewSettings: EntityTable<DockViewSettingsRecord, 'id'>
 }
 
 db.version(1).stores({
@@ -600,6 +656,269 @@ db.version(17).stores({
   userBehaviorEvents: 'id, userId, eventType, targetType, [userId+eventType], [userId+targetType], createdAt',
 })
 
+db.version(18).stores({
+  dockItems: '++id, userId, rawText, topic, sourceType, status, createdAt',
+  tags: 'id, userId, name, [userId+name]',
+  entries: '++id, userId, sourceDockItemId, type, archivedAt',
+  chatSessions: '++id, userId, status, pinned, dockItemId, createdAt, updatedAt',
+  widgets: '++id, userId, widgetType, active, createdAt, updatedAt',
+  collections: 'id, userId, collectionType, parentId, createdAt, updatedAt',
+  entryTagRelations: 'id, userId, entryId, tagId, [userId+entryId], [userId+tagId], createdAt',
+  entryRelations: 'id, userId, sourceEntryId, targetEntryId, relationType, [userId+sourceEntryId], [userId+targetEntryId], createdAt',
+  knowledgeEvents: 'id, userId, eventType, targetType, createdAt',
+  temporalActivities: 'id, userId, type, occurredAt, dayKey, weekKey, monthKey, [userId+dayKey], [userId+monthKey], createdAt',
+  mindNodes: 'id, userId, nodeType, state, label, [userId+nodeType], [userId+state], createdAt, updatedAt',
+  mindEdges: 'id, userId, sourceNodeId, targetNodeId, edgeType, [userId+sourceNodeId], [userId+targetNodeId], [userId+edgeType], createdAt, updatedAt',
+  workspaceSessions: 'id, userId, createdAt, updatedAt',
+  workspaceOpenTabs: 'id, userId, sessionId, tabType, documentId, isPinned, isActive, sortOrder, [userId+sessionId], [userId+tabType], [userId+documentId], openedAt, updatedAt',
+  recentDocuments: 'id, userId, documentId, [userId+documentId], lastOpenedAt, openCount, createdAt, updatedAt',
+  editorDrafts: '++id, userId, draftKey, [userId+draftKey], updatedAt',
+  recommendations: 'id, userId, subjectType, status, [userId+status], [userId+subjectType], createdAt, updatedAt',
+  recommendationEvents: 'id, userId, recommendationId, eventType, [userId+recommendationId], [userId+eventType], createdAt',
+  userBehaviorEvents: 'id, userId, eventType, subjectType, [userId+eventType], [userId+subjectType], createdAt',
+}).upgrade((tx) => {
+  tx.table('userBehaviorEvents').toCollection().modify((event: Record<string, unknown>) => {
+    if (!event.subjectType) event.subjectType = event.targetType ?? 'recommendation'
+    if (event.subjectId === undefined) event.subjectId = event.targetId ?? null
+    delete event.targetType
+    delete event.targetId
+    delete event.fromContext
+    delete event.toContext
+  })
+})
+
+db.version(19).stores({
+  dockItems: '++id, userId, rawText, topic, sourceType, status, createdAt',
+  tags: 'id, userId, name, [userId+name]',
+  entries: '++id, userId, sourceDockItemId, type, archivedAt',
+  chatSessions: '++id, userId, status, pinned, dockItemId, createdAt, updatedAt',
+  widgets: '++id, userId, widgetType, active, createdAt, updatedAt',
+  collections: 'id, userId, collectionType, parentId, createdAt, updatedAt',
+  entryTagRelations: 'id, userId, entryId, tagId, [userId+entryId], [userId+tagId], createdAt',
+  entryRelations: 'id, userId, sourceEntryId, targetEntryId, relationType, [userId+sourceEntryId], [userId+targetEntryId], createdAt',
+  knowledgeEvents: 'id, userId, eventType, targetType, createdAt',
+  temporalActivities: 'id, userId, type, occurredAt, dayKey, weekKey, monthKey, [userId+dayKey], [userId+monthKey], createdAt',
+  mindNodes: 'id, userId, nodeType, state, label, [userId+nodeType], [userId+state], createdAt, updatedAt',
+  mindEdges: 'id, userId, sourceNodeId, targetNodeId, edgeType, [userId+sourceNodeId], [userId+targetNodeId], [userId+edgeType], createdAt, updatedAt',
+  workspaceSessions: 'id, userId, createdAt, updatedAt',
+  workspaceOpenTabs: 'id, userId, sessionId, tabType, documentId, isPinned, isActive, sortOrder, [userId+sessionId], [userId+tabType], [userId+documentId], openedAt, updatedAt',
+  recentDocuments: 'id, userId, documentId, [userId+documentId], lastOpenedAt, openCount, createdAt, updatedAt',
+  editorDrafts: '++id, userId, draftKey, status, [userId+status], [userId+draftKey], updatedAt',
+  recommendations: 'id, userId, subjectType, status, [userId+status], [userId+subjectType], createdAt, updatedAt',
+  recommendationEvents: 'id, userId, recommendationId, eventType, [userId+recommendationId], [userId+eventType], createdAt',
+  userBehaviorEvents: 'id, userId, eventType, subjectType, [userId+eventType], [userId+subjectType], createdAt',
+}).upgrade((tx) => {
+  tx.table('editorDrafts').toCollection().modify((draft: Record<string, unknown>) => {
+    if (!draft.status) draft.status = 'active'
+  })
+})
+
+db.version(20).stores({
+  dockItems: '++id, userId, rawText, topic, sourceType, status, createdAt',
+  tags: 'id, userId, name, [userId+name]',
+  entries: '++id, userId, sourceDockItemId, type, archivedAt',
+  chatSessions: '++id, userId, status, pinned, dockItemId, createdAt, updatedAt',
+  widgets: '++id, userId, widgetType, active, createdAt, updatedAt',
+  collections: 'id, userId, collectionType, parentId, createdAt, updatedAt',
+  entryTagRelations: 'id, userId, entryId, tagId, [userId+entryId], [userId+tagId], createdAt',
+  entryRelations: 'id, userId, sourceEntryId, targetEntryId, relationType, [userId+sourceEntryId], [userId+targetEntryId], createdAt',
+  knowledgeEvents: 'id, userId, eventType, targetType, createdAt',
+  temporalActivities: 'id, userId, type, occurredAt, dayKey, weekKey, monthKey, [userId+dayKey], [userId+monthKey], createdAt',
+  mindNodes: 'id, userId, nodeType, state, label, [userId+nodeType], [userId+state], createdAt, updatedAt',
+  mindEdges: 'id, userId, sourceNodeId, targetNodeId, edgeType, [userId+sourceNodeId], [userId+targetNodeId], [userId+edgeType], createdAt, updatedAt',
+  workspaceSessions: 'id, userId, createdAt, updatedAt',
+  workspaceOpenTabs: 'id, userId, sessionId, tabType, documentId, isPinned, isActive, sortOrder, [userId+sessionId], [userId+tabType], [userId+documentId], openedAt, updatedAt',
+  recentDocuments: 'id, userId, documentId, [userId+documentId], lastOpenedAt, openCount, createdAt, updatedAt',
+  editorDrafts: '++id, userId, draftKey, status, [userId+status], [userId+draftKey], updatedAt',
+  tips: '++id, userId, sourceType, status, [userId+status], createdAt, updatedAt',
+  recommendations: 'id, userId, subjectType, status, [userId+status], [userId+subjectType], createdAt, updatedAt',
+  recommendationEvents: 'id, userId, recommendationId, eventType, [userId+recommendationId], [userId+eventType], createdAt',
+  userBehaviorEvents: 'id, userId, eventType, subjectType, [userId+eventType], [userId+subjectType], createdAt',
+})
+
+db.version(21).stores({
+  dockItems: '++id, userId, rawText, topic, sourceType, status, createdAt',
+  tags: 'id, userId, name, [userId+name]',
+  entries: '++id, userId, sourceDockItemId, type, archivedAt',
+  chatSessions: '++id, userId, status, pinned, dockItemId, createdAt, updatedAt',
+  widgets: '++id, userId, widgetType, active, createdAt, updatedAt',
+  collections: 'id, userId, collectionType, parentId, createdAt, updatedAt',
+  entryTagRelations: 'id, userId, entryId, tagId, [userId+entryId], [userId+tagId], createdAt',
+  entryRelations: 'id, userId, sourceEntryId, targetEntryId, relationType, [userId+sourceEntryId], [userId+targetEntryId], createdAt',
+  knowledgeEvents: 'id, userId, eventType, targetType, createdAt',
+  temporalActivities: 'id, userId, type, occurredAt, dayKey, weekKey, monthKey, [userId+dayKey], [userId+monthKey], createdAt',
+  mindNodes: 'id, userId, nodeType, state, label, [userId+nodeType], [userId+state], createdAt, updatedAt',
+  mindEdges: 'id, userId, sourceNodeId, targetNodeId, edgeType, [userId+sourceNodeId], [userId+targetNodeId], [userId+edgeType], createdAt, updatedAt',
+  workspaceSessions: 'id, userId, createdAt, updatedAt',
+  workspaceOpenTabs: 'id, userId, sessionId, tabType, documentId, isPinned, isActive, sortOrder, [userId+sessionId], [userId+tabType], [userId+documentId], openedAt, updatedAt',
+  recentDocuments: 'id, userId, documentId, [userId+documentId], lastOpenedAt, openCount, createdAt, updatedAt',
+  editorDrafts: '++id, userId, draftKey, status, sourceEntryId, [userId+status], [userId+draftKey], [userId+sourceEntryId], updatedAt',
+  tips: '++id, userId, sourceType, status, [userId+status], createdAt, updatedAt',
+  recommendations: 'id, userId, subjectType, status, [userId+status], [userId+subjectType], createdAt, updatedAt',
+  recommendationEvents: 'id, userId, recommendationId, eventType, [userId+recommendationId], [userId+eventType], createdAt',
+  userBehaviorEvents: 'id, userId, eventType, subjectType, [userId+eventType], [userId+subjectType], createdAt',
+}).upgrade((tx) => {
+  tx.table('editorDrafts').toCollection().modify((draft: Record<string, unknown>) => {
+    if (draft.sourceEntryId === undefined) draft.sourceEntryId = null
+    if (draft.sourceType === undefined) draft.sourceType = null
+  })
+})
+
+db.version(22).stores({
+  dockItems: '++id, userId, rawText, topic, sourceType, status, createdAt',
+  tags: 'id, userId, name, [userId+name]',
+  entries: '++id, userId, sourceDockItemId, type, archivedAt',
+  chatSessions: '++id, userId, status, pinned, dockItemId, createdAt, updatedAt',
+  widgets: '++id, userId, widgetType, active, createdAt, updatedAt',
+  collections: 'id, userId, collectionType, parentId, createdAt, updatedAt',
+  entryTagRelations: 'id, userId, entryId, tagId, [userId+entryId], [userId+tagId], createdAt',
+  entryRelations: 'id, userId, sourceEntryId, targetEntryId, relationType, [userId+sourceEntryId], [userId+targetEntryId], createdAt',
+  knowledgeEvents: 'id, userId, eventType, targetType, createdAt',
+  temporalActivities: 'id, userId, type, occurredAt, dayKey, weekKey, monthKey, [userId+dayKey], [userId+monthKey], createdAt',
+  mindNodes: 'id, userId, nodeType, state, label, [userId+nodeType], [userId+state], createdAt, updatedAt',
+  mindEdges: 'id, userId, sourceNodeId, targetNodeId, edgeType, [userId+sourceNodeId], [userId+targetNodeId], [userId+edgeType], createdAt, updatedAt',
+  workspaceSessions: 'id, userId, createdAt, updatedAt',
+  workspaceOpenTabs: 'id, userId, sessionId, tabType, documentId, isPinned, isActive, sortOrder, [userId+sessionId], [userId+tabType], [userId+documentId], openedAt, updatedAt',
+  recentDocuments: 'id, userId, documentId, [userId+documentId], lastOpenedAt, openCount, createdAt, updatedAt',
+  editorDrafts: '++id, userId, draftKey, status, sourceEntryId, [userId+status], [userId+draftKey], [userId+sourceEntryId], updatedAt',
+  tips: '++id, userId, sourceType, status, [userId+status], createdAt, updatedAt',
+  recommendations: 'id, userId, subjectType, status, [userId+status], [userId+subjectType], createdAt, updatedAt',
+  recommendationEvents: 'id, userId, recommendationId, eventType, [userId+recommendationId], [userId+eventType], createdAt',
+  userBehaviorEvents: 'id, userId, eventType, subjectType, [userId+eventType], [userId+subjectType], createdAt',
+}).upgrade(async (tx) => {
+  const nodesTable = tx.table('mindNodes')
+  const edgesTable = tx.table('mindEdges')
+  const allNodes = await nodesTable.toArray()
+  const idMapping: Record<string, string> = {}
+
+  for (const node of allNodes) {
+    if (node.nodeType === 'document' && node.documentId != null) {
+      const normalized = (node.label as string).trim().toLowerCase().replace(/\s+/g, '_').slice(0, 40)
+      const newId = `${node.userId}_mn_document_${normalized}_${node.documentId}`
+      if (newId !== node.id) {
+        idMapping[node.id] = newId
+      }
+    }
+  }
+
+  for (const [oldId, newId] of Object.entries(idMapping)) {
+    const node = await nodesTable.get(oldId)
+    if (node) {
+      node.id = newId
+      await nodesTable.put(node)
+      await nodesTable.delete(oldId)
+    }
+  }
+
+  const allEdges = await edgesTable.toArray()
+  for (const edge of allEdges) {
+    let modified = false
+    const newSourceId = idMapping[edge.sourceNodeId]
+    const newTargetId = idMapping[edge.targetNodeId]
+    if (newSourceId) {
+      edge.sourceNodeId = newSourceId
+      modified = true
+    }
+    if (newTargetId) {
+      edge.targetNodeId = newTargetId
+      modified = true
+    }
+    if (modified) {
+      const oldEdgeId = edge.id as string
+      edge.id = `${edge.userId}_me_${edge.sourceNodeId}_${edge.targetNodeId}_${edge.edgeType}`
+      await edgesTable.put(edge)
+      await edgesTable.delete(oldEdgeId)
+    }
+  }
+})
+
+db.version(23).stores({
+  dockItems: '++id, userId, rawText, topic, sourceType, status, createdAt',
+  tags: 'id, userId, name, [userId+name]',
+  entries: '++id, userId, sourceDockItemId, type, archivedAt',
+  chatSessions: '++id, userId, status, pinned, dockItemId, createdAt, updatedAt',
+  widgets: '++id, userId, widgetType, active, createdAt, updatedAt',
+  collections: 'id, userId, collectionType, parentId, createdAt, updatedAt',
+  entryTagRelations: 'id, userId, entryId, tagId, [userId+entryId], [userId+tagId], createdAt',
+  entryRelations: 'id, userId, sourceEntryId, targetEntryId, relationType, [userId+sourceEntryId], [userId+targetEntryId], createdAt',
+  knowledgeEvents: 'id, userId, eventType, targetType, createdAt',
+  temporalActivities: 'id, userId, type, occurredAt, dayKey, weekKey, monthKey, [userId+dayKey], [userId+monthKey], createdAt',
+  mindNodes: 'id, userId, nodeType, state, label, [userId+nodeType], [userId+state], createdAt, updatedAt',
+  mindEdges: 'id, userId, sourceNodeId, targetNodeId, edgeType, [userId+sourceNodeId], [userId+targetNodeId], [userId+edgeType], createdAt, updatedAt',
+  workspaceSessions: 'id, userId, createdAt, updatedAt',
+  workspaceOpenTabs: 'id, userId, sessionId, tabType, documentId, isPinned, isActive, sortOrder, [userId+sessionId], [userId+tabType], [userId+documentId], openedAt, updatedAt',
+  recentDocuments: 'id, userId, documentId, [userId+documentId], lastOpenedAt, openCount, createdAt, updatedAt',
+  editorDrafts: '++id, userId, draftKey, status, sourceEntryId, sourceType, [userId+status], [userId+draftKey], [userId+sourceEntryId], createdAt, updatedAt',
+  tips: '++id, userId, sourceType, status, [userId+status], createdAt, updatedAt',
+  recommendations: 'id, userId, subjectType, status, [userId+status], [userId+subjectType], createdAt, updatedAt',
+  recommendationEvents: 'id, userId, recommendationId, eventType, [userId+recommendationId], [userId+eventType], createdAt',
+  userBehaviorEvents: 'id, userId, eventType, subjectType, [userId+eventType], [userId+subjectType], createdAt',
+}).upgrade(tx => {
+  return tx.table('editorDrafts').toCollection().modify(draft => {
+    if (!draft.tags) draft.tags = []
+    if (draft.project === undefined) draft.project = null
+    if (draft.collectionId === undefined) draft.collectionId = null
+  })
+})
+
+db.version(24).stores({
+  dockItems: '++id, userId, rawText, topic, sourceType, status, createdAt',
+  tags: 'id, userId, name, [userId+name]',
+  entries: '++id, userId, sourceDockItemId, type, archivedAt',
+  chatSessions: '++id, userId, status, pinned, dockItemId, createdAt, updatedAt',
+  widgets: '++id, userId, widgetType, active, createdAt, updatedAt',
+  collections: 'id, userId, collectionType, parentId, createdAt, updatedAt',
+  entryTagRelations: 'id, userId, entryId, tagId, [userId+entryId], [userId+tagId], createdAt',
+  entryRelations: 'id, userId, sourceEntryId, targetEntryId, relationType, [userId+sourceEntryId], [userId+targetEntryId], createdAt',
+  knowledgeEvents: 'id, userId, eventType, targetType, createdAt',
+  temporalActivities: 'id, userId, type, occurredAt, dayKey, weekKey, monthKey, [userId+dayKey], [userId+monthKey], createdAt',
+  mindNodes: 'id, userId, nodeType, state, label, [userId+nodeType], [userId+state], createdAt, updatedAt',
+  mindEdges: 'id, userId, sourceNodeId, targetNodeId, edgeType, [userId+sourceNodeId], [userId+targetNodeId], [userId+edgeType], createdAt, updatedAt',
+  workspaceSessions: 'id, userId, createdAt, updatedAt',
+  workspaceOpenTabs: 'id, userId, sessionId, tabType, documentId, isPinned, isActive, sortOrder, [userId+sessionId], [userId+tabType], [userId+documentId], openedAt, updatedAt',
+  recentDocuments: 'id, userId, documentId, [userId+documentId], lastOpenedAt, openCount, createdAt, updatedAt',
+  editorDrafts: '++id, userId, draftKey, status, sourceEntryId, sourceType, [userId+status], [userId+draftKey], [userId+sourceEntryId], createdAt, updatedAt',
+  tips: '++id, userId, sourceType, status, [userId+status], createdAt, updatedAt',
+  recommendations: 'id, userId, subjectType, status, [userId+status], [userId+subjectType], createdAt, updatedAt',
+  recommendationEvents: 'id, userId, recommendationId, eventType, [userId+recommendationId], [userId+eventType], createdAt',
+  userBehaviorEvents: 'id, userId, eventType, subjectType, [userId+eventType], [userId+subjectType], createdAt',
+}).upgrade(tx => {
+  const migrate = (record: Record<string, unknown>) => {
+    const content = typeof record.content === 'string' ? record.content : ''
+    const payload = createEditorContentPayload(textToTiptapDoc(content), content)
+    if (record.contentJson === undefined) record.contentJson = payload.contentJson
+    if (record.plainText === undefined) record.plainText = payload.plainText
+    if (record.html === undefined) record.html = payload.html
+    if (record.markdown === undefined) record.markdown = payload.markdown
+  }
+  tx.table('entries').toCollection().modify(migrate)
+  tx.table('editorDrafts').toCollection().modify(migrate)
+})
+
+db.version(25).stores({
+  dockItems: '++id, userId, rawText, topic, sourceType, status, createdAt',
+  tags: 'id, userId, name, [userId+name]',
+  entries: '++id, userId, sourceDockItemId, type, archivedAt',
+  chatSessions: '++id, userId, status, pinned, dockItemId, createdAt, updatedAt',
+  widgets: '++id, userId, widgetType, active, createdAt, updatedAt',
+  collections: 'id, userId, collectionType, parentId, createdAt, updatedAt',
+  entryTagRelations: 'id, userId, entryId, tagId, [userId+entryId], [userId+tagId], createdAt',
+  entryRelations: 'id, userId, sourceEntryId, targetEntryId, relationType, [userId+sourceEntryId], [userId+targetEntryId], createdAt',
+  knowledgeEvents: 'id, userId, eventType, targetType, createdAt',
+  temporalActivities: 'id, userId, type, occurredAt, dayKey, weekKey, monthKey, [userId+dayKey], [userId+monthKey], createdAt',
+  mindNodes: 'id, userId, nodeType, state, label, [userId+nodeType], [userId+state], createdAt, updatedAt',
+  mindEdges: 'id, userId, sourceNodeId, targetNodeId, edgeType, [userId+sourceNodeId], [userId+targetNodeId], [userId+edgeType], createdAt, updatedAt',
+  workspaceSessions: 'id, userId, createdAt, updatedAt',
+  workspaceOpenTabs: 'id, userId, sessionId, tabType, documentId, isPinned, isActive, sortOrder, [userId+sessionId], [userId+tabType], [userId+documentId], openedAt, updatedAt',
+  recentDocuments: 'id, userId, documentId, [userId+documentId], lastOpenedAt, openCount, createdAt, updatedAt',
+  editorDrafts: '++id, userId, draftKey, status, sourceEntryId, sourceType, [userId+status], [userId+draftKey], [userId+sourceEntryId], createdAt, updatedAt',
+  tips: '++id, userId, sourceType, status, [userId+status], createdAt, updatedAt',
+  recommendations: 'id, userId, subjectType, status, [userId+status], [userId+subjectType], createdAt, updatedAt',
+  recommendationEvents: 'id, userId, recommendationId, eventType, [userId+recommendationId], [userId+eventType], createdAt',
+  userBehaviorEvents: 'id, userId, eventType, subjectType, [userId+eventType], [userId+subjectType], createdAt',
+  dockViewSettings: 'id, userId, [userId]',
+})
+
 export { db }
 export const dockItemsTable = db.table('dockItems')
 export const capturesTable = dockItemsTable
@@ -619,6 +938,8 @@ export const workspaceSessionsTable = db.table('workspaceSessions')
 export const workspaceOpenTabsTable = db.table('workspaceOpenTabs')
 export const recentDocumentsTable = db.table('recentDocuments')
 export const editorDraftsTable = db.table('editorDrafts')
+export const tipsTable = db.table('tips')
 export const recommendationsTable = db.table('recommendations')
 export const recommendationEventsTable = db.table('recommendationEvents')
 export const userBehaviorEventsTable = db.table('userBehaviorEvents')
+export const dockViewSettingsTable = db.table('dockViewSettings')

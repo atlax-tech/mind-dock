@@ -1,5 +1,316 @@
 # Atlax MindDock 结构化系统设计文档
 
+版本：v1.2 Golden Workspace Integration
+阶段：Phase 3.2：Golden Workspace 全量真实接入 / Intelligent Local Preview
+核心范围：在既有 Atlax Intelligence Spine 四层对象模型基础上，补齐 Golden UI 所需的系统目录、简报、Review、Tools Hub、Import Control、Privacy Firewall 等结构边界。
+状态标记：[LIVE] 已有真实实现 / [LOCAL-PREVIEW] 本地基础版必须接入 / [PRO-PREVIEW] 订阅功能预览 / [PLANNED] 后续规划 / [RESERVED] 未来预留
+
+---
+
+## 0. 2026-05-09 结构更新总则
+
+### 0.1 为什么更新
+
+当前前端已完成 Golden Workspace 级别的全量视觉重构，但大量页面仍未接入 Local Core 真实数据。旧结构设计能支撑 Capture / Document / MindNode / Recommendation / Event Spine，但没有完整覆盖新版前端新增的系统目录、Daily Brief、Review、Tools Hub、Pending Packets、Quick Capture、Drafts、Privacy Firewall 等产品结构。
+
+本次更新目标不是推翻旧结构，而是在旧 Intelligence Spine 上增加 Golden Workspace 的结构接入层。
+
+### 0.2 核心原则
+
+1. **不新增平行主线。** Quick Capture、Drafts、Tips、Pending Packets 都必须进入 Intelligence Spine，不能成为 UI 私有状态。
+2. **系统目录优先于普通文件夹。** Tips、Drafts、Pending Packets、Archive 是系统级 collection，不只是前端命名。
+3. **Brief / Review 是结构投影。** Daily Brief 和 Review 不直接创造核心资产，只读取 events、documents、captures、mind_nodes、recommendations 等数据生成统计和建议。
+4. **Tools Hub 是能力注册表。** 第一版主要是工具卡片状态、权限、预览，不要求插件运行时。
+5. **Privacy Firewall 是横切层。** 所有外部连接、LLM、插件、云存储、导入源都必须走 Connector / Permission / Audit 机制。
+6. **所有智能推荐必须可解释。** recommendation.reason_json 必须保留 evidence。
+7. **所有高级能力必须有状态。** Live / Local Preview / Pro Preview / Setup Required / Planned / Reserved。
+
+---
+
+## 0.3 新增/强化对象总览
+
+| 对象 | 状态 | 说明 |
+|---|---|---|
+| SystemCollection | [LOCAL-PREVIEW] | 系统目录：Tips / Drafts / Pending Packets / Archive |
+| Tip | [LOCAL-PREVIEW] | Quick Capture 产生的轻量内容，可实现为 Capture + Document projection，不必第一版单独建表 |
+| Draft | [LOCAL-PREVIEW] | Editor 自动保存草稿，可实现为 Document(status=draft) + system_collection='drafts' |
+| BriefReport | [LOCAL-PREVIEW] | Daily Brief 的运行时视图对象，可先不持久化 |
+| ReviewReport | [LOCAL-PREVIEW] | Review 的周期诊断视图对象，可先不持久化 |
+| ToolCard | [PRO-PREVIEW] | Tools Hub 能力卡片注册项 |
+| Connector | [LOCAL-PREVIEW] | 外部连接器抽象：LLM / Cloud / Import / Plugin |
+| ConnectorPermission | [LOCAL-PREVIEW] | 连接器权限声明与授权状态 |
+| AlgorithmAuditLog | [LOCAL-PREVIEW] | 本地算法分析和外部请求审计日志 |
+| ImportSourceDefinition | [PRO-PREVIEW] | 导入源定义：Notion / Obsidian / 微信 / 小红书等 |
+| ImportControlItem | [LOCAL-PREVIEW] | Pending Packets / Import Control Center 的导入入口状态 |
+
+---
+
+## 0.4 SystemCollection 设计
+
+### 0.4.1 定义
+
+SystemCollection 是 Atlax 内置系统目录，不应被用户误删。
+
+```ts
+type SystemCollectionType =
+  | 'tips'
+  | 'drafts'
+  | 'pending_packets'
+  | 'archive'
+  | 'documents'
+```
+
+### 0.4.2 MVP 映射策略
+
+第一版可以不新增复杂表，优先通过 documents / captures 字段表达：
+
+- Tips：`captures.capture_type='quick_capture'` 或 `documents.system_collection='tips'`。
+- Drafts：`documents.status='draft'` 或 `documents.system_collection='drafts'`。
+- Pending Packets：`captures.capture_type='import_packet'` 或 `source_items` / `import_items`。
+- Archive：`documents.status='archived'`。
+
+建议后续正式表：
+
+```text
+system_collections
+- id
+- user_id
+- workspace_id
+- type
+- name
+- is_system
+- sort_order
+- created_at
+- updated_at
+```
+
+---
+
+## 0.5 Quick Capture / Tips 结构流
+
+```text
+Quick Capture 输入
+→ captures(status=raw, capture_type=quick_capture, capture_source=manual)
+→ normalize
+→ documents(status=captured/suggested, system_collection=tips)
+→ mind_nodes(state=drifting/suggested)
+→ recommendations(type=landing/tag/project/cluster)
+→ Home / Daily Brief / Review 读取 Tips 状态
+```
+
+要求：
+
+- Quick Capture 不能只写 local state。
+- Tips 必须参与 recommendation engine。
+- Tips 必须被 Daily Brief / Review 统计。
+- Tips 必须可转正式 Document。
+
+---
+
+## 0.6 Drafts 结构流
+
+```text
+Editor New Draft
+→ documents(status=draft, system_collection=drafts)
+→ autosave 更新 markdown/plain_text/content_hash
+→ Drafts list 可见
+→ manual save / publish
+→ documents(status=active)
+→ mind_nodes 更新或生成
+→ recommendations 更新
+```
+
+要求：
+
+- autosave 只保存内容，不触发重型结构化重算。
+- manual save / publish 触发结构化检查。
+- Drafts 必须被 Home / Daily Brief / Review 读取。
+
+---
+
+## 0.7 Daily Brief 结构
+
+Daily Brief 是视图聚合对象，第一版可按需计算，不强制持久化。
+
+输入：
+
+- captures。
+- documents。
+- mind_nodes。
+- mind_edges。
+- recommendations。
+- recommendation_events。
+- user_behavior_events。
+
+输出结构：
+
+```ts
+interface DailyBriefReport {
+  date: string
+  yesterdayProgress: {
+    thoughtsCaptured: number
+    packetsToDock: number
+    documentsUpdated: number
+    draftsResolved: number
+  }
+  recommendations: BriefRecommendation[]
+  knowledgeHealth: KnowledgeBaseHealth[]
+  tipsStatus: CollectionStatus
+  draftsStatus: CollectionStatus
+  mindSnapshot: MindSnapshot
+  customModules: BriefModuleState[]
+}
+```
+
+---
+
+## 0.8 Review 结构
+
+Review 是周期诊断对象，与 Daily Brief 不同。
+
+```ts
+type ReviewRange = 'day' | 'week' | 'month' | 'year'
+
+interface ReviewReport {
+  range: ReviewRange
+  periodStart: string
+  periodEnd: string
+  healthScore: KnowledgeHealthScore
+  mindSnapshot: MindSnapshot
+  maintenanceActions: MaintenanceAction[]
+  nextCycleRecommendations: Recommendation[]
+  collectionStats: CollectionStatus[]
+}
+```
+
+Review 不直接创建文档，只产生维护建议。用户执行建议时再更新 documents / captures / recommendations / events。
+
+---
+
+## 0.9 Tools Hub 结构
+
+Tools Hub 第一版是工具注册表和订阅能力橱窗。
+
+```ts
+type ToolStatus = 'live' | 'local_preview' | 'pro_preview' | 'setup_required' | 'planned'
+
+type ToolCategory =
+  | 'brief_modules'
+  | 'dock_templates'
+  | 'home_customization'
+  | 'mind_views'
+  | 'editor_templates'
+  | 'llm_settings'
+  | 'plugin_center'
+  | 'import_export'
+  | 'cloud_storage'
+
+interface ToolCard {
+  id: string
+  category: ToolCategory
+  title: string
+  description: string
+  status: ToolStatus
+  requiredPlan?: 'free' | 'pro'
+  requiredConnectorId?: string
+  detailMarkdown?: string
+}
+```
+
+第一版可以静态注册工具卡，但状态和详情必须真实，不做假启用。
+
+---
+
+## 0.10 Import Control / Pending Packets 结构
+
+Pending Packets 是导入资料和待解析内容停靠区。
+
+```ts
+type ImportSourceStatus = 'available' | 'preview' | 'planned'
+
+type ImportSourceKind =
+  | 'manual'
+  | 'file'
+  | 'markdown_folder'
+  | 'notion'
+  | 'obsidian'
+  | 'wechat'
+  | 'xiaohongshu'
+  | 'douyin'
+  | 'bilibili'
+  | 'zhihu'
+```
+
+第一版：
+
+- manual / file 可做基础入口。
+- notion / obsidian / markdown_folder 做 Preview。
+- 中国大陆社交媒体来源做 Planned。
+
+---
+
+## 0.11 Privacy Firewall 结构
+
+Privacy Firewall 是横切层。
+
+```ts
+interface Connector {
+  id: string
+  type: 'llm' | 'cloud_storage' | 'import_source' | 'plugin'
+  name: string
+  status: 'disabled' | 'enabled' | 'requires_setup'
+  permissions: ConnectorPermission[]
+}
+
+interface ConnectorPermission {
+  id: string
+  connectorId: string
+  scope: 'read_local_documents' | 'write_local_documents' | 'network_access' | 'send_to_llm' | 'read_files' | 'write_files'
+  granted: boolean
+}
+
+interface AlgorithmAuditLog {
+  id: string
+  userId: string
+  workspaceId: string
+  actor: 'local_algorithm' | 'connector' | 'plugin'
+  action: string
+  dataScope: string
+  networkAccessed: boolean
+  connectorId?: string
+  createdAt: string
+}
+```
+
+要求：
+
+- Local Algorithm Engine 不允许直接使用网络请求。
+- 所有外部请求必须经过 ConnectorService。
+- audit log 必须记录是否外联。
+- 默认 Local-only mode = true。
+
+---
+
+## 0.12 与旧结构设计的关系
+
+以下旧 v1.0 Intelligence Spine 结构设计仍然有效，尤其是：
+
+- Capture / Document / MindNode / MindEdge / Cluster / Recommendation / RecommendationEvent / UserBehaviorEvent。
+- 快速输入闭环。
+- 编辑闭环。
+- 管理闭环。
+- 工作区闭环。
+- 反馈闭环。
+- 四层对象模型。
+
+本 v1.2 更新只是在其上增加 Golden Workspace 所需的系统目录、简报、Review、Tools、Import、Firewall 结构。
+
+---
+
+# 附录：旧 v1.0 Intelligence Spine 详细结构设计保留
+
+# Atlax MindDock 结构化系统设计文档
+
 版本：v1.0 Intelligence Spine
 阶段：后端第一阶段开发前结构设计
 核心范围：知识智能主干（Atlax Intelligence Spine）驱动下的四层对象模型与闭环系统
@@ -123,6 +434,10 @@ Atlax 不是"一堆页面 + 一个编辑器 + 一个图谱"，而是：
 8. Editor 保存必须触发结构化流程 [MVP-BE]。
 9. Dock 和 Mind 必须双向联动 [MVP-BE]。
 10. Mind 不展示全部数据，只展示结构化结果 [CURRENT-FE：前端概念，MVP-BE：后端保证]。
+
+长期结构原则补充：
+
+11. Atlax 的长期方向不是要求用户先搭建 database / board / workspace，而是允许系统基于已有星云链路、文档类型、Tag、关系和用户选择，推荐可预览、可修改、可确认的工作台结构草案 [NEXT / RESERVED]。该能力不进入当前 MVP 主交付，MVP 仅保留通用推荐字段和事件扩展空间。
 
 ---
 
@@ -281,6 +596,12 @@ WorkspaceTabs 打开/关闭/激活/置顶
 | RhythmProfile | [NEXT] | 用户使用节律画像（活跃时段、输入频率、回顾周期） |
 | GraphSignal | [RESERVED] | 图谱健康信号（孤立节点、停滞项目、重复主题等） |
 | AlgorithmCache | [RESERVED] | 算法中间结果缓存（向量、聚类中间态等） |
+| StructurePack | [RESERVED] | 可被算法推荐和调用的结构包定义，例如项目看板、知识库、研究专题 |
+| WorkspaceRecommendationCandidate | [RESERVED] | 基于某条星云链路生成的工作台候选草案，只用于 Preview，不直接创建最终数据 |
+| GraphFeatureSnapshot | [NEXT] | 针对根节点 / 链路提取的结构特征快照，是 FeatureSnapshot 在 graph-chain 场景下的扩展 |
+| Collection | [RESERVED] | 未来 database / board / workspace 的数据集合抽象，不进入 MVP |
+| CollectionView | [RESERVED] | 未来 table / board / inbox / review 等视图配置抽象，不进入 MVP |
+| RecordNodeLink | [RESERVED] | 未来 collection record 与 mind_node / document 的映射关系 |
 
 **MVP 必须实现**：`recommendations` 和 `recommendation_events`、`user_behavior_events` 三张表，作为反馈闭环的数据基础。即使 MVP 阶段不接算法，也必须记录这些事件，避免后续补数据。
 
@@ -923,6 +1244,22 @@ generated → shown → accepted / rejected / modified / ignored → learned / c
   - `reason_json` JSONB（推荐理由）
   - `created_at` TIMESTAMPTZ NOT NULL
   - `updated_at` TIMESTAMPTZ NOT NULL
+- **未来扩展字段 / 通用推荐抽象**：
+  | 字段 | 状态 | 说明 |
+  | --- | --- | --- |
+  | `source_type` | [MVP-BE / NEXT-compatible] | 推荐来源类型，例如 capture/document/mind_node/graph_chain |
+  | `source_id` | [MVP-BE / NEXT-compatible] | 推荐来源对象 ID |
+  | `source_context_json` | [NEXT] | 额外上下文，例如 root_node_id、selected_chain_ids、graph_scope |
+  | `target_type` | [MVP-BE / NEXT-compatible] | 推荐目标类型，例如 tag/project/cluster/mind_edge/workspace_pack/collection_view |
+  | `target_id` | [MVP-BE / NEXT-compatible] | 推荐目标 ID，可为空 |
+  | `candidate_payload_json` | [NEXT] | 非简单目标推荐的候选草案，例如 workspace preview |
+  | `reason_codes_json` | [MVP-BE] | 可解释推荐理由编码 |
+  | `confidence_score` | [MVP-BE] | 置信度 |
+  | `status` | [MVP-BE] | generated/shown/accepted/rejected/modified/ignored/expired |
+- **扩展说明**：
+  - `target_type` 将当前 tag/project/cluster/link 推荐抽象为统一目标类型，未来可扩展到 `workspace_pack`，但 `workspace_pack` 推荐不属于当前 MVP 必做项。
+  - `candidate_payload_json` 在 MVP 阶段可为空；NEXT / RESERVED 阶段用于承载 Preview Candidate，例如工作台结构草案、待确认字段、低置信内容列表。
+  - 旧字段 `subject_type` / `subject_id` / `recommendation_type` / `candidate_type` / `candidate_id` 保留，MVP 可继续使用；新增字段用于向通用推荐对象渐进兼容。
 - **约束**：
   - 状态变更时同步追加 `recommendation_events` 记录。
   - `UNIQUE(user_id, workspace_id, subject_type, subject_id, recommendation_type, candidate_type, candidate_id)`
@@ -944,6 +1281,19 @@ generated → shown → accepted / rejected / modified / ignored → learned / c
   - `session_id` TEXT FK→workspace_sessions
   - `sync_status` TEXT DEFAULT 'local'（local/pending/synced/error）
   - `created_at` TIMESTAMPTZ NOT NULL
+- **事件类型扩展**：
+  | event_type | 状态 | 说明 |
+  | --- | --- | --- |
+  | `generated` / `shown` / `accepted` / `rejected` / `modified` / `ignored` / `cooled_down` | [MVP-BE] | 当前推荐生命周期事件 |
+  | `previewed` | [NEXT] | 用户打开推荐候选 Preview |
+  | `workspace_pack_selected` | [NEXT] | 用户选择某个工作台结构包，作为算法输入 |
+  | `workspace_pack_rejected` | [NEXT] | 用户拒绝某个工作台结构包 |
+  | `preview_field_modified` | [NEXT] | 用户在 Preview 中修改字段 |
+  | `preview_view_changed` | [NEXT] | 用户在 Preview 中切换或调整视图 |
+  | `low_confidence_item_moved_to_inbox` | [NEXT] | 低置信条目被放入 Inbox 等待确认 |
+  | `generation_confirmed` | [RESERVED] | 用户确认从 Preview 创建结构草案 |
+  | `generation_cancelled` | [RESERVED] | 用户取消从 Preview 创建结构草案 |
+- **扩展说明**：MVP 只需保留 `event_type` 的可扩展性，不要求实现全部事件。用户显式选择是算法输入，不只是 UI 行为，未来会进入偏好蒸馏闭环。
 - **服务闭环**：反馈闭环（3.5）、快速输入闭环（3.1）
 - **迁移建议**：[CURRENT-FE] 前端无此表。MVP 新建。与 `recommendations` 在同一事务内写入。
 
@@ -1318,6 +1668,29 @@ generated → shown → accepted / rejected / modified / ignored → learned / c
 - **写入表**：import_jobs → import_items（异步处理）
 - **触发事件**：import_job_created
 
+### 8.9b POST /api/mind/chains/{root_node_id}/workspace-recommendations
+
+- **状态**：[RESERVED]
+- **闭环**：Smart Workspace Recommendation（未来预留）
+- **用途**：基于根节点及其链路上下文生成未来工作台推荐候选。该 API 不进入当前 MVP，不要求后端现在实现。
+- **请求字段**：
+  - `root_node_id` string required
+  - `scope_depth` number optional
+  - `user_goal` string optional
+  - `preferred_view` string optional
+  - `automation_level` string optional
+- **响应字段**：
+  - `candidates[]`
+    - `candidate_id` string
+    - `pack_id` string
+    - `pack_name` string
+    - `confidence_score` number
+    - `reason[]`
+    - `preview_summary` object
+    - `low_confidence_items[]`
+- **写入表**：无 MVP 写入要求；未来可写入 workspace_recommendation_candidates、recommendation_events。
+- **触发事件**：未来可追加 `previewed`、`workspace_pack_selected` 等 recommendation_events。
+
 ### 8.10 GET /api/review/weekly
 
 - **状态**：[RESERVED]
@@ -1586,6 +1959,14 @@ workspace_open_tabs
 | — | clusters | [CURRENT-FE + MVP-BE] | **新增**（从 collections 概念独立，新增 bound_project_id 等） |
 | — | import_jobs | [NEXT] | **新增** |
 | — | import_items | [NEXT] | **新增** |
+| — | structure_packs | [RESERVED] | **新增**（结构包注册表） |
+| — | workspace_recommendation_candidates | [RESERVED] | **新增**（工作台推荐候选预览） |
+| — | graph_feature_snapshots | [NEXT] | **新增**（链路级图谱特征快照；是 feature_snapshots 的 graph-chain 场景扩展） |
+| — | collections | [RESERVED] | **新增**（未来 database / board 数据集合；不进入 MVP） |
+| — | collection_properties | [RESERVED] | **新增**（未来集合字段定义） |
+| — | collection_records | [RESERVED] | **新增**（未来集合记录） |
+| — | collection_views | [RESERVED] | **新增**（未来集合视图配置） |
+| — | record_node_links | [RESERVED] | **新增**（未来记录与星云节点映射） |
 
 ---
 

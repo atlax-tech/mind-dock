@@ -5,6 +5,25 @@ export type AppEvent =
   | { type: 'archive_completed'; dockItemId: number; sourceType: SourceType }
   | { type: 'weekly_review_opened' }
   | { type: 'browse_revisit'; entryId: number }
+  | { type: 'tip_created'; tipId: number }
+  | { type: 'tip_converted'; tipId: number; draftId: number }
+  | { type: 'tip_discarded'; tipId: number }
+  | { type: 'draft_created'; draftId: number }
+  | { type: 'draft_updated'; draftId: number }
+  | { type: 'draft_deleted'; draftId: number }
+  | { type: 'mind_node_created'; nodeId: string }
+  | { type: 'mind_node_updated'; nodeId: string }
+  | { type: 'mind_node_deleted'; nodeId: string }
+  | { type: 'mind_edge_created'; edgeId: string }
+  | { type: 'mind_edge_updated'; edgeId: string }
+  | { type: 'mind_edge_deleted'; edgeId: string }
+  | { type: 'recommendation_applied'; recommendationId: string }
+  | { type: 'recommendation_rejected'; recommendationId: string }
+  | { type: 'recommendation_ignored'; recommendationId: string }
+  | { type: 'document_archived'; entryId: number }
+  | { type: 'document_restored'; entryId: number }
+  | { type: 'collection_updated'; collectionId: string }
+  | { type: 'tag_updated'; tagId: string }
 
 export type AppMode = 'classic' | 'chat'
 

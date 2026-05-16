@@ -51,8 +51,22 @@ Thumbs.db
 *.temp
 node_modules
 
+# Dev seed routes (local-only, never push to remote)
+apps/web/app/seed-mind/
+apps/web/app/seed/
+apps/web/.local/
+.local/
+
 # Design reference (do not push)
 docs/product/Front_Design_by_Gemini(do-not-push-on-git)/
 docs/design_refs/
 design_refs/
-.trae/documents/phase-20-prototype-alignment.md
+.trae/
+docs/product/ARCHITECTURE.md
+docs/product/BACKEND_TECH_SPEC .md
+docs/product/FRONTEND_TECH_SPEC.md
+docs/product/product_combing/frontend-architecture.md
+docs/product/product_combing/frontend-feature-inventory.md
+docs/product/product_combing/notion-branch-scan-import-final.md
+docs/product/structure—design/STRUCTURE_ALGORITHEM_DESIGN.md
+docs/product/structure—design/STRUCTURE_DESIGN.md

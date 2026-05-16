@@ -10,7 +10,9 @@ import {
   computeTemporalKeys,
   createTag,
   dedupeTagNames,
+  extractDocumentTitle,
   generateSuggestions,
+  validateCaptureInput,
   makeCollectionId,
   makeEntryRelationId,
   makeEntryTagRelationId,
@@ -20,6 +22,8 @@ import {
   makeRecentDocumentId,
   makeRecommendationId,
   makeRecommendationEventId,
+  generateBasicCandidates as buildBasicCandidates,
+  scoreBasicCandidatesForRecommendation,
   makeTemporalActivityId,
   makeTagId,
   makeUserBehaviorEventId,
@@ -35,6 +39,8 @@ import {
   type ChainProvenance,
   type Collection,
   type CollectionType,
+  type CaptureToDocumentInput,
+  type CaptureToDocumentResult,
   type DocumentUpdateInput,
   type EntryRelationType,
   type EntryStatus,
@@ -44,12 +50,27 @@ import {
   type MindNodeType,
   type MindNodeState,
   type RecommendationCreateInput,
+  type BasicCandidate,
+  type BasicCandidateContext,
+  type RecommendationFeedbackInput,
+  type RecommendationFeedbackResult,
+  type RecommendationShownInput,
+  type RecommendationShownResult,
   type RecommendationStatus,
+  type RecommendationSubjectType,
+  type RecommendationCandidateType,
   type RecommendationEventType,
   type RecommendationEventInput,
+  type RecommendationSignalSummary,
+  type ScoredRecommendationCandidate,
   type UserBehaviorEventType,
-  type UserBehaviorTargetType,
+  type UserBehaviorSubjectType,
   type UserBehaviorEventInput,
+  feedbackTypeToStatus,
+  feedbackTypeToEventType,
+  isSupportedCandidateTypeForApply,
+  isRecommendationPendingStatus,
+  makeRecommendationDedupeKey,
   type RelationDirection,
   type RelationSource,
   type SourceType,
@@ -68,8 +89,16 @@ import type {
   ChatSessionUpdateInput,
 } from '@atlax/domain/ports'
 import { isValidChatSessionInput } from '@atlax/domain/ports'
+import { isArchived, assertNotIrreversible, isHidden } from './lifecycleGuards'
+import {
+  createEditorContentPayload,
+  normalizeStoredEditorContent,
+  textToTiptapDoc,
+  type TiptapJSONContent,
+} from './editorContentAdapter'
 
 import {
+  db,
   chatSessionsTable,
   collectionsTable,
   entriesTable,
@@ -89,6 +118,8 @@ import {
   workspaceOpenTabsTable,
   workspaceSessionsTable,
   editorDraftsTable,
+  tipsTable,
+  dockViewSettingsTable,
   type ChatSessionRecord,
   type CollectionRecord,
   type EntryRecord,
@@ -106,6 +137,10 @@ import {
   type WorkspaceOpenTabRecord,
   type WorkspaceSessionRecord,
   type EditorDraftRecord,
+  type TipRecord,
+  type TipSourceType,
+  type TipStatus,
+  type PersistedTip,
   type PersistedDockItem,
   type PersistedEntry,
   type PersistedDocument,
@@ -126,8 +161,12 @@ import {
   type PersistedWorkspaceOpenTab,
   type PersistedWorkspaceSession,
   type PersistedEditorDraft,
+  type DraftStatus,
+  type DraftSourceType,
   type TagRecord,
   type WidgetRecord,
+  type DockViewSettingsRecord,
+  type PersistedDockViewSettings,
 } from './db'
 
 export type DockItem = DomainDockItem
@@ -148,10 +187,130 @@ export type { PersistedRecentDocument as StoredRecentDocument }
 export type { PersistedRecommendation as StoredRecommendation }
 export type { PersistedRecommendationEvent as StoredRecommendationEvent }
 export type { PersistedUserBehaviorEvent as StoredUserBehaviorEvent }
+export type { PersistedEditorDraft as StoredDraft }
+export type { PersistedTip as StoredTip }
+export type { TipSourceType, TipStatus }
+export type { DraftStatus }
+export type { DraftSourceType }
+export type { DockViewSettingsRecord }
+export type { PersistedDockViewSettings as StoredDockViewSettings }
 export type { ChainProvenance }
 export type { CalendarDayResult }
 export type { CalendarMonthOverview }
 export type { StructureProjection }
+
+export type RecommendationDockQueueSortBy = 'rank' | 'confidenceScore' | 'createdAt'
+export type RecommendationDockQueueSortDirection = 'asc' | 'desc'
+
+export interface RecommendationDockQueueFilters {
+  status?: RecommendationStatus
+  candidateType?: RecommendationCandidateType
+  subjectType?: RecommendationSubjectType
+  subjectId?: number | string
+  recommendationType?: string
+}
+
+export interface RecommendationDockQueueQuery extends RecommendationDockQueueFilters {
+  sortBy?: RecommendationDockQueueSortBy
+  sortDirection?: RecommendationDockQueueSortDirection
+  limit?: number
+  cursor?: string | null
+}
+
+export interface RecommendationReasonSummary {
+  source: string | null
+  reason: string
+  context: {
+    subjectType: RecommendationSubjectType
+    subjectId: number | string
+  }
+  candidate: {
+    candidateType: RecommendationCandidateType
+    candidateId: string
+  }
+}
+
+export interface RecommendationScoreSummary {
+  confidenceScore: number
+  score: number
+  rank: number | null
+  scoreReason: string | null
+  scoreBreakdown: Record<string, unknown> | null
+}
+
+export interface RecommendationDockQueueEvidenceSummary {
+  evidenceCount: number
+  sources: string[]
+  evidenceTypes: string[]
+  matchedValues: string[]
+  strongestContribution: number | null
+}
+
+export interface RecommendationDockQueueItem {
+  id: string
+  userId: string
+  status: RecommendationStatus
+  recommendationType: string
+  subjectType: RecommendationSubjectType
+  subjectId: number | string
+  candidateType: RecommendationCandidateType
+  candidateId: string
+  confidenceScore: number
+  createdAt: Date
+  updatedAt: Date
+  reasonSummary: RecommendationReasonSummary
+  scoreSummary: RecommendationScoreSummary
+  evidenceSummary: RecommendationDockQueueEvidenceSummary
+  isShown: boolean
+  hasFeedback: boolean
+}
+
+export interface RecommendationDockQueueResult {
+  items: RecommendationDockQueueItem[]
+  nextCursor: string | null
+  total: number
+}
+
+export async function resolveRecommendationCandidate(
+  userId: string, 
+  type: RecommendationCandidateType, 
+  id: string
+): Promise<{ title: string; type: string } | null> {
+  try {
+    switch (type) {
+      case 'mindNode': {
+        const node = await mindNodesTable.get(id);
+        return node && node.userId === userId ? { title: node.label, type: node.nodeType } : null;
+      }
+      case 'entry': {
+        const entry = await entriesTable.get(Number(id));
+        return entry && entry.userId === userId ? { title: entry.title, type: entry.type } : null;
+      }
+      case 'document': {
+        // Document candidates usually point to entries or dock items that are documents
+        const doc = await entriesTable.get(Number(id));
+        return doc && doc.userId === userId ? { title: doc.title, type: 'document' } : null;
+      }
+      case 'dockItem': {
+        const item = await dockItemsTable.get(Number(id));
+        return item && item.userId === userId ? { title: item.topic || item.rawText?.slice(0, 40) || `Dock Item #${id}`, type: item.sourceType } : null;
+      }
+      case 'tag': {
+        const tag = await tagsTable.get(id);
+        return tag && tag.userId === userId ? { title: tag.name, type: 'tag' } : null;
+      }
+      case 'project': {
+        const collection = await collectionsTable.get(id);
+        return collection && collection.userId === userId ? { title: collection.name, type: collection.collectionType } : null;
+      }
+      default:
+        return null;
+    }
+  } catch (err) {
+    console.error('Error resolving candidate:', err);
+    return null;
+  }
+}
 
 function toPersistedDockItem(item: DockItemRecord | undefined): PersistedDockItem | null {
   if (!item || typeof item.id !== 'number') {
@@ -187,6 +346,7 @@ function toPersistedEntry(entry: EntryRecord | undefined): PersistedEntry | null
 
   return {
     ...entry,
+    ...normalizeStoredEditorContent(entry),
     id: entry.id,
   }
 }
@@ -270,6 +430,7 @@ export async function listArchivedEntries(userId: string): Promise<PersistedEntr
   const all = await entriesTable.where('userId').equals(userId).reverse().sortBy('archivedAt')
 
   return all.flatMap((entry) => {
+    if (!isArchived(entry)) return []
     const persistedEntry = toPersistedEntry(entry)
     return persistedEntry ? [persistedEntry] : []
   })
@@ -278,6 +439,7 @@ export async function listArchivedEntries(userId: string): Promise<PersistedEntr
 export async function listArchivedEntriesByType(userId: string, type: string): Promise<PersistedEntry[]> {
   const all = await entriesTable.where('userId').equals(userId).and((e) => e.type === type).reverse().sortBy('archivedAt')
   return all.flatMap((entry) => {
+    if (!isArchived(entry)) return []
     const persistedEntry = toPersistedEntry(entry)
     return persistedEntry ? [persistedEntry] : []
   })
@@ -289,6 +451,7 @@ export async function listArchivedEntriesByTag(userId: string, tag: string): Pro
     e.tags.some((t: string) => normalizeTagName(t).toLowerCase() === normalized)
   ).reverse().sortBy('archivedAt')
   return all.flatMap((entry) => {
+    if (!isArchived(entry)) return []
     const persistedEntry = toPersistedEntry(entry)
     return persistedEntry ? [persistedEntry] : []
   })
@@ -297,6 +460,7 @@ export async function listArchivedEntriesByTag(userId: string, tag: string): Pro
 export async function listArchivedEntriesByProject(userId: string, project: string): Promise<PersistedEntry[]> {
   const all = await entriesTable.where('userId').equals(userId).and((e) => e.project === project).reverse().sortBy('archivedAt')
   return all.flatMap((entry) => {
+    if (!isArchived(entry)) return []
     const persistedEntry = toPersistedEntry(entry)
     return persistedEntry ? [persistedEntry] : []
   })
@@ -622,15 +786,20 @@ export async function getOrCreateTag(userId: string, name: string): Promise<Pers
 export async function updateArchivedEntry(
   userId: string,
   entryId: number,
-  updates: { tags?: string[]; project?: string | null; content?: string; title?: string },
+  updates: { tags?: string[]; project?: string | null; content?: string; title?: string; archivedAt?: Date | null },
 ): Promise<PersistedEntry | null> {
   const entry = await entriesTable.get(entryId)
   if (!entry || entry.userId !== userId) return null
 
-  const { entryPatch, dockSyncPatch } = buildEntryAndDockPatches(updates, entry.sourceDockItemId)
+  const { archivedAt, ...restUpdates } = updates
+  const { entryPatch, dockSyncPatch } = buildEntryAndDockPatches(restUpdates, entry.sourceDockItemId)
 
   if (entryPatch && Object.keys(entryPatch).length > 0) {
     await entriesTable.update(entryId, entryPatch)
+  }
+
+  if (archivedAt !== undefined) {
+    await entriesTable.update(entryId, { archivedAt })
   }
 
   if (dockSyncPatch) {
@@ -1351,6 +1520,132 @@ export async function updateDocument(
   return updateArchivedEntry(userId, documentId, updates)
 }
 
+export async function createCaptureToDocumentFlow(
+  input: CaptureToDocumentInput,
+): Promise<CaptureToDocumentResult> {
+  const validationError = validateCaptureInput(input)
+  if (validationError !== null) {
+    throw new Error(validationError)
+  }
+
+  const sourceType = input.sourceType ?? 'text'
+  const title = extractDocumentTitle(input.rawText)
+
+  const captureId = await createDockItem(input.userId, input.rawText, sourceType, { topic: input.topic ?? null })
+
+  const docId = await entriesTable.add({
+    userId: input.userId,
+    sourceDockItemId: captureId,
+    title,
+    content: input.rawText,
+    type: 'note',
+    tags: [],
+    project: null,
+    actions: [],
+    createdAt: new Date(),
+    archivedAt: new Date(),
+  }) as number
+
+  const mindNode = await upsertMindNode({
+    userId: input.userId,
+    nodeType: 'document',
+    label: title,
+    documentId: docId,
+    state: 'drifting',
+    metadata: { sourceType: 'document', entryId: docId },
+  })
+
+  await dockItemsTable.update(captureId, {
+    status: 'archived',
+    processedAt: new Date(),
+  })
+
+  const { rec, recEvent } = await db.transaction(
+    'rw',
+    recommendationsTable,
+    recommendationEventsTable,
+    async () => {
+      const createdRecommendation = await createRecommendation({
+        userId: input.userId,
+        subjectType: 'dockItem',
+        subjectId: captureId,
+        recommendationType: 'landing',
+        candidateType: 'mindNode',
+        candidateId: mindNode.id,
+        confidenceScore: 1.0,
+        reasonJson: JSON.stringify({
+          source: 'capture_to_document_flow',
+          reason: 'created from successful capture landing flow',
+          documentId: docId,
+          mindNodeId: mindNode.id,
+        }),
+        status: 'generated',
+      })
+
+      const createdEvent = await recordRecommendationEvent({
+        recommendationId: createdRecommendation.id,
+        userId: input.userId,
+        eventType: 'recommendation_generated',
+        metadata: {
+          source: 'capture_to_document_flow',
+          documentId: docId,
+          mindNodeId: mindNode.id,
+        },
+      })
+
+      return { rec: createdRecommendation, recEvent: createdEvent }
+    },
+  )
+
+  const capture = await getPersistedDockItem(captureId)
+  if (!capture) {
+    throw new Error('Failed to retrieve created capture')
+  }
+
+  const entry = await toPersistedEntry(await entriesTable.get(docId))
+  if (!entry) {
+    throw new Error('Failed to retrieve created document')
+  }
+
+  return {
+    capture: {
+      id: capture.id,
+      rawText: capture.rawText,
+      status: capture.status,
+      processedAt: capture.processedAt,
+      createdAt: capture.createdAt,
+    },
+    document: {
+      id: entry.id,
+      title: entry.title,
+      content: entry.content,
+      sourceCaptureId: entry.sourceDockItemId,
+      type: entry.type,
+      createdAt: entry.createdAt,
+    },
+    mindNode: {
+      id: mindNode.id,
+      label: mindNode.label,
+      nodeType: mindNode.nodeType,
+      documentId: mindNode.documentId as number,
+      state: mindNode.state,
+    },
+    recommendation: {
+      id: rec.id,
+      recommendationType: rec.recommendationType,
+      status: rec.status,
+      subjectType: rec.subjectType,
+      subjectId: rec.subjectId as number,
+      candidateType: rec.candidateType,
+      candidateId: rec.candidateId,
+    },
+    recommendationEvent: {
+      id: recEvent.id,
+      eventType: recEvent.eventType,
+    },
+  }
+}
+
 function toPersistedMindNode(node: MindNodeRecord | undefined): PersistedMindNode | null {
   if (!node || !node.id) return null
   return {
@@ -1410,7 +1705,7 @@ export async function upsertMindNode(input: {
   metadata?: Record<string, unknown> | null
 }): Promise<PersistedMindNode> {
   const now = new Date()
-  const id = makeMindNodeId(input.userId, input.nodeType, input.label)
+  const id = makeMindNodeId(input.userId, input.nodeType, input.label, input.documentId)
   const existing = await mindNodesTable.get(id)
 
   const record: MindNodeRecord = {
@@ -1435,11 +1730,88 @@ export async function upsertMindNode(input: {
   return toPersistedMindNode(await mindNodesTable.get(id)) as PersistedMindNode
 }
 
+export async function updateMindNodePosition(
+  userId: string,
+  id: string,
+  positionX: number,
+  positionY: number,
+): Promise<PersistedMindNode | null> {
+  const existing = await mindNodesTable.get(id)
+  if (!existing || existing.userId !== userId) return null
+  await mindNodesTable.update(id, {
+    positionX,
+    positionY,
+    updatedAt: new Date(),
+  })
+  return toPersistedMindNode(await mindNodesTable.get(id))
+}
+
 export async function deleteMindNode(userId: string, id: string): Promise<boolean> {
   const existing = await mindNodesTable.get(id)
   if (!existing || existing.userId !== userId) return false
   await mindNodesTable.delete(id)
   return true
+}
+
+export async function archiveMindNode(userId: string, id: string): Promise<PersistedMindNode | null> {
+  const existing = await mindNodesTable.get(id)
+  if (!existing || existing.userId !== userId) return null
+  if (existing.nodeType === 'root') return null
+  if (existing.state === 'archived') return toPersistedMindNode(existing)
+  const now = new Date()
+  await mindNodesTable.update(id, {
+    state: 'archived' as MindNodeState,
+    updatedAt: now,
+    metadata: { ...(existing.metadata as Record<string, unknown> | null), hiddenAt: now.toISOString() },
+  })
+  return toPersistedMindNode(await mindNodesTable.get(id))
+}
+
+export async function restoreMindNode(userId: string, id: string): Promise<PersistedMindNode | null> {
+  const existing = await mindNodesTable.get(id)
+  if (!existing || existing.userId !== userId) return null
+  if (existing.state !== 'archived') return toPersistedMindNode(existing)
+  const cleanedMetadata = { ...(existing.metadata as Record<string, unknown> | null) }
+  if (cleanedMetadata != null) {
+    delete cleanedMetadata.hiddenAt
+  }
+  await mindNodesTable.update(id, {
+    state: 'drifting' as MindNodeState,
+    updatedAt: new Date(),
+    metadata: cleanedMetadata,
+  })
+  return toPersistedMindNode(await mindNodesTable.get(id))
+}
+
+export async function listArchivedMindNodes(userId: string): Promise<PersistedMindNode[]> {
+  const nodes = await mindNodesTable
+    .where('[userId+state]')
+    .equals([userId, 'archived'])
+    .toArray()
+  return nodes.map(n => toPersistedMindNode(n)).filter((n): n is PersistedMindNode => n !== null)
+}
+
+export async function findMindNodeByDocumentId(
+  userId: string,
+  documentId: number,
+): Promise<PersistedMindNode | null> {
+  const nodes = await mindNodesTable.where('userId').equals(userId).toArray()
+  const found = nodes.find(n => n.documentId === documentId)
+  return found ? toPersistedMindNode(found) as PersistedMindNode : null
+}
+
+export async function findMindNodeBySourceType(
+  userId: string,
+  documentId: number,
+  sourceType: 'draft' | 'document',
+): Promise<PersistedMindNode | null> {
+  const nodes = await mindNodesTable.where('userId').equals(userId).toArray()
+  const found = nodes.find(n =>
+    n.documentId === documentId &&
+    n.metadata != null &&
+    (n.metadata as Record<string, unknown>).sourceType === sourceType
+  )
+  return found ? toPersistedMindNode(found) as PersistedMindNode : null
 }
 
 export async function listMindEdges(userId: string): Promise<PersistedMindEdge[]> {
@@ -1457,10 +1829,54 @@ export async function listMindEdgesByTargetNode(userId: string, targetNodeId: st
   return edges.flatMap((e) => { const p = toPersistedMindEdge(e); return p ? [p] : [] })
 }
 
+export async function checkDocumentNameConflict(
+  userId: string,
+  label: string,
+  parentEdgeType: MindEdgeType = 'parent_child',
+): Promise<{ hasConflict: boolean; conflictingParentIds: string[]; hasRootLevelConflict: boolean }> {
+  const normalized = label.trim().toLowerCase()
+  const allNodes = await mindNodesTable.where('userId').equals(userId).toArray()
+  const allEdges = await mindEdgesTable.where('userId').equals(userId).toArray()
+  const documentNodes = allNodes.filter(n => n.nodeType === 'document')
+  const sameNameNodes = documentNodes.filter(n => n.label.trim().toLowerCase() === normalized)
+  if (sameNameNodes.length === 0) return { hasConflict: false, conflictingParentIds: [], hasRootLevelConflict: false }
+  const parentEdges = allEdges.filter(e => e.edgeType === parentEdgeType)
+  const conflictingParentIds: string[] = []
+  let hasRootLevelConflict = false
+  for (const sameNameNode of sameNameNodes) {
+    const parentEdge = parentEdges.find(e => e.targetNodeId === sameNameNode.id)
+    if (parentEdge) {
+      conflictingParentIds.push(parentEdge.sourceNodeId)
+    } else {
+      hasRootLevelConflict = true
+    }
+  }
+  const hasConflict = conflictingParentIds.length > 0 || hasRootLevelConflict
+  return { hasConflict, conflictingParentIds, hasRootLevelConflict }
+}
+
 export async function getMindEdge(userId: string, id: string): Promise<PersistedMindEdge | null> {
   const edge = await mindEdgesTable.get(id)
   if (!edge || edge.userId !== userId) return null
   return toPersistedMindEdge(edge)
+}
+
+async function findMindEdgeBetweenNodes(
+  userId: string,
+  nodeA: string,
+  nodeB: string,
+): Promise<PersistedMindEdge | null> {
+  const edges = await mindEdgesTable
+    .where('userId')
+    .equals(userId)
+    .and(e =>
+      (e.sourceNodeId === nodeA && e.targetNodeId === nodeB) ||
+      (e.sourceNodeId === nodeB && e.targetNodeId === nodeA),
+    )
+    .limit(1)
+    .toArray()
+  if (edges.length === 0) return null
+  return toPersistedMindEdge(edges[0])
 }
 
 export async function upsertMindEdge(input: {
@@ -1472,10 +1888,20 @@ export async function upsertMindEdge(input: {
   source?: 'user' | 'system' | 'import'
   confidence?: number | null
   reason?: string | null
-}): Promise<PersistedMindEdge> {
+}): Promise<PersistedMindEdge | null> {
+  if (input.sourceNodeId === input.targetNodeId) return null
+
+  const [sourceNode, targetNode] = await Promise.all([
+    mindNodesTable.get(input.sourceNodeId),
+    mindNodesTable.get(input.targetNodeId),
+  ])
+  if (!sourceNode || sourceNode.userId !== input.userId) return null
+  if (!targetNode || targetNode.userId !== input.userId) return null
+
   const now = new Date()
   const id = makeMindEdgeId(input.userId, input.sourceNodeId, input.targetNodeId, input.edgeType)
   const existing = await mindEdgesTable.get(id)
+  if (existing) return null
 
   const record: MindEdgeRecord = {
     id,
@@ -1483,11 +1909,11 @@ export async function upsertMindEdge(input: {
     sourceNodeId: input.sourceNodeId,
     targetNodeId: input.targetNodeId,
     edgeType: input.edgeType,
-    strength: input.strength ?? existing?.strength ?? 0.5,
-    source: input.source ?? existing?.source ?? 'system',
-    confidence: input.confidence ?? existing?.confidence ?? null,
-    reason: input.reason ?? existing?.reason ?? null,
-    createdAt: existing?.createdAt ?? now,
+    strength: input.strength ?? 0.5,
+    source: input.source ?? 'system',
+    confidence: input.confidence ?? null,
+    reason: input.reason ?? null,
+    createdAt: now,
     updatedAt: now,
   }
   await mindEdgesTable.put(record)
@@ -1497,6 +1923,15 @@ export async function upsertMindEdge(input: {
 export async function deleteMindEdge(userId: string, id: string): Promise<boolean> {
   const existing = await mindEdgesTable.get(id)
   if (!existing || existing.userId !== userId) return false
+  if (existing.reason === 'baseline-auto-connect') return false
+  await mindEdgesTable.delete(id)
+  return true
+}
+
+export async function forceDeleteBaselineEdge(userId: string, id: string): Promise<boolean> {
+  const existing = await mindEdgesTable.get(id)
+  if (!existing || existing.userId !== userId) return false
+  if (existing.reason !== 'baseline-auto-connect') return false
   await mindEdgesTable.delete(id)
   return true
 }
@@ -1697,7 +2132,333 @@ export async function recordRecentDocumentOpen(input: {
 
 function toPersistedEditorDraft(draft: EditorDraftRecord | undefined): PersistedEditorDraft | null {
   if (!draft || typeof draft.id !== 'number') return null
-  return { ...draft, id: draft.id }
+  return {
+    ...draft,
+    ...normalizeStoredEditorContent(draft),
+    id: draft.id,
+    status: draft.status ?? 'active',
+  }
+}
+
+export interface EditorContentInput {
+  contentJson?: TiptapJSONContent | null
+  plainText?: string
+  html?: string
+  markdown?: string
+}
+
+export interface DraftUpdateInput extends EditorContentInput {
+  title?: string
+  content?: string
+  tags?: string[]
+  project?: string | null
+  collectionId?: string | null
+}
+
+function buildEditorContentRecord(
+  content: string,
+  contentFields?: EditorContentInput | null,
+): Required<EditorContentInput> & { content: string } {
+  const payload = createEditorContentPayload(
+    contentFields?.contentJson ?? textToTiptapDoc(contentFields?.markdown ?? contentFields?.plainText ?? content),
+    contentFields?.plainText ?? contentFields?.markdown ?? content,
+  )
+  return {
+    contentJson: payload.contentJson,
+    plainText: contentFields?.plainText ?? payload.plainText,
+    html: contentFields?.html ?? payload.html,
+    markdown: contentFields?.markdown ?? payload.markdown,
+    content: contentFields?.plainText ?? contentFields?.markdown ?? payload.content,
+  }
+}
+
+async function addDraftRecord(
+  userId: string,
+  title: string,
+  content: string,
+  sourceEntryId?: number | null,
+  sourceType?: DraftSourceType | null,
+  tags?: string[],
+  project?: string | null,
+  collectionId?: string | null,
+  contentFields?: EditorContentInput | null,
+): Promise<number> {
+  const now = new Date()
+  const normalizedContent = buildEditorContentRecord(content, contentFields)
+  const id = await editorDraftsTable.add({
+    userId,
+    draftKey: 0,
+    title,
+    content: normalizedContent.content,
+    contentJson: normalizedContent.contentJson,
+    plainText: normalizedContent.plainText,
+    html: normalizedContent.html,
+    markdown: normalizedContent.markdown,
+    status: 'active',
+    sourceEntryId: sourceEntryId ?? null,
+    sourceType: sourceType ?? null,
+    tags: tags ?? [],
+    project: project ?? null,
+    collectionId: collectionId ?? null,
+    createdAt: now,
+    updatedAt: now,
+  })
+  await editorDraftsTable.update(id as number, { draftKey: id as number })
+  return id as number
+}
+
+export async function createDraft(
+  userId: string,
+  title: string = '',
+  content: string = '',
+  sourceEntryId?: number | null,
+  sourceType?: DraftSourceType | null,
+  tags?: string[],
+  project?: string | null,
+  collectionId?: string | null,
+  contentFields?: EditorContentInput | null,
+): Promise<PersistedEditorDraft | null> {
+  const id = await addDraftRecord(userId, title, content, sourceEntryId, sourceType, tags, project, collectionId, contentFields)
+  const saved = await editorDraftsTable.get(id)
+  return toPersistedEditorDraft(saved)
+}
+
+export async function listDrafts(userId: string): Promise<PersistedEditorDraft[]> {
+  const drafts = await editorDraftsTable
+    .where('userId')
+    .equals(userId)
+    .reverse()
+    .sortBy('updatedAt')
+  return drafts.flatMap((d) => {
+    if (d.status && d.status !== 'active') return []
+    const p = toPersistedEditorDraft(d)
+    return p ? [p] : []
+  })
+}
+
+export async function findActiveDraftBySourceEntryId(
+  userId: string,
+  entryId: number,
+): Promise<PersistedEditorDraft | null> {
+  const drafts = await editorDraftsTable
+    .where('[userId+sourceEntryId]')
+    .equals([userId, entryId])
+    .toArray()
+  const active = drafts.find((d) => d.status === 'active')
+  return active ? toPersistedEditorDraft(active) : null
+}
+
+export async function getDraft(userId: string, draftId: number): Promise<PersistedEditorDraft | null> {
+  const draft = await editorDraftsTable.get(draftId)
+  if (!draft || draft.userId !== userId) return null
+  return toPersistedEditorDraft(draft)
+}
+
+export async function updateDraft(
+  userId: string,
+  draftId: number,
+  updates: DraftUpdateInput,
+): Promise<PersistedEditorDraft | null> {
+  const draft = await editorDraftsTable.get(draftId)
+  if (!draft || draft.userId !== userId) return null
+  const patch: Partial<EditorDraftRecord> = { updatedAt: new Date() }
+  if (updates.title !== undefined) patch.title = updates.title
+  if (
+    updates.content !== undefined ||
+    updates.contentJson !== undefined ||
+    updates.plainText !== undefined ||
+    updates.html !== undefined ||
+    updates.markdown !== undefined
+  ) {
+    const normalizedContent = buildEditorContentRecord(updates.content ?? draft.content, {
+      contentJson: updates.contentJson ?? draft.contentJson ?? null,
+      plainText: updates.plainText ?? updates.content ?? draft.plainText ?? draft.content,
+      html: updates.html,
+      markdown: updates.markdown,
+    })
+    patch.content = normalizedContent.content
+    patch.contentJson = normalizedContent.contentJson
+    patch.plainText = normalizedContent.plainText
+    patch.html = normalizedContent.html
+    patch.markdown = normalizedContent.markdown
+  }
+  if (updates.tags !== undefined) patch.tags = updates.tags
+  if (updates.project !== undefined) patch.project = updates.project
+  if (updates.collectionId !== undefined) patch.collectionId = updates.collectionId
+  await editorDraftsTable.update(draftId, patch)
+  return toPersistedEditorDraft(await editorDraftsTable.get(draftId))
+}
+
+export type PublishMode = 'update_original' | 'as_new'
+
+export interface PublishResult {
+  draft: PersistedEditorDraft | null
+  entry: PersistedEntry | null
+  nameConflict?: { hasConflict: boolean; conflictingParentIds: string[] }
+  emptyDraft?: boolean
+}
+
+export async function publishDraftToDocument(
+  userId: string,
+  draftId: number,
+  publishMode: PublishMode = 'update_original',
+): Promise<PublishResult> {
+  const draft = await editorDraftsTable.get(draftId)
+  if (!draft || draft.userId !== userId || (draft.status && draft.status !== 'active')) {
+    return { draft: null, entry: null }
+  }
+
+  const title = (draft.title || '').trim()
+  const draftContent = normalizeStoredEditorContent(draft)
+  const content = (draftContent.plainText || draftContent.content || '').trim()
+  const isDefaultTitle = !title || title.toLowerCase() === 'untitled'
+  const isEmptyContent = !content
+
+  if (isDefaultTitle && isEmptyContent) {
+    return { draft: null, entry: null, emptyDraft: true }
+  }
+
+  const effectiveTitle = title || 'Untitled'
+
+  const isCreatingNew = draft.sourceEntryId == null || publishMode === 'as_new'
+  if (isCreatingNew) {
+    const conflict = await checkDocumentNameConflict(userId, effectiveTitle)
+    if (conflict.hasConflict) {
+      return { draft: null, entry: null, nameConflict: conflict }
+    }
+  }
+
+  const now = new Date()
+  let entry: PersistedEntry | null = null
+
+  if (draft.sourceEntryId != null && publishMode === 'update_original') {
+    const existing = await entriesTable.get(draft.sourceEntryId)
+    if (existing && existing.userId === userId) {
+      const updatePayload: Record<string, unknown> = {
+        title: effectiveTitle,
+        content: draftContent.content,
+        contentJson: draftContent.contentJson,
+        plainText: draftContent.plainText,
+        html: draftContent.html,
+        markdown: draftContent.markdown,
+        archivedAt: now,
+      }
+      if (Array.isArray(draft.tags)) {
+        updatePayload.tags = draft.tags
+      }
+      if (draft.project !== undefined) {
+        updatePayload.project = draft.project
+      }
+      await entriesTable.update(draft.sourceEntryId, updatePayload)
+      entry = toPersistedEntry(await entriesTable.get(draft.sourceEntryId))
+    }
+  }
+
+  if (!entry) {
+    const entryId = await entriesTable.add({
+      userId,
+      sourceDockItemId: draft.sourceEntryId ?? 0,
+      title: effectiveTitle,
+      content: draftContent.content,
+      contentJson: draftContent.contentJson,
+      plainText: draftContent.plainText,
+      html: draftContent.html,
+      markdown: draftContent.markdown,
+      type: 'note',
+      tags: draft.tags || [],
+      project: draft.project ?? null,
+      actions: [],
+      createdAt: now,
+      archivedAt: now,
+    })
+    entry = toPersistedEntry(await entriesTable.get(entryId as number))
+  }
+
+  await editorDraftsTable.update(draftId, {
+    status: 'published',
+    updatedAt: now,
+  })
+
+  const entryId = entry?.id
+  if (entryId == null) {
+    return { draft: toPersistedEditorDraft(await editorDraftsTable.get(draftId)), entry: null }
+  }
+
+  const draftNode = await findMindNodeBySourceType(userId, draftId, 'draft')
+  if (draftNode) {
+    await mindNodesTable.delete(draftNode.id)
+  }
+
+  if (draft.sourceEntryId != null && publishMode === 'update_original') {
+    const entryNode = await findMindNodeBySourceType(userId, draft.sourceEntryId, 'document')
+    if (entryNode) {
+      await mindNodesTable.update(entryNode.id, {
+        label: effectiveTitle,
+        documentId: entryId,
+        metadata: { sourceType: 'document', entryId },
+        updatedAt: now,
+      })
+    } else {
+      await upsertMindNode({
+        userId,
+        nodeType: 'document',
+        label: effectiveTitle,
+        documentId: entryId,
+        state: 'drifting',
+        metadata: { sourceType: 'document', entryId },
+      })
+    }
+  } else {
+    await upsertMindNode({
+      userId,
+      nodeType: 'document',
+      label: effectiveTitle,
+      documentId: entryId,
+      state: 'drifting',
+      metadata: { sourceType: 'document', entryId },
+    })
+  }
+
+  return {
+    draft: toPersistedEditorDraft(await editorDraftsTable.get(draftId)),
+    entry,
+  }
+}
+
+export type DiscardMode = 'abandon_changes' | 'delete_all'
+
+export async function discardDraft(
+  userId: string,
+  draftId: number,
+  discardMode: DiscardMode = 'abandon_changes',
+  options?: { confirmed?: boolean },
+): Promise<PersistedEditorDraft | null> {
+  const draft = await editorDraftsTable.get(draftId)
+  if (!draft || draft.userId !== userId) return null
+  if (discardMode === 'delete_all') {
+    assertNotIrreversible('discardDraft:delete_all', options?.confirmed === true)
+  }
+  await editorDraftsTable.update(draftId, {
+    status: 'discarded',
+    updatedAt: new Date(),
+  })
+  if (!draft.sourceEntryId) {
+    const draftNode = await findMindNodeBySourceType(userId, draftId, 'draft')
+    if (draftNode) {
+      await mindNodesTable.delete(draftNode.id)
+    }
+  }
+  if (draft.sourceEntryId != null && discardMode === 'delete_all') {
+    const entryNode = await findMindNodeBySourceType(userId, draft.sourceEntryId, 'document')
+    if (entryNode) {
+      await mindNodesTable.delete(entryNode.id)
+    }
+    const existing = await entriesTable.get(draft.sourceEntryId)
+    if (existing && existing.userId === userId) {
+      await entriesTable.delete(draft.sourceEntryId)
+    }
+  }
+  return toPersistedEditorDraft(await editorDraftsTable.get(draftId))
 }
 
 export async function saveEditorDraft(
@@ -1726,6 +2487,12 @@ export async function saveEditorDraft(
     draftKey,
     title,
     content,
+    status: 'active',
+    sourceEntryId: null,
+    sourceType: null,
+    tags: [],
+    project: null,
+    collectionId: null,
     createdAt: now,
     updatedAt: now,
   })
@@ -1783,9 +2550,7 @@ function toPersistedUserBehaviorEvent(evt: UserBehaviorEventRecord | undefined):
   return {
     ...evt,
     id: evt.id,
-    targetId: evt.targetId ?? null,
-    fromContext: evt.fromContext ?? null,
-    toContext: evt.toContext ?? null,
+    subjectId: evt.subjectId ?? null,
     metadata: evt.metadata ?? null,
   }
 }
@@ -1797,7 +2562,7 @@ export async function createRecommendation(input: RecommendationCreateInput): Pr
     id,
     userId: input.userId,
     subjectType: input.subjectType,
-    subjectId: typeof input.subjectId === 'string' ? parseInt(input.subjectId, 10) || 0 : input.subjectId,
+    subjectId: input.subjectId,
     recommendationType: input.recommendationType,
     candidateType: input.candidateType,
     candidateId: input.candidateId,
@@ -1828,12 +2593,1058 @@ export async function listRecommendations(
   return recs.flatMap((r) => { const p = toPersistedRecommendation(r); return p ? [p] : [] })
 }
 
+export async function listRecommendationDockQueue(
+  userId: string,
+  query: RecommendationDockQueueQuery = {},
+): Promise<RecommendationDockQueueResult> {
+  validateRecommendationDockQueueQuery(query)
+
+  const limit = query.limit ?? 20
+  const offset = parseRecommendationDockQueueCursor(query.cursor)
+  const sortBy = query.sortBy ?? 'createdAt'
+  const sortDirection = query.sortDirection ?? defaultRecommendationDockQueueSortDirection(sortBy)
+  const [recommendations, events] = await Promise.all([
+    recommendationsTable.where('userId').equals(userId).toArray(),
+    recommendationEventsTable.where('userId').equals(userId).toArray(),
+  ])
+  const eventsByRecommendation = groupRecommendationEventsByRecommendationId(events)
+  const filteredRecommendations = recommendations.filter((recommendation) =>
+    matchesRecommendationDockQueueFilters(recommendation, query),
+  )
+  const items = filteredRecommendations
+    .flatMap((recommendation) => {
+      const persisted = toPersistedRecommendation(recommendation)
+      return persisted ? [buildRecommendationDockQueueItem(persisted, eventsByRecommendation.get(persisted.id) ?? [])] : []
+    })
+    .sort((left, right) => compareRecommendationDockQueueItems(left, right, sortBy, sortDirection))
+  const pagedItems = items.slice(offset, offset + limit)
+  const nextOffset = offset + pagedItems.length
+
+  return {
+    items: pagedItems,
+    nextCursor: nextOffset < items.length ? String(nextOffset) : null,
+    total: items.length,
+  }
+}
+
+export async function markRecommendationDockQueueItemShown(input: RecommendationShownInput): Promise<RecommendationShownResult> {
+  return markRecommendationShown(input)
+}
+
+export async function recordRecommendationDockQueueItemFeedback(
+  input: RecommendationFeedbackInput,
+): Promise<RecommendationFeedbackResult> {
+  return recordRecommendationFeedback(input)
+}
+
+export interface ApplyRecommendationInput {
+  userId: string
+  recommendationId: string
+}
+
+export interface ApplyRecommendationResult {
+  recommendationId: string
+  status: RecommendationStatus
+  appliedChanges: {
+    candidateType: RecommendationCandidateType
+    candidateId: string
+    changeType: string
+    changeDetail: string
+  }
+  recommendationEventId: string
+  userBehaviorEventId: string
+}
+
+export async function applyRecommendation(
+  input: ApplyRecommendationInput,
+): Promise<ApplyRecommendationResult> {
+  const recommendation = await recommendationsTable.get(input.recommendationId)
+  if (!recommendation) {
+    throw new Error(`Recommendation not found: ${input.recommendationId}`)
+  }
+  if (recommendation.userId !== input.userId) {
+    throw new Error(`User ${input.userId} does not own recommendation ${input.recommendationId}`)
+  }
+  if (!isSupportedCandidateTypeForApply(recommendation.candidateType)) {
+    throw new Error(
+      `Cannot apply recommendation: candidateType "${recommendation.candidateType}" is not supported for automatic apply. ` +
+      `Supported types: tag, project, mindNode.`,
+    )
+  }
+  if (recommendation.status === 'rejected' || recommendation.status === 'superseded') {
+    throw new Error(
+      `Cannot apply recommendation in "${recommendation.status}" status. ` +
+      `Rejected or superseded recommendations cannot be accepted.`,
+    )
+  }
+
+  const subjectId = recommendation.subjectType === 'mindNode'
+    ? String(recommendation.subjectId)
+    : typeof recommendation.subjectId === 'string'
+      ? Number.parseInt(recommendation.subjectId, 10)
+      : recommendation.subjectId
+  if (typeof subjectId === 'number' && Number.isNaN(subjectId)) {
+    throw new Error(`Invalid subjectId for recommendation: ${recommendation.subjectId}`)
+  }
+  
+  return db.transaction(
+    'rw',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    [recommendationsTable, recommendationEventsTable, userBehaviorEventsTable, dockItemsTable, tagsTable, collectionsTable, mindNodesTable, mindEdgesTable] as any,
+    async () => {
+      const currentRec = await recommendationsTable.get(input.recommendationId)
+      if (currentRec && currentRec.status === 'accepted') {
+        const acceptedEvent = await recommendationEventsTable
+          .where('recommendationId')
+          .equals(input.recommendationId)
+          .and((e) => e.eventType === 'recommendation_accepted')
+          .first()
+        const appliedChanges = acceptedEvent?.metadata?.appliedChanges as ApplyRecommendationResult['appliedChanges'] | undefined
+        return {
+          recommendationId: input.recommendationId,
+          status: 'accepted' as RecommendationStatus,
+          appliedChanges: appliedChanges ?? {
+            candidateType: currentRec.candidateType,
+            candidateId: currentRec.candidateId,
+            changeType: 'already_accepted',
+            changeDetail: 'Recommendation was already accepted',
+          },
+          recommendationEventId: acceptedEvent?.id ?? '',
+          userBehaviorEventId: '',
+        }
+      }
+
+      const changeResult = await executeApplyChangeInTxn(currentRec ?? recommendation, subjectId)
+
+      await recommendationsTable.update(input.recommendationId, {
+        status: 'accepted',
+        updatedAt: new Date(),
+      })
+
+      const metadata = {
+        source: 'recommendation_apply',
+        feedbackType: 'accepted',
+        appliedChanges: changeResult,
+      }
+
+      const recEvent = await recordRecommendationEvent({
+        recommendationId: input.recommendationId,
+        userId: input.userId,
+        eventType: 'recommendation_accepted',
+        metadata,
+      })
+
+      const behaviorMetadata = buildRecommendationBehaviorMetadata(currentRec ?? recommendation, metadata)
+      const behaviorEvent = await recordUserBehaviorEvent({
+        userId: input.userId,
+        eventType: 'recommendation_accepted',
+        subjectType: (currentRec ?? recommendation).subjectType,
+        subjectId: String((currentRec ?? recommendation).subjectId),
+        metadata: behaviorMetadata,
+      })
+
+      return {
+        recommendationId: input.recommendationId,
+        status: 'accepted' as RecommendationStatus,
+        appliedChanges: changeResult,
+        recommendationEventId: recEvent.id,
+        userBehaviorEventId: behaviorEvent.id,
+      }
+    },
+  )
+}
+
+async function executeApplyChangeInTxn(
+  recommendation: RecommendationRecord,
+  subjectId: number | string,
+): Promise<{
+  candidateType: RecommendationCandidateType
+  candidateId: string
+  changeType: string
+  changeDetail: string
+}> {
+  const { candidateType, candidateId, userId, subjectType } = recommendation
+
+  if (candidateType === 'tag') {
+    const tag = await tagsTable.get(candidateId)
+    if (!tag || tag.userId !== userId) {
+      throw new Error(`Tag not found for candidate: ${candidateId}`)
+    }
+    const dockItem = await getDockItemForUser(userId, subjectId as number)
+    if (!dockItem) {
+      throw new Error(`Dock item not found: ${subjectId}`)
+    }
+    const normalized = normalizeTagName(tag.name)
+    if (!normalized) {
+      throw new Error(`Invalid tag name: ${tag.name}`)
+    }
+    const newTags = dedupeTagNames([...dockItem.userTags, normalized])
+    await dockItemsTable.update(dockItem.id, { userTags: newTags })
+    return {
+      candidateType: 'tag',
+      candidateId,
+      changeType: 'add_tag',
+      changeDetail: `Added tag "${tag.name}" to dock item #${subjectId}`,
+    }
+  }
+
+  if (candidateType === 'project') {
+    const collection = await collectionsTable.get(candidateId)
+    if (!collection || collection.userId !== userId) {
+      throw new Error(`Collection not found for candidate: ${candidateId}`)
+    }
+    const dockItem = await getDockItemForUser(userId, subjectId as number)
+    if (!dockItem) {
+      throw new Error(`Dock item not found: ${subjectId}`)
+    }
+    const previousProject = dockItem.selectedProject
+    const isReplacing = previousProject !== null && previousProject !== collection.name
+    await dockItemsTable.update(dockItem.id, { selectedProject: collection.name })
+    return {
+      candidateType: 'project',
+      candidateId,
+      changeType: isReplacing ? 'replace_project' : 'set_project',
+      changeDetail: isReplacing
+        ? `Replaced project "${previousProject}" with "${collection.name}" on dock item #${subjectId}`
+        : `Set project "${collection.name}" on dock item #${subjectId}`,
+    }
+  }
+
+  if (candidateType === 'mindNode') {
+    const targetNode = await mindNodesTable.get(candidateId)
+    if (!targetNode || targetNode.userId !== userId) {
+      throw new Error(`Mind node not found for candidate: ${candidateId}`)
+    }
+
+    if (subjectType === 'mindNode') {
+      const sourceNode = await mindNodesTable.get(String(subjectId))
+      if (!sourceNode || sourceNode.userId !== userId) {
+        throw new Error(`Source mind node not found: ${subjectId}`)
+      }
+      const existingEdge = await findMindEdgeBetweenNodes(userId, sourceNode.id, targetNode.id)
+      if (existingEdge) {
+        return {
+          candidateType: 'mindNode',
+          candidateId,
+          changeType: 'already_connected',
+          changeDetail: `Edge already exists between "${sourceNode.label}" and "${targetNode.label}"`,
+        }
+      }
+      const edge = await upsertMindEdge({
+        userId,
+        sourceNodeId: sourceNode.id,
+        targetNodeId: targetNode.id,
+        edgeType: 'suggested',
+        source: 'system',
+        confidence: recommendation.confidenceScore,
+        reason: 'recommendation_accepted',
+      })
+      if (!edge) {
+        return {
+          candidateType: 'mindNode',
+          candidateId,
+          changeType: 'already_connected',
+          changeDetail: `Edge already exists between "${sourceNode.label}" and "${targetNode.label}"`,
+        }
+      }
+      return {
+        candidateType: 'mindNode',
+        candidateId,
+        changeType: 'create_edge',
+        changeDetail: `Created edge from "${sourceNode.label}" to "${targetNode.label}"`,
+      }
+    }
+
+    const numericSubjectId = subjectId as number
+    const dockItem = await getDockItemForUser(userId, numericSubjectId)
+    if (!dockItem) {
+      throw new Error(`Dock item not found: ${subjectId}`)
+    }
+    const dockMindNodes = await mindNodesTable
+      .where('userId')
+      .equals(userId)
+      .and((n) => n.documentId === numericSubjectId)
+      .toArray()
+    let sourceNode = dockMindNodes[0]
+    let createdSource = false
+    if (!sourceNode) {
+      sourceNode = await upsertMindNode({
+        userId,
+        nodeType: 'document',
+        label: dockItem.topic || dockItem.rawText?.slice(0, 40) || `Dock Item #${numericSubjectId}`,
+        documentId: numericSubjectId,
+        state: 'drifting',
+      })
+      createdSource = true
+    }
+    const edgeId = makeMindEdgeId(userId, sourceNode.id, targetNode.id, 'suggested')
+    const existingEdge = await mindEdgesTable.get(edgeId)
+    const now = new Date()
+    await mindEdgesTable.put({
+      id: edgeId,
+      userId,
+      sourceNodeId: sourceNode.id,
+      targetNodeId: targetNode.id,
+      edgeType: 'suggested',
+      strength: 0.5,
+      source: 'system',
+      confidence: null,
+      reason: null,
+      createdAt: existingEdge?.createdAt ?? now,
+      updatedAt: now,
+    })
+    return {
+      candidateType: 'mindNode',
+      candidateId,
+      changeType: 'create_edge',
+      changeDetail: createdSource
+        ? `Created mind node "${sourceNode.label}" and linked to "${targetNode.label}"`
+        : `Created edge from "${sourceNode.label}" to "${targetNode.label}"`,
+    }
+  }
+
+  throw new Error(
+    `Apply for candidateType "${candidateType}" is not supported. ` +
+    `Supported types: tag, project, mindNode.`,
+  )
+}
+
+const RECOMMENDATION_DOCK_QUEUE_STATUSES: RecommendationStatus[] = [
+  'generated',
+  'shown',
+  'accepted',
+  'rejected',
+  'modified',
+  'ignored',
+  'superseded',
+]
+const RECOMMENDATION_DOCK_QUEUE_CANDIDATE_TYPES: RecommendationCandidateType[] = [
+  'tag',
+  'project',
+  'mindNode',
+  'entry',
+  'document',
+]
+const RECOMMENDATION_DOCK_QUEUE_SUBJECT_TYPES: RecommendationSubjectType[] = [
+  'dockItem',
+  'entry',
+  'document',
+  'mindNode',
+]
+const RECOMMENDATION_DOCK_QUEUE_SORT_FIELDS: RecommendationDockQueueSortBy[] = [
+  'rank',
+  'confidenceScore',
+  'createdAt',
+]
+const RECOMMENDATION_DOCK_QUEUE_SORT_DIRECTIONS: RecommendationDockQueueSortDirection[] = ['asc', 'desc']
+const RECOMMENDATION_FEEDBACK_EVENT_TYPES: RecommendationEventType[] = [
+  'recommendation_accepted',
+  'recommendation_rejected',
+  'recommendation_modified',
+  'recommendation_ignored',
+  'recommendation_superseded',
+]
+
+function validateRecommendationDockQueueQuery(query: RecommendationDockQueueQuery): void {
+  if (query.status && !RECOMMENDATION_DOCK_QUEUE_STATUSES.includes(query.status)) {
+    throw new Error(`Invalid recommendation dock queue status filter: ${String(query.status)}`)
+  }
+  if (query.candidateType && !RECOMMENDATION_DOCK_QUEUE_CANDIDATE_TYPES.includes(query.candidateType)) {
+    throw new Error(`Invalid recommendation dock queue candidateType filter: ${String(query.candidateType)}`)
+  }
+  if (query.subjectType && !RECOMMENDATION_DOCK_QUEUE_SUBJECT_TYPES.includes(query.subjectType)) {
+    throw new Error(`Invalid recommendation dock queue subjectType filter: ${String(query.subjectType)}`)
+  }
+  if (query.recommendationType !== undefined && typeof query.recommendationType !== 'string') {
+    throw new Error(`Invalid recommendation dock queue recommendationType filter: ${String(query.recommendationType)}`)
+  }
+  if (query.sortBy && !RECOMMENDATION_DOCK_QUEUE_SORT_FIELDS.includes(query.sortBy)) {
+    throw new Error(`Invalid recommendation dock queue sortBy: ${String(query.sortBy)}`)
+  }
+  if (query.sortDirection && !RECOMMENDATION_DOCK_QUEUE_SORT_DIRECTIONS.includes(query.sortDirection)) {
+    throw new Error(`Invalid recommendation dock queue sortDirection: ${String(query.sortDirection)}`)
+  }
+  if (query.limit !== undefined && (!Number.isInteger(query.limit) || query.limit <= 0)) {
+    throw new Error(`Invalid recommendation dock queue limit: ${String(query.limit)}`)
+  }
+  parseRecommendationDockQueueCursor(query.cursor)
+}
+
+function parseRecommendationDockQueueCursor(cursor?: string | null): number {
+  if (cursor === undefined || cursor === null || cursor === '') return 0
+  const offset = Number.parseInt(cursor, 10)
+  if (!Number.isInteger(offset) || offset < 0 || String(offset) !== cursor) {
+    throw new Error(`Invalid recommendation dock queue cursor: ${cursor}`)
+  }
+  return offset
+}
+
+function defaultRecommendationDockQueueSortDirection(sortBy: RecommendationDockQueueSortBy): RecommendationDockQueueSortDirection {
+  return sortBy === 'rank' ? 'asc' : 'desc'
+}
+
+function matchesRecommendationDockQueueFilters(
+  recommendation: RecommendationRecord,
+  filters: RecommendationDockQueueFilters,
+): boolean {
+  return (!filters.status || recommendation.status === filters.status) &&
+    (!filters.candidateType || recommendation.candidateType === filters.candidateType) &&
+    (!filters.subjectType || recommendation.subjectType === filters.subjectType) &&
+    (!filters.subjectId || String(recommendation.subjectId) === String(filters.subjectId)) &&
+    (!filters.recommendationType || recommendation.recommendationType === filters.recommendationType)
+}
+
+function groupRecommendationEventsByRecommendationId(
+  events: RecommendationEventRecord[],
+): Map<string, PersistedRecommendationEvent[]> {
+  const grouped = new Map<string, PersistedRecommendationEvent[]>()
+
+  for (const event of events) {
+    const persisted = toPersistedRecommendationEvent(event)
+    if (!persisted) continue
+    const current = grouped.get(persisted.recommendationId) ?? []
+    current.push(persisted)
+    grouped.set(persisted.recommendationId, current)
+  }
+
+  Array.from(grouped.values()).forEach((groupedEvents: PersistedRecommendationEvent[]) => {
+    groupedEvents.sort((left, right) =>
+      left.createdAt.getTime() - right.createdAt.getTime() ||
+      left.id.localeCompare(right.id),
+    )
+  })
+
+  return grouped
+}
+
+function buildRecommendationDockQueueItem(
+  recommendation: PersistedRecommendation,
+  events: PersistedRecommendationEvent[],
+): RecommendationDockQueueItem {
+  const reason = parseRecommendationReasonJson(recommendation.reasonJson)
+  const generatedEvent = events.find((event) => event.eventType === 'recommendation_generated')
+  const generatedMetadata = generatedEvent?.metadata ?? null
+  const feedbackEvent = events.find((event) => RECOMMENDATION_FEEDBACK_EVENT_TYPES.includes(event.eventType))
+  const isShown = recommendation.status === 'shown' || events.some((event) => event.eventType === 'recommendation_shown')
+  const hasFeedback = isRecommendationFeedbackStatus(recommendation.status) || Boolean(feedbackEvent)
+  const scoreSummary = buildRecommendationDockQueueScoreSummary(recommendation, reason, generatedMetadata)
+
+  return {
+    id: recommendation.id,
+    userId: recommendation.userId,
+    status: recommendation.status,
+    recommendationType: recommendation.recommendationType,
+    subjectType: recommendation.subjectType,
+    subjectId: recommendation.subjectId,
+    candidateType: recommendation.candidateType,
+    candidateId: recommendation.candidateId,
+    confidenceScore: recommendation.confidenceScore,
+    createdAt: recommendation.createdAt,
+    updatedAt: recommendation.updatedAt,
+    reasonSummary: buildRecommendationDockQueueReasonSummary(recommendation, reason, generatedMetadata),
+    scoreSummary,
+    evidenceSummary: buildRecommendationDockQueueEvidenceSummary(reason, generatedMetadata),
+    isShown,
+    hasFeedback,
+  }
+}
+
+function buildRecommendationDockQueueReasonSummary(
+  recommendation: PersistedRecommendation,
+  reason: Record<string, unknown> | null,
+  generatedMetadata: Record<string, unknown> | null,
+): RecommendationReasonSummary {
+  return {
+    source: readString(reason?.source) ?? readString(generatedMetadata?.source),
+    reason: readString(reason?.scoreReason) ??
+      readString(reason?.reason) ??
+      `${recommendation.recommendationType} recommendation for ${recommendation.candidateType}`,
+    context: {
+      subjectType: recommendation.subjectType,
+      subjectId: recommendation.subjectId,
+    },
+    candidate: {
+      candidateType: recommendation.candidateType,
+      candidateId: recommendation.candidateId,
+    },
+  }
+}
+
+function buildRecommendationDockQueueScoreSummary(
+  recommendation: PersistedRecommendation,
+  reason: Record<string, unknown> | null,
+  generatedMetadata: Record<string, unknown> | null,
+): RecommendationScoreSummary {
+  const rank = readNumber(reason?.rank) ?? readNumber(generatedMetadata?.rank)
+  const scoreBreakdown = readRecord(reason?.scoreBreakdown)
+
+  return {
+    confidenceScore: recommendation.confidenceScore,
+    score: readNumber(reason?.score) ?? readNumber(generatedMetadata?.score) ?? recommendation.confidenceScore,
+    rank: rank === null ? null : rank,
+    scoreReason: readString(reason?.scoreReason),
+    scoreBreakdown,
+  }
+}
+
+function buildRecommendationDockQueueEvidenceSummary(
+  reason: Record<string, unknown> | null,
+  generatedMetadata: Record<string, unknown> | null,
+): RecommendationDockQueueEvidenceSummary {
+  const explicitSummary = readEvidenceSummary(reason?.evidenceSummary) ??
+    readEvidenceSummary(generatedMetadata?.evidenceSummary)
+  if (explicitSummary) return explicitSummary
+
+  const recall = readRecord(reason?.recall)
+  const evidence = readUnknownArray(recall?.evidence) ?? readUnknownArray(reason?.evidence) ?? []
+  const sources = uniqueSortedStrings(evidence.map((item) => readString(readRecord(item)?.source)).filter(isString))
+  const evidenceTypes = uniqueSortedStrings(
+    evidence.map((item) => readString(readRecord(item)?.evidenceType)).filter(isString),
+  )
+  const matchedValues = uniqueSortedStrings(
+    evidence.map((item) => readString(readRecord(item)?.matchedValue)).filter(isString),
+  ).slice(0, 5)
+  const strongestContribution = Math.max(
+    0,
+    ...evidence.map((item) => readNumber(readRecord(item)?.confidenceContribution) ?? 0),
+  )
+
+  return {
+    evidenceCount: evidence.length,
+    sources,
+    evidenceTypes,
+    matchedValues,
+    strongestContribution: evidence.length > 0 ? strongestContribution : null,
+  }
+}
+
+function readEvidenceSummary(value: unknown): RecommendationDockQueueEvidenceSummary | null {
+  const summary = readRecord(value)
+  if (!summary) return null
+
+  return {
+    evidenceCount: readNumber(summary.evidenceCount) ?? 0,
+    sources: readStringArray(summary.sources),
+    evidenceTypes: readStringArray(summary.evidenceTypes),
+    matchedValues: readStringArray(summary.matchedValues),
+    strongestContribution: readNumber(summary.strongestContribution),
+  }
+}
+
+function parseRecommendationReasonJson(reasonJson: string | null): Record<string, unknown> | null {
+  if (!reasonJson) return null
+  try {
+    const parsed = JSON.parse(reasonJson)
+    return readRecord(parsed)
+  } catch {
+    return null
+  }
+}
+
+function isRecommendationFeedbackStatus(status: RecommendationStatus): boolean {
+  return status === 'accepted' || status === 'rejected' || status === 'modified' || status === 'ignored' || status === 'superseded'
+}
+
+function compareRecommendationDockQueueItems(
+  left: RecommendationDockQueueItem,
+  right: RecommendationDockQueueItem,
+  sortBy: RecommendationDockQueueSortBy,
+  sortDirection: RecommendationDockQueueSortDirection,
+): number {
+  const multiplier = sortDirection === 'asc' ? 1 : -1
+  const compared = compareRecommendationDockQueuePrimarySort(left, right, sortBy) * multiplier
+  if (compared !== 0) return compared
+
+  return compareNullableNumbers(left.scoreSummary.rank, right.scoreSummary.rank, true) ||
+    right.confidenceScore - left.confidenceScore ||
+    right.createdAt.getTime() - left.createdAt.getTime() ||
+    left.id.localeCompare(right.id)
+}
+
+function compareRecommendationDockQueuePrimarySort(
+  left: RecommendationDockQueueItem,
+  right: RecommendationDockQueueItem,
+  sortBy: RecommendationDockQueueSortBy,
+): number {
+  if (sortBy === 'rank') {
+    return compareNullableNumbers(left.scoreSummary.rank, right.scoreSummary.rank, true)
+  }
+  if (sortBy === 'confidenceScore') {
+    return left.confidenceScore - right.confidenceScore
+  }
+  return left.createdAt.getTime() - right.createdAt.getTime()
+}
+
+function compareNullableNumbers(left: number | null, right: number | null, missingLast: boolean): number {
+  if (left === null && right === null) return 0
+  if (left === null) return missingLast ? 1 : -1
+  if (right === null) return missingLast ? -1 : 1
+  return left - right
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+  return value as Record<string, unknown>
+}
+
+function readUnknownArray(value: unknown): unknown[] | null {
+  return Array.isArray(value) ? value : null
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === 'string'
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? uniqueSortedStrings(value.filter(isString)) : []
+}
+
+function uniqueSortedStrings(values: string[]): string[] {
+  return Array.from(new Set(values)).sort()
+}
+
+export async function generateBasicCandidates(input: {
+  userId: string
+  subjectType: BasicCandidateContext['subjectType']
+  subjectId: number | string
+}): Promise<BasicCandidate[]> {
+  const context = await getBasicCandidateContext(input.userId, input.subjectType, input.subjectId)
+  if (!context) return []
+
+  const [tags, collections, mindNodes, documents] = await Promise.all([
+    tagsTable.where('userId').equals(input.userId).toArray(),
+    collectionsTable.where('userId').equals(input.userId).toArray(),
+    mindNodesTable.where('userId').equals(input.userId).toArray(),
+    entriesTable.where('userId').equals(input.userId).toArray(),
+  ])
+
+  return buildBasicCandidates({
+    userId: input.userId,
+    context,
+    tags: tags.map((tag) => ({
+      id: tag.id as string,
+      userId: tag.userId,
+      name: tag.name,
+    })),
+    collections: collections.map((collection) => ({
+      id: collection.id as string,
+      userId: collection.userId,
+      name: collection.name,
+      collectionType: collection.collectionType,
+    })),
+    mindNodes: mindNodes.map((node) => ({
+      id: node.id as string,
+      userId: node.userId,
+      nodeType: node.nodeType,
+      label: node.label,
+      documentId: node.documentId ?? null,
+      degreeScore: node.degreeScore ?? 0,
+      recentActivityScore: node.recentActivityScore ?? 0,
+      documentWeightScore: node.documentWeightScore ?? 0,
+      userPinScore: node.userPinScore ?? 0,
+      clusterCenterScore: node.clusterCenterScore ?? 0,
+      metadata: node.metadata ?? null,
+    })),
+    documents: documents.map((document) => ({
+      id: document.id as number,
+      userId: document.userId,
+      tags: document.tags,
+      project: document.project ?? null,
+    })),
+  })
+}
+
+export async function createRecommendationFromBasicCandidate(input: {
+  userId: string
+  subjectType: BasicCandidateContext['subjectType']
+  subjectId: number | string
+  candidate: BasicCandidate
+  recommendationType?: string
+}): Promise<{
+  recommendation: PersistedRecommendation
+  recommendationEvent: PersistedRecommendationEvent
+}> {
+  const { recommendation, recommendationEvent } = await db.transaction(
+    'rw',
+    recommendationsTable,
+    recommendationEventsTable,
+    async () => {
+      const createdRecommendation = await createRecommendation({
+        userId: input.userId,
+        subjectType: input.subjectType,
+        subjectId: input.subjectId,
+        recommendationType: input.recommendationType ?? `basic_${input.candidate.candidateType}_candidate`,
+        candidateType: input.candidate.candidateType,
+        candidateId: input.candidate.candidateId,
+        confidenceScore: input.candidate.confidenceScore,
+        reasonJson: JSON.stringify(input.candidate.reasonJson),
+        status: 'generated',
+      })
+
+      const createdEvent = await recordRecommendationEvent({
+        recommendationId: createdRecommendation.id,
+        userId: input.userId,
+        eventType: 'recommendation_generated',
+        metadata: {
+          source: 'basic_candidate_recall',
+          candidateType: input.candidate.candidateType,
+          candidateId: input.candidate.candidateId,
+          confidenceScore: input.candidate.confidenceScore,
+          evidence: input.candidate.evidence,
+          context: input.candidate.reasonJson.context,
+        },
+      })
+
+      return {
+        recommendation: createdRecommendation,
+        recommendationEvent: createdEvent,
+      }
+    },
+  )
+
+  return { recommendation, recommendationEvent }
+}
+
+export async function generateRecommendationsForContext(input: {
+  userId: string
+  subjectType: BasicCandidateContext['subjectType']
+  subjectId: number | string
+  topK?: number
+  source?: string
+  recommendationType?: string
+}): Promise<{
+  recommendations: PersistedRecommendation[]
+  recommendationEvents: PersistedRecommendationEvent[]
+  scoredCandidates: ScoredRecommendationCandidate[]
+}> {
+  const candidates = await generateBasicCandidates({
+    userId: input.userId,
+    subjectType: input.subjectType,
+    subjectId: input.subjectId,
+  })
+  if (candidates.length === 0) {
+    return {
+      recommendations: [],
+      recommendationEvents: [],
+      scoredCandidates: [],
+    }
+  }
+
+  const signalSummaries = await buildRecommendationSignalSummaries(input.userId)
+  const scoredCandidates = scoreBasicCandidatesForRecommendation({
+    candidates,
+    signalSummaries,
+    topK: input.topK,
+  })
+  if (scoredCandidates.length === 0) {
+    return {
+      recommendations: [],
+      recommendationEvents: [],
+      scoredCandidates,
+    }
+  }
+
+  const source = input.source ?? 'recommendation_engine_mvp'
+  const { recommendations, recommendationEvents } = await db.transaction(
+    'rw',
+    recommendationsTable,
+    recommendationEventsTable,
+    async () => {
+      const existingPending = await recommendationsTable
+        .where('userId')
+        .equals(input.userId)
+        .and((rec) =>
+          isRecommendationPendingStatus(rec.status) &&
+          rec.subjectType === input.subjectType &&
+          String(rec.subjectId) === String(input.subjectId),
+        )
+        .toArray()
+
+      for (const pending of existingPending) {
+        await recommendationsTable.update(pending.id, {
+          status: 'superseded',
+          updatedAt: new Date(),
+        })
+        await recordRecommendationEvent({
+          recommendationId: pending.id,
+          userId: input.userId,
+          eventType: 'recommendation_superseded',
+          metadata: {
+            source: 'recommendation_regeneration',
+            reason: 'Superseded by new generation round',
+            subjectType: input.subjectType,
+            subjectId: input.subjectId,
+          },
+        })
+      }
+
+      const batchRecommendations: PersistedRecommendation[] = []
+      const batchEvents: PersistedRecommendationEvent[] = []
+      const seenDedupeKeys = new Set<string>()
+
+      for (const scoredCandidate of scoredCandidates) {
+        const candidate = scoredCandidate.candidate
+        const dedupeKey = makeRecommendationDedupeKey(
+          input.subjectType,
+          input.subjectId,
+          candidate.candidateType,
+          candidate.candidateId,
+        )
+        if (seenDedupeKeys.has(dedupeKey)) continue
+        seenDedupeKeys.add(dedupeKey)
+
+        const existingActive = await recommendationsTable
+          .where('userId')
+          .equals(input.userId)
+          .and((rec) =>
+            isRecommendationPendingStatus(rec.status) &&
+            rec.subjectType === input.subjectType &&
+            String(rec.subjectId) === String(input.subjectId) &&
+            rec.candidateType === candidate.candidateType &&
+            rec.candidateId === candidate.candidateId,
+          )
+          .count()
+
+        if (existingActive > 0) continue
+
+        const recommendation = await createRecommendation({
+          userId: input.userId,
+          subjectType: input.subjectType,
+          subjectId: input.subjectId,
+          recommendationType: input.recommendationType ?? `engine_${candidate.candidateType}_candidate`,
+          candidateType: candidate.candidateType,
+          candidateId: candidate.candidateId,
+          confidenceScore: scoredCandidate.score,
+          reasonJson: JSON.stringify(buildRecommendationEngineReasonJson({
+            scoredCandidate,
+            source,
+            topK: input.topK,
+          })),
+          status: 'generated',
+        })
+
+        const recommendationEvent = await recordRecommendationEvent({
+          recommendationId: recommendation.id,
+          userId: input.userId,
+          eventType: 'recommendation_generated',
+          metadata: buildRecommendationGeneratedMetadata(scoredCandidate, source),
+        })
+
+        batchRecommendations.push(recommendation)
+        batchEvents.push(recommendationEvent)
+      }
+
+      return {
+        recommendations: batchRecommendations,
+        recommendationEvents: batchEvents,
+      }
+    },
+  )
+
+  return {
+    recommendations,
+    recommendationEvents,
+    scoredCandidates,
+  }
+}
+
+function buildRecommendationEngineReasonJson(input: {
+  scoredCandidate: ScoredRecommendationCandidate
+  source: string
+  topK?: number
+}): Record<string, unknown> {
+  const { candidate, rank, score, scoreReason, scoreBreakdown, evidenceSummary } = input.scoredCandidate
+
+  return {
+    source: input.source,
+    reason: 'deterministic local recommendation engine scoring',
+    candidate: {
+      candidateType: candidate.candidateType,
+      candidateId: candidate.candidateId,
+      recallConfidenceScore: candidate.confidenceScore,
+    },
+    context: candidate.reasonJson.context,
+    recall: {
+      source: candidate.reasonJson.source,
+      reason: candidate.reasonJson.reason,
+      confidenceScore: candidate.reasonJson.confidenceScore,
+      evidence: candidate.evidence,
+    },
+    score,
+    scoreReason,
+    scoreBreakdown,
+    evidenceSummary,
+    rank,
+    topK: input.topK ?? 5,
+  }
+}
+
+function buildRecommendationGeneratedMetadata(
+  scoredCandidate: ScoredRecommendationCandidate,
+  source: string,
+): Record<string, unknown> {
+  return {
+    source,
+    rank: scoredCandidate.rank,
+    score: scoredCandidate.score,
+    candidateType: scoredCandidate.candidate.candidateType,
+    candidateId: scoredCandidate.candidate.candidateId,
+    evidenceSummary: scoredCandidate.evidenceSummary,
+    context: scoredCandidate.candidate.reasonJson.context,
+  }
+}
+
+async function buildRecommendationSignalSummaries(userId: string): Promise<RecommendationSignalSummary[]> {
+  const events = await userBehaviorEventsTable.where('userId').equals(userId).and((event) => {
+    switch (event.eventType) {
+      case 'recommendation_accepted':
+      case 'recommendation_rejected':
+      case 'recommendation_ignored':
+      case 'recommendation_shown':
+        return true
+      default:
+        return false
+    }
+  }).toArray()
+  const summaries = new Map<string, Required<RecommendationSignalSummary>>()
+
+  for (const event of events) {
+    const signalTarget = readRecommendationSignalTarget(event.metadata ?? null)
+    if (!signalTarget) continue
+
+    const key = `${signalTarget.candidateType}:${signalTarget.candidateId}`
+    const existing = summaries.get(key) ?? {
+      candidateType: signalTarget.candidateType,
+      candidateId: signalTarget.candidateId,
+      acceptedCount: 0,
+      rejectedCount: 0,
+      ignoredCount: 0,
+      shownCount: 0,
+    }
+
+    switch (event.eventType) {
+      case 'recommendation_accepted':
+        existing.acceptedCount += 1
+        break
+      case 'recommendation_rejected':
+        existing.rejectedCount += 1
+        break
+      case 'recommendation_ignored':
+        existing.ignoredCount += 1
+        break
+      case 'recommendation_shown':
+        existing.shownCount += 1
+        break
+      default:
+        break
+    }
+
+    summaries.set(key, existing)
+  }
+
+  return Array.from(summaries.values())
+}
+
+function readRecommendationSignalTarget(
+  metadata: Record<string, unknown> | null,
+): Pick<RecommendationSignalSummary, 'candidateType' | 'candidateId'> | null {
+  const candidateType = metadata?.candidateType
+  const candidateId = metadata?.candidateId
+  if (!isBasicCandidateType(candidateType) || typeof candidateId !== 'string' || !candidateId.trim()) {
+    return null
+  }
+
+  return {
+    candidateType,
+    candidateId,
+  }
+}
+
+function isBasicCandidateType(value: unknown): value is BasicCandidate['candidateType'] {
+  return value === 'tag' || value === 'project' || value === 'mindNode'
+}
+
+async function getBasicCandidateContext(
+  userId: string,
+  subjectType: BasicCandidateContext['subjectType'],
+  subjectId: number | string,
+): Promise<BasicCandidateContext | null> {
+  if (subjectType === 'dockItem') {
+    const captureId = toNumericSubjectId(subjectId)
+    if (captureId === null) return null
+
+    const capture = await getDockItemForUser(userId, captureId)
+    if (!capture) return null
+
+    return {
+      subjectType,
+      subjectId: capture.id,
+      rawText: capture.rawText,
+      title: capture.topic,
+      tags: capture.userTags,
+      project: capture.selectedProject,
+    }
+  }
+
+  if (subjectType === 'entry' || subjectType === 'document') {
+    const documentId = toNumericSubjectId(subjectId)
+    if (documentId === null) return null
+
+    const document = await entriesTable.get(documentId)
+    if (!document || document.userId !== userId) return null
+
+    return {
+      subjectType,
+      subjectId: document.id as number,
+      title: document.title,
+      content: document.content,
+      tags: document.tags,
+      project: document.project,
+      documentId: document.id as number,
+    }
+  }
+
+  const node = await getMindNode(userId, String(subjectId))
+  if (!node) return null
+
+  return {
+    subjectType,
+    subjectId: node.id,
+    mindNodeId: node.id,
+    mindNodeLabel: node.label,
+    mindNodeType: node.nodeType,
+    documentId: node.documentId,
+    metadata: node.metadata,
+  }
+}
+
+function toNumericSubjectId(subjectId: number | string): number | null {
+  if (typeof subjectId === 'number') return subjectId
+  const parsed = Number.parseInt(subjectId, 10)
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+export async function getRecommendation(userId: string, recommendationId: string): Promise<PersistedRecommendation | null> {
+  const rec = await recommendationsTable.get(recommendationId)
+  if (!rec || rec.userId !== userId) return null
+  return toPersistedRecommendation(rec)
+}
+
 export async function updateRecommendationStatus(
+  userId: string,
   recommendationId: string,
   status: RecommendationStatus,
 ): Promise<PersistedRecommendation | null> {
   const rec = await recommendationsTable.get(recommendationId)
-  if (!rec) return null
+  if (!rec || rec.userId !== userId) return null
 
   await recommendationsTable.update(recommendationId, {
     status,
@@ -1843,7 +3654,190 @@ export async function updateRecommendationStatus(
   return toPersistedRecommendation(await recommendationsTable.get(recommendationId))
 }
 
+export async function recordRecommendationFeedback(
+  input: RecommendationFeedbackInput,
+): Promise<RecommendationFeedbackResult> {
+  const status = feedbackTypeToStatus(input.feedbackType)
+  const eventType = feedbackTypeToEventType(input.feedbackType)
+  const metadata: Record<string, unknown> = {
+    source: 'recommendation_feedback',
+    feedbackType: input.feedbackType,
+  }
+  if (input.feedbackPayload) {
+    metadata.feedbackPayload = input.feedbackPayload
+  }
+
+  const preCheck = await recommendationsTable.get(input.recommendationId)
+  if (!preCheck) {
+    throw new Error(`Recommendation not found: ${input.recommendationId}`)
+  }
+  if (preCheck.userId !== input.userId) {
+    throw new Error(`User ${input.userId} does not own recommendation ${input.recommendationId}`)
+  }
+  if (preCheck.status === 'accepted' && input.feedbackType !== 'accepted') {
+    throw new Error(`Cannot ${input.feedbackType} an already accepted recommendation`)
+  }
+  if (preCheck.status === 'accepted' && input.feedbackType === 'accepted') {
+    return {
+      recommendation: {
+        id: preCheck.id,
+        status: preCheck.status as RecommendationStatus,
+        updatedAt: preCheck.updatedAt,
+      },
+      feedbackEvent: {
+        id: '',
+        eventType: 'recommendation_accepted' as RecommendationEventType,
+        recommendationId: preCheck.id,
+      },
+    }
+  }
+  if ((preCheck.status === 'rejected' || preCheck.status === 'superseded') && input.feedbackType === 'accepted') {
+    throw new Error(
+      `Cannot accept a ${preCheck.status} recommendation. ` +
+      `Rejected or superseded recommendations cannot be re-accepted in the same generation round.`,
+    )
+  }
+  if (preCheck.status === 'ignored' && input.feedbackType === 'accepted') {
+    throw new Error(
+      `Cannot accept an ignored recommendation. ` +
+      `Ignored means this round was skipped; generate new recommendations instead.`,
+    )
+  }
+  if (input.feedbackType === 'accepted' && !isSupportedCandidateTypeForApply(preCheck.candidateType)) {
+    throw new Error(
+      `Cannot accept recommendation: candidateType "${preCheck.candidateType}" is not supported for automatic apply. ` +
+      `Only tag, project, and mindNode recommendations can be accepted.`,
+    )
+  }
+
+  const { persisted, recEvent } = await db.transaction(
+    'rw',
+    recommendationsTable,
+    recommendationEventsTable,
+    userBehaviorEventsTable,
+    async () => {
+      const recommendation = await getRecommendationRecordForLifecycleWrite(input.userId, input.recommendationId)
+
+      await recommendationsTable.update(input.recommendationId, {
+        status,
+        updatedAt: new Date(),
+      })
+
+      const createdEvent = await recordRecommendationEvent({
+        recommendationId: input.recommendationId,
+        userId: input.userId,
+        eventType,
+        metadata,
+      })
+
+      await recordUserBehaviorEvent({
+        userId: input.userId,
+        eventType,
+        subjectType: recommendation.subjectType,
+        subjectId: String(recommendation.subjectId),
+        metadata: buildRecommendationBehaviorMetadata(recommendation, metadata),
+      })
+
+      const updated = await recommendationsTable.get(input.recommendationId)
+      const updatedRecommendation = toPersistedRecommendation(updated)
+      if (!updatedRecommendation) {
+        throw new Error('Failed to retrieve updated recommendation')
+      }
+
+      return { persisted: updatedRecommendation, recEvent: createdEvent }
+    },
+  )
+
+  return {
+    recommendation: {
+      id: persisted.id,
+      status: persisted.status,
+      updatedAt: persisted.updatedAt,
+    },
+    feedbackEvent: {
+      id: recEvent.id,
+      eventType: recEvent.eventType,
+      recommendationId: recEvent.recommendationId,
+    },
+  }
+}
+
+export async function markRecommendationShown(
+  input: RecommendationShownInput,
+): Promise<RecommendationShownResult> {
+  const { persisted, recEvent } = await db.transaction(
+    'rw',
+    recommendationsTable,
+    recommendationEventsTable,
+    userBehaviorEventsTable,
+    async () => {
+      const recommendation = await getRecommendationRecordForLifecycleWrite(input.userId, input.recommendationId)
+
+      await recommendationsTable.update(input.recommendationId, {
+        status: 'shown',
+        updatedAt: new Date(),
+      })
+
+      const createdEvent = await recordRecommendationEvent({
+        recommendationId: input.recommendationId,
+        userId: input.userId,
+        eventType: 'recommendation_shown',
+        metadata: {
+          source: 'recommendation_shown',
+        },
+      })
+
+      await recordUserBehaviorEvent({
+        userId: input.userId,
+        eventType: 'recommendation_shown',
+        subjectType: recommendation.subjectType,
+        subjectId: String(recommendation.subjectId),
+        metadata: buildRecommendationBehaviorMetadata(recommendation, {
+          source: 'recommendation_shown',
+        }),
+      })
+
+      const updated = await recommendationsTable.get(input.recommendationId)
+      const updatedRecommendation = toPersistedRecommendation(updated)
+      if (!updatedRecommendation) {
+        throw new Error('Failed to retrieve updated recommendation')
+      }
+
+      return { persisted: updatedRecommendation, recEvent: createdEvent }
+    },
+  )
+
+  return {
+    recommendation: {
+      id: persisted.id,
+      status: persisted.status,
+      updatedAt: persisted.updatedAt,
+    },
+    shownEvent: {
+      id: recEvent.id,
+      eventType: recEvent.eventType,
+      recommendationId: recEvent.recommendationId,
+    },
+  }
+}
+
+async function getRecommendationRecordForLifecycleWrite(
+  userId: string,
+  recommendationId: string,
+): Promise<RecommendationRecord> {
+  const rec = await recommendationsTable.get(recommendationId)
+  if (!rec) {
+    throw new Error(`Recommendation not found: ${recommendationId}`)
+  }
+  if (rec.userId !== userId) {
+    throw new Error(`User ${userId} does not own recommendation ${recommendationId}`)
+  }
+  return rec
+}
+
 export async function recordRecommendationEvent(input: RecommendationEventInput): Promise<PersistedRecommendationEvent> {
+  await getRecommendationRecordForLifecycleWrite(input.userId, input.recommendationId)
+
   const now = new Date()
   const id = makeRecommendationEventId(input.userId, input.recommendationId, now.getTime())
   const record: RecommendationEventRecord = {
@@ -1856,6 +3850,21 @@ export async function recordRecommendationEvent(input: RecommendationEventInput)
   }
   await recommendationEventsTable.add(record)
   return toPersistedRecommendationEvent(await recommendationEventsTable.get(id)) as PersistedRecommendationEvent
+}
+
+function buildRecommendationBehaviorMetadata(
+  recommendation: RecommendationRecord,
+  metadata: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    recommendationId: recommendation.id,
+    recommendationType: recommendation.recommendationType,
+    subjectType: recommendation.subjectType,
+    subjectId: recommendation.subjectId,
+    candidateType: recommendation.candidateType,
+    candidateId: recommendation.candidateId,
+    ...metadata,
+  }
 }
 
 export async function listRecommendationEvents(
@@ -1882,10 +3891,8 @@ export async function recordUserBehaviorEvent(input: UserBehaviorEventInput): Pr
     id,
     userId: input.userId,
     eventType: input.eventType,
-    targetType: input.targetType,
-    targetId: input.targetId ?? null,
-    fromContext: input.fromContext ?? null,
-    toContext: input.toContext ?? null,
+    subjectType: input.subjectType,
+    subjectId: input.subjectId ?? null,
     metadata: input.metadata ?? null,
     createdAt: now,
   }
@@ -1895,17 +3902,567 @@ export async function recordUserBehaviorEvent(input: UserBehaviorEventInput): Pr
 
 export async function listUserBehaviorEvents(
   userId: string,
-  filters?: { eventType?: UserBehaviorEventType; targetType?: UserBehaviorTargetType },
+  filters?: { eventType?: UserBehaviorEventType; subjectType?: UserBehaviorSubjectType },
 ): Promise<PersistedUserBehaviorEvent[]> {
   let collection = userBehaviorEventsTable.where('userId').equals(userId)
 
   if (filters?.eventType) {
     collection = collection.and((e) => e.eventType === filters.eventType)
   }
-  if (filters?.targetType) {
-    collection = collection.and((e) => e.targetType === filters.targetType)
+  if (filters?.subjectType) {
+    collection = collection.and((e) => e.subjectType === filters.subjectType)
   }
 
   const events = await collection.reverse().sortBy('createdAt')
   return events.flatMap((e) => { const p = toPersistedUserBehaviorEvent(e); return p ? [p] : [] })
+}
+
+function toPersistedTip(tip: TipRecord | undefined): PersistedTip | null {
+  if (!tip || typeof tip.id !== 'number') return null
+  return { ...tip, id: tip.id }
+}
+
+export async function createTip(
+  userId: string,
+  content: string,
+  sourceType: TipSourceType = 'quick-capture',
+): Promise<PersistedTip | null> {
+  const trimmed = content.trim()
+  if (!trimmed) throw new Error('content must not be empty')
+  if (!userId) throw new Error('userId must not be empty')
+
+  const now = new Date()
+  const id = await tipsTable.add({
+    userId,
+    content: trimmed,
+    sourceType,
+    status: 'active',
+    convertedDraftId: null,
+    createdAt: now,
+    updatedAt: now,
+  })
+  return toPersistedTip(await tipsTable.get(id as number))
+}
+
+export async function listActiveTips(userId: string): Promise<PersistedTip[]> {
+  const tips = await tipsTable
+    .where('userId')
+    .equals(userId)
+    .reverse()
+    .sortBy('createdAt')
+  return tips.flatMap((t) => {
+    if (t.status !== 'active') return []
+    const p = toPersistedTip(t)
+    return p ? [p] : []
+  })
+}
+
+export async function getTip(userId: string, tipId: number): Promise<PersistedTip | null> {
+  const tip = await tipsTable.get(tipId)
+  if (!tip || tip.userId !== userId) return null
+  return toPersistedTip(tip)
+}
+
+export async function convertTipToDraft(
+  userId: string,
+  tipId: number,
+): Promise<{ tip: PersistedTip | null; draft: PersistedEditorDraft | null }> {
+  try {
+    const result = await db.transaction('rw', [tipsTable, editorDraftsTable], async () => {
+      const tip = await tipsTable.get(tipId)
+      if (!tip || tip.userId !== userId || tip.status !== 'active') {
+        return { tip: null, draft: null }
+      }
+
+      const draftId = await addDraftRecord(userId, tip.content.slice(0, 60), tip.content)
+
+      await tipsTable.update(tipId, {
+        status: 'converted',
+        convertedDraftId: draftId,
+        updatedAt: new Date(),
+      })
+
+      const updatedTip = toPersistedTip(await tipsTable.get(tipId))
+      const persistedDraft = toPersistedEditorDraft(await editorDraftsTable.get(draftId))
+      return { tip: updatedTip, draft: persistedDraft }
+    })
+    return result
+  } catch {
+    return { tip: null, draft: null }
+  }
+}
+
+export async function discardTip(
+  userId: string,
+  tipId: number,
+): Promise<PersistedTip | null> {
+  const tip = await tipsTable.get(tipId)
+  if (!tip || tip.userId !== userId || tip.status !== 'active') {
+    return null
+  }
+
+  await tipsTable.update(tipId, {
+    status: 'discarded',
+    updatedAt: new Date(),
+  })
+
+  return toPersistedTip(await tipsTable.get(tipId))
+}
+
+export async function convertTipToMindNode(
+  userId: string,
+  tipId: number,
+): Promise<{ tip: PersistedTip | null; mindNode: PersistedMindNode | null }> {
+  try {
+    const result = await db.transaction('rw', [tipsTable, mindNodesTable], async () => {
+      const tip = await tipsTable.get(tipId)
+      if (!tip || tip.userId !== userId || tip.status !== 'active') {
+        return { tip: null, mindNode: null }
+      }
+
+      const label = tip.content.slice(0, 80)
+      const now = new Date()
+      const mindNodeId = makeMindNodeId(userId, 'fragment', label)
+
+      await mindNodesTable.put({
+        id: mindNodeId,
+        userId,
+        nodeType: 'fragment',
+        label,
+        state: 'drifting',
+        documentId: null,
+        degreeScore: 0,
+        recentActivityScore: 0,
+        documentWeightScore: 0,
+        userPinScore: 0,
+        clusterCenterScore: 0,
+        positionX: null,
+        positionY: null,
+        metadata: { sourceTipId: tipId, sourceType: tip.sourceType },
+        createdAt: now,
+        updatedAt: now,
+      })
+
+      await tipsTable.update(tipId, {
+        status: 'linked',
+        updatedAt: new Date(),
+      })
+
+      const updatedTip = toPersistedTip(await tipsTable.get(tipId))
+      const persistedMindNode = toPersistedMindNode(await mindNodesTable.get(mindNodeId))
+      return { tip: updatedTip, mindNode: persistedMindNode }
+    })
+    return result
+  } catch {
+    return { tip: null, mindNode: null }
+  }
+}
+
+export async function syncDocumentsToMindNodes(
+  userId: string,
+): Promise<number> {
+  try {
+    const [documents, existingMindNodes] = await Promise.all([
+      listArchivedEntries(userId),
+      listMindNodes(userId),
+    ])
+
+    const existingDocIds = new Set(
+      existingMindNodes
+        .filter(n => n.documentId !== null)
+        .map(n => n.documentId)
+    )
+
+    let createdCount = 0
+
+    for (const doc of documents) {
+      if (existingDocIds.has(doc.id)) continue
+
+      await upsertMindNode({
+        userId,
+        nodeType: 'document',
+        label: doc.title || doc.content?.slice(0, 60) || 'Untitled Document',
+        state: 'anchored',
+        documentId: doc.id,
+        metadata: { sourceType: 'document', entryId: doc.id },
+      })
+      createdCount++
+    }
+
+    return createdCount
+  } catch {
+    return 0
+  }
+}
+
+export async function syncDockStructureToMind(
+  userId: string,
+): Promise<{ projectNodes: number; tagNodes: number; edges: number }> {
+  const result = { projectNodes: 0, tagNodes: 0, edges: 0 }
+
+  const [entries, tags, existingNodes] = await Promise.all([
+    listArchivedEntries(userId),
+    listTags(userId),
+    listMindNodes(userId),
+  ])
+
+  const existingByLabel = new Map<string, PersistedMindNode>()
+  existingNodes.forEach(n => existingByLabel.set(n.label, n))
+
+  const existingDocNodes = existingNodes.filter(n => n.nodeType === 'document' && n.documentId !== null)
+  const docNodeByEntryId = new Map<number, PersistedMindNode>()
+  existingDocNodes.forEach(n => {
+    if (n.documentId != null) docNodeByEntryId.set(n.documentId, n)
+  })
+
+  const uniqueProjects: string[] = []
+  entries.forEach(e => { if (e.project && !uniqueProjects.includes(e.project)) uniqueProjects.push(e.project) })
+
+  const uniqueTagNames: string[] = []
+  tags.forEach(t => { if (!uniqueTagNames.includes(t.name)) uniqueTagNames.push(t.name) })
+  entries.forEach(e => e.tags.forEach(t => { if (!uniqueTagNames.includes(t)) uniqueTagNames.push(t) }))
+
+  for (const projectName of uniqueProjects) {
+    const existing = existingByLabel.get(projectName)
+    if (existing) continue
+    const node = await upsertMindNode({
+      userId,
+      nodeType: 'project',
+      label: projectName,
+      state: 'anchored',
+      metadata: { sourceType: 'dock_project', projectName },
+    })
+    if (node) {
+      result.projectNodes++
+      existingByLabel.set(projectName, node)
+    }
+  }
+
+  for (const tagName of uniqueTagNames) {
+    const existing = existingByLabel.get(tagName)
+    if (existing) continue
+    const node = await upsertMindNode({
+      userId,
+      nodeType: 'tag',
+      label: tagName,
+      state: 'anchored',
+      metadata: { sourceType: 'dock_tag', tagName },
+    })
+    if (node) {
+      result.tagNodes++
+      existingByLabel.set(tagName, node)
+    }
+  }
+
+  const existingEdges = await listMindEdges(userId)
+
+  for (const entry of entries) {
+    const docNode = docNodeByEntryId.get(entry.id)
+    if (!docNode) continue
+
+    if (entry.project) {
+      const projectNode = existingByLabel.get(entry.project)
+      if (projectNode) {
+        const already = existingEdges.some(e =>
+          e.sourceNodeId === projectNode.id && e.targetNodeId === docNode.id && e.edgeType === 'parent_child'
+        )
+        if (!already) {
+          const edge = await upsertMindEdge({
+            userId,
+            sourceNodeId: projectNode.id,
+            targetNodeId: docNode.id,
+            edgeType: 'parent_child',
+            strength: 0.8,
+            source: 'system',
+            confidence: 0.9,
+            reason: 'dock-project-sync',
+          })
+          if (edge) result.edges++
+        }
+      }
+    }
+
+    for (const tagName of entry.tags) {
+      const tagNode = existingByLabel.get(tagName)
+      if (tagNode) {
+        const already = existingEdges.some(e =>
+          e.sourceNodeId === tagNode.id && e.targetNodeId === docNode.id && e.edgeType === 'semantic'
+        )
+        if (!already) {
+          const edge = await upsertMindEdge({
+            userId,
+            sourceNodeId: tagNode.id,
+            targetNodeId: docNode.id,
+            edgeType: 'semantic',
+            strength: 0.6,
+            source: 'system',
+            confidence: 0.7,
+            reason: 'dock-tag-sync',
+          })
+          if (edge) result.edges++
+        }
+      }
+    }
+  }
+
+  return result
+}
+
+export interface MindFirstScreenSyncResult {
+  documentNodesCreated: number
+  projectNodesCreated: number
+  tagNodesCreated: number
+  edgesCreated: number
+}
+
+export async function syncMindFirstScreen(
+  userId: string,
+): Promise<MindFirstScreenSyncResult> {
+  const documentNodesCreated = await syncDocumentsToMindNodes(userId)
+
+  const { projectNodes: projectNodesCreated, tagNodes: tagNodesCreated, edges: edgesCreated } = await syncDockStructureToMind(userId)
+
+  return { documentNodesCreated, projectNodesCreated, tagNodesCreated, edgesCreated }
+}
+
+export interface MindGraphHealthSummary {
+  totalNodes: number
+  totalEdges: number
+  orphanCount: number
+  suggestedEdgeCount: number
+  confirmedEdgeCount: number
+  conflictEdgeCount: number
+  rejectedRecommendationCount: number
+  deferredRecommendationCount: number
+}
+
+export async function getMindGraphHealthSummary(userId: string): Promise<MindGraphHealthSummary> {
+  const nodes = await listMindNodes(userId)
+  const edges = await listMindEdges(userId)
+
+  const visibleNodes = nodes.filter(n => !isHidden(n))
+  const visibleNodeIds = new Set(visibleNodes.map(n => n.id))
+  const visibleEdges = edges.filter(e => visibleNodeIds.has(e.sourceNodeId) && visibleNodeIds.has(e.targetNodeId))
+
+  const connectedNodeIds = new Set<string>()
+  visibleEdges.forEach(e => {
+    connectedNodeIds.add(e.sourceNodeId)
+    connectedNodeIds.add(e.targetNodeId)
+  })
+  const orphanCount = visibleNodes.filter(n => !connectedNodeIds.has(n.id) && n.nodeType !== 'root').length
+
+  const suggestedEdgeCount = visibleEdges.filter(e => e.edgeType === 'suggested').length
+  const confirmedEdgeCount = visibleEdges.filter(e => e.edgeType === 'confirmed').length
+  const conflictEdgeCount = visibleEdges.filter(e => e.edgeType === 'conflict').length
+
+  const recommendations = await recommendationsTable
+    .where('userId').equals(userId)
+    .toArray()
+  const rejectedRecommendationCount = recommendations.filter(r => r.status === 'rejected').length
+  const deferredRecommendationCount = recommendations.filter(r => r.status === 'ignored').length
+
+  return {
+    totalNodes: visibleNodes.length,
+    totalEdges: visibleEdges.length,
+    orphanCount,
+    suggestedEdgeCount,
+    confirmedEdgeCount,
+    conflictEdgeCount,
+    rejectedRecommendationCount,
+    deferredRecommendationCount,
+  }
+}
+
+export async function generateMindNodeRecommendations(
+  userId: string,
+  nodeId: string,
+  topK: number = 5,
+): Promise<PersistedRecommendation[]> {
+  const targetNode = await mindNodesTable.get(nodeId)
+  if (!targetNode || targetNode.userId !== userId) return []
+
+  const allNodes = await listMindNodes(userId)
+  const allEdges = await listMindEdges(userId)
+
+  const connectedIds = new Set<string>()
+  allEdges.forEach((e) => {
+    if (e.sourceNodeId === nodeId) connectedIds.add(e.targetNodeId)
+    if (e.targetNodeId === nodeId) connectedIds.add(e.sourceNodeId)
+  })
+  connectedIds.add(nodeId)
+
+  const existingRecs = await recommendationsTable
+    .where('userId')
+    .equals(userId)
+    .and(r =>
+      r.subjectType === 'mindNode' &&
+      String(r.subjectId) === nodeId &&
+      r.candidateType === 'mindNode',
+    )
+    .toArray()
+
+  const skipCandidateIds = new Set<string>()
+  for (const rec of existingRecs) {
+    if (
+      rec.status === 'generated' ||
+      rec.status === 'shown' ||
+      rec.status === 'accepted'
+    ) {
+      skipCandidateIds.add(rec.candidateId)
+    }
+    if (rec.status === 'rejected') {
+      skipCandidateIds.add(rec.candidateId)
+    }
+  }
+
+  const candidates: Array<{ nodeId: string; score: number; reason: string; source: string }> = []
+
+  const targetTags: string[] = Array.isArray((targetNode.metadata as Record<string, unknown>)?.tagIds)
+    ? ((targetNode.metadata as Record<string, unknown>).tagIds as string[])
+    : []
+
+  const targetNeighbors = new Set<string>()
+  allEdges.forEach((e) => {
+    if (e.sourceNodeId === nodeId) targetNeighbors.add(e.targetNodeId)
+    if (e.targetNodeId === nodeId) targetNeighbors.add(e.sourceNodeId)
+  })
+
+  for (const node of allNodes) {
+    if (connectedIds.has(node.id)) continue
+    if (skipCandidateIds.has(node.id)) continue
+
+    let score = 0
+    let reason = ''
+    let source = ''
+
+    const nodeTags: string[] = Array.isArray((node.metadata as Record<string, unknown>)?.tagIds)
+      ? ((node.metadata as Record<string, unknown>).tagIds as string[])
+      : []
+    const tagOverlap = targetTags.filter((t) => nodeTags.includes(t)).length
+    if (tagOverlap > 0) {
+      score += 0.3 + Math.min(tagOverlap * 0.15, 0.55)
+      reason = `${tagOverlap} 个共同标签`
+      source = 'tag_overlap'
+    }
+
+    const targetWords = targetNode.label.toLowerCase().split(/\s+/).filter((w: string) => w.length > 1)
+    const nodeWords = node.label.toLowerCase().split(/\s+/).filter((w: string) => w.length > 1)
+    const wordOverlap = targetWords.filter((w: string) => nodeWords.includes(w)).length
+    if (wordOverlap > 0) {
+      const titleScore = 0.2 + Math.min(wordOverlap * 0.15, 0.5)
+      if (titleScore > score) {
+        score = titleScore
+        reason = `${wordOverlap} 个标题关键词匹配`
+        source = 'title_keyword'
+      } else {
+        score += titleScore * 0.3
+      }
+    }
+
+    if (node.nodeType === targetNode.nodeType && node.nodeType !== 'root') {
+      score += 0.15
+      if (!reason) {
+        reason = `相同节点类型: ${node.nodeType}`
+        source = 'node_type'
+      }
+    }
+
+    const nodeNeighbors = new Set<string>()
+    allEdges.forEach((e) => {
+      if (e.sourceNodeId === node.id) nodeNeighbors.add(e.targetNodeId)
+      if (e.targetNodeId === node.id) nodeNeighbors.add(e.sourceNodeId)
+    })
+    const sharedNeighbors = Array.from(targetNeighbors).filter((id: string) => nodeNeighbors.has(id)).length
+    if (sharedNeighbors > 0) {
+      score += 0.2 + Math.min(sharedNeighbors * 0.1, 0.4)
+      if (!reason || source === 'node_type') {
+        reason = `${sharedNeighbors} 个共同邻居`
+        source = 'neighbor_overlap'
+      }
+    }
+
+    if (score > 0.2) {
+      candidates.push({ nodeId: node.id, score: Math.min(score, 0.95), reason, source })
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score)
+  const topCandidates = candidates.slice(0, topK)
+
+  const results: PersistedRecommendation[] = []
+  for (const candidate of topCandidates) {
+    const created = await createRecommendation({
+      userId,
+      subjectType: 'mindNode',
+      subjectId: nodeId,
+      recommendationType: 'link_suggestion',
+      candidateType: 'mindNode',
+      candidateId: candidate.nodeId,
+      confidenceScore: candidate.score,
+      reasonJson: JSON.stringify({
+        reason_text: candidate.reason,
+        source: candidate.source,
+        confidence: candidate.score,
+      }),
+      status: 'generated',
+    })
+    results.push(created)
+  }
+
+  return results
+}
+
+const DEFAULT_DOCK_VIEW_COLUMN_VISIBILITY = {
+  space: true,
+  status: true,
+  tags: true,
+  recommendations: true,
+  score: true,
+} as const
+
+const DEFAULT_DOCK_VIEW_DENSITY = 'standard' as const
+const DEFAULT_DOCK_VIEW_DEFAULT_SORT = 'updatedAt' as const
+
+function toPersistedDockViewSettings(record: DockViewSettingsRecord | undefined): PersistedDockViewSettings | null {
+  if (!record || !record.id) return null
+  return { ...record, id: record.id }
+}
+
+export async function getDockViewSettings(userId: string): Promise<PersistedDockViewSettings | null> {
+  const record = await dockViewSettingsTable
+    .where('userId')
+    .equals(userId)
+    .first()
+  return toPersistedDockViewSettings(record)
+}
+
+export async function saveDockViewSettings(
+  userId: string,
+  settings: Partial<Omit<DockViewSettingsRecord, 'id' | 'userId' | 'updatedAt'>>,
+): Promise<PersistedDockViewSettings> {
+  const now = new Date()
+  const existing = await dockViewSettingsTable
+    .where('userId')
+    .equals(userId)
+    .first()
+
+  if (existing) {
+    await dockViewSettingsTable.update(existing.id as string, {
+      ...settings,
+      updatedAt: now,
+    })
+    return toPersistedDockViewSettings(await dockViewSettingsTable.get(existing.id as string)) as PersistedDockViewSettings
+  }
+
+  const id = `dock-settings-${userId}`
+  const record: DockViewSettingsRecord = {
+    id,
+    userId,
+    columnVisibility: settings.columnVisibility ?? { ...DEFAULT_DOCK_VIEW_COLUMN_VISIBILITY },
+    density: settings.density ?? DEFAULT_DOCK_VIEW_DENSITY,
+    defaultSort: settings.defaultSort ?? DEFAULT_DOCK_VIEW_DEFAULT_SORT,
+    updatedAt: now,
+  }
+  await dockViewSettingsTable.add(record)
+  return toPersistedDockViewSettings(await dockViewSettingsTable.get(id)) as PersistedDockViewSettings
 }

@@ -1,8 +1,13 @@
 'use client'
 
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useRef, forwardRef, useImperativeHandle } from 'react'
 import { ArrowRight, FilePlus2, FileText, Import, Network, Plus } from 'lucide-react'
 import { listDockItems, type DockItem } from '@/lib/repository'
+import RecommendationDock from '../../_components/RecommendationDock'
+
+export interface HomeViewHandle {
+  focusCaptureInput: () => void
+}
 
 interface HomeViewProps {
   userId: string
@@ -13,13 +18,23 @@ interface HomeViewProps {
   onSwitchToMind: () => void
   onCapture: (text: string) => Promise<void>
   nodeCount: number
+  recRefreshKey?: number
+  onApplyRecommendation?: (recommendationId: string) => Promise<string | void>
+  onToast?: (msg: string) => void
 }
 
-export default function HomeView({ userId, userName: _userName, onOpenEditor, onNewNote, onSwitchToDock, onSwitchToMind, onCapture, nodeCount }: HomeViewProps) {
+const HomeView = forwardRef<HomeViewHandle, HomeViewProps>(function HomeView({ userId, userName: _userName, onOpenEditor, onNewNote, onSwitchToDock, onSwitchToMind, onCapture, nodeCount, recRefreshKey, onApplyRecommendation, onToast }, ref) {
+  const captureInputRef = useRef<HTMLInputElement>(null)
   const [recentItems, setRecentItems] = useState<DockItem[]>([])
   const [hoveredCard, setHoveredCard] = useState<string | null>(null)
   const [captureText, setCaptureText] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
+  useImperativeHandle(ref, () => ({
+    focusCaptureInput: () => {
+      captureInputRef.current?.focus()
+    }
+  }))
 
   const loadRecent = useCallback(async () => {
     if (!userId) return
@@ -73,6 +88,7 @@ export default function HomeView({ userId, userName: _userName, onOpenEditor, on
           {/* Star Input - Main Capture */}
           <div className="mb-20 flex w-full max-w-2xl items-center glass rounded-2xl p-2 pl-6 shadow-[0_20px_50px_rgba(0,0,0,0.3)] transition-all duration-500 focus-within:border-[var(--accent)]/30 focus-within:bg-white/[0.05] focus-within:ring-1 focus-within:ring-[var(--accent)]/10">
             <input
+              ref={captureInputRef}
               type="text"
               value={captureText}
               onChange={(e) => setCaptureText(e.target.value)}
@@ -150,8 +166,12 @@ export default function HomeView({ userId, userName: _userName, onOpenEditor, on
               </div>
             )}
           </div>
+
+          <RecommendationDock userId={userId} refreshKey={recRefreshKey} onApplyRecommendation={onApplyRecommendation} onToast={onToast} />
         </section>
       </div>
     </div>
   )
-}
+})
+
+export default HomeView
