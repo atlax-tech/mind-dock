@@ -36,6 +36,20 @@ export type PersistedEvent = AppEvent & { _ts: number; userId: string }
 
 export type EventListener = (event: AppEvent) => void
 
+function deterministicHash(input: string): number {
+  let h = 0
+  for (let i = 0; i < input.length; i++) {
+    h = ((h << 5) - h + input.charCodeAt(i)) | 0
+  }
+  return h >>> 0
+}
+
+function makeAppEventId(userId: string, eventType: string, ts: number, payload?: Record<string, unknown>): string {
+  const payloadStr = payload ? JSON.stringify(payload) : ''
+  const hash = deterministicHash(`${userId}|${eventType}|${ts}|${payloadStr}`)
+  return `${userId}_${eventType}_${ts}_${hash.toString(36)}`
+}
+
 const listeners: EventListener[] = []
 
 const memoryCache = new Map<string, PersistedEvent[]>()
@@ -66,13 +80,15 @@ export function recordEvent(userId: string, event: AppEvent): void {
   if (cache.length > 500) cache.splice(0, cache.length - 500)
   memoryCache.set(userId, cache)
 
+  const payload = { ...event } as Record<string, unknown>
   appEventsTable.add({
+    id: makeAppEventId(userId, event.type, persisted._ts, payload),
     userId,
     workspaceId: DEFAULT_WORKSPACE_ID,
     eventType: event.type,
-    payload: { ...event } as Record<string, unknown>,
+    payload,
     _ts: persisted._ts,
-  }).catch(() => {})
+  }).catch(err => { if (typeof console !== 'undefined') console.warn('[events] appEvents write failed:', err?.message) })
 }
 
 export function getEventLog(userId: string): PersistedEvent[] {
@@ -154,14 +170,18 @@ async function migrateFromLocalStorage(userId: string): Promise<void> {
   try {
     const oldEvents = JSON.parse(raw) as PersistedEvent[]
     if (Array.isArray(oldEvents) && oldEvents.length > 0) {
-      const records = oldEvents.map(e => ({
-        userId: e.userId,
-        workspaceId: DEFAULT_WORKSPACE_ID,
-        eventType: e.type,
-        payload: { ...e } as Record<string, unknown>,
-        _ts: e._ts,
-      }))
-      await appEventsTable.bulkAdd(records)
+      const records = oldEvents.map(e => {
+        const payload = { ...e } as Record<string, unknown>
+        return {
+          id: makeAppEventId(e.userId, e.type, e._ts, payload),
+          userId: e.userId,
+          workspaceId: DEFAULT_WORKSPACE_ID,
+          eventType: e.type,
+          payload,
+          _ts: e._ts,
+        }
+      })
+      await appEventsTable.bulkPut(records)
     }
 
     localStorage.setItem(migrationKey, '1')

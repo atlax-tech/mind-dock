@@ -281,28 +281,27 @@ export async function resolveRecommendationCandidate(
     switch (type) {
       case 'mindNode': {
         const node = await mindNodesTable.get(id);
-        return node && node.userId === userId ? { title: node.label, type: node.nodeType } : null;
+        return node && node.userId === userId && node.workspaceId === DEFAULT_WORKSPACE_ID ? { title: node.label, type: node.nodeType } : null;
       }
       case 'entry': {
         const entry = await entriesTable.get(Number(id));
-        return entry && entry.userId === userId ? { title: entry.title, type: entry.type } : null;
+        return entry && entry.userId === userId && entry.workspaceId === DEFAULT_WORKSPACE_ID ? { title: entry.title, type: entry.type } : null;
       }
       case 'document': {
-        // Document candidates usually point to entries or dock items that are documents
         const doc = await entriesTable.get(Number(id));
-        return doc && doc.userId === userId ? { title: doc.title, type: 'document' } : null;
+        return doc && doc.userId === userId && doc.workspaceId === DEFAULT_WORKSPACE_ID ? { title: doc.title, type: 'document' } : null;
       }
       case 'dockItem': {
         const item = await dockItemsTable.get(Number(id));
-        return item && item.userId === userId ? { title: item.topic || item.rawText?.slice(0, 40) || `Dock Item #${id}`, type: item.sourceType } : null;
+        return item && item.userId === userId && item.workspaceId === DEFAULT_WORKSPACE_ID ? { title: item.topic || item.rawText?.slice(0, 40) || `Dock Item #${id}`, type: item.sourceType } : null;
       }
       case 'tag': {
         const tag = await tagsTable.get(id);
-        return tag && tag.userId === userId ? { title: tag.name, type: 'tag' } : null;
+        return tag && tag.userId === userId && tag.workspaceId === DEFAULT_WORKSPACE_ID ? { title: tag.name, type: 'tag' } : null;
       }
       case 'project': {
         const collection = await collectionsTable.get(id);
-        return collection && collection.userId === userId ? { title: collection.name, type: collection.collectionType } : null;
+        return collection && collection.userId === userId && collection.workspaceId === DEFAULT_WORKSPACE_ID ? { title: collection.name, type: collection.collectionType } : null;
       }
       default:
         return null;
@@ -360,7 +359,7 @@ async function getPersistedDockItem(id: number): Promise<PersistedDockItem | nul
 async function getDockItemForUser(userId: string, id: number): Promise<PersistedDockItem | null> {
   const item = await getPersistedDockItem(id)
   if (!item) return null
-  if (item.userId !== userId) return null
+  if (item.userId !== userId || item.workspaceId !== DEFAULT_WORKSPACE_ID) return null
   return item
 }
 

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { db } from '@/lib/db'
+import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
 import {
   clearEventLog,
   computeMetrics,
@@ -275,5 +277,118 @@ describe('event userId isolation', () => {
     expect(logA).toHaveLength(2)
     expect(logB).toHaveLength(1)
     expect(logB[0].type).toBe('weekly_review_opened')
+  })
+})
+
+describe('appEvents IndexedDB persistence', () => {
+  afterEach(async () => {
+    clearEventLog(TEST_USER)
+    await db.table('appEvents').where('userId').equals(TEST_USER).delete()
+  })
+
+  it('recordEvent persists to appEventsTable with id', async () => {
+    recordEvent(TEST_USER, { type: 'capture_created', sourceType: 'text', dockItemId: 1 })
+
+    await new Promise(r => setTimeout(r, 100))
+
+    const records = await db.table('appEvents')
+      .where('[userId+workspaceId]')
+      .equals([TEST_USER, DEFAULT_WORKSPACE_ID])
+      .toArray()
+
+    expect(records.length).toBeGreaterThanOrEqual(1)
+    const last = records[records.length - 1]
+    expect(last.id).toBeTruthy()
+    expect(last.eventType).toBe('capture_created')
+    expect(last.workspaceId).toBe(DEFAULT_WORKSPACE_ID)
+  })
+
+  it('persisted record includes workspaceId: DEFAULT_WORKSPACE_ID', async () => {
+    recordEvent(TEST_USER, { type: 'weekly_review_opened' })
+
+    await new Promise(r => setTimeout(r, 100))
+
+    const records = await db.table('appEvents')
+      .where('[userId+workspaceId]')
+      .equals([TEST_USER, DEFAULT_WORKSPACE_ID])
+      .toArray()
+
+    expect(records.length).toBeGreaterThanOrEqual(1)
+    for (const r of records) {
+      expect(r.workspaceId).toBe(DEFAULT_WORKSPACE_ID)
+    }
+  })
+
+  it('clearEventLog clears both memory cache and IndexedDB records', async () => {
+    recordEvent(TEST_USER, { type: 'capture_created', sourceType: 'text', dockItemId: 1 })
+
+    await new Promise(r => setTimeout(r, 100))
+
+    clearEventLog(TEST_USER)
+
+    expect(getEventLog(TEST_USER)).toHaveLength(0)
+
+    await new Promise(r => setTimeout(r, 100))
+
+    const records = await db.table('appEvents')
+      .where('[userId+workspaceId]')
+      .equals([TEST_USER, DEFAULT_WORKSPACE_ID])
+      .toArray()
+
+    expect(records).toHaveLength(0)
+  })
+
+  it('migrateFromLocalStorage writes records with id and removes old key', async () => {
+    const oldKey = `atlax_event_log_${TEST_USER}`
+    const migrationKey = `atlax_event_log_migrated_${TEST_USER}`
+
+    const store: Record<string, string> = {}
+    const fakeLocalStorage = {
+      getItem: (key: string) => store[key] ?? null,
+      setItem: (key: string, value: string) => { store[key] = value },
+      removeItem: (key: string) => { delete store[key] },
+      get length() { return Object.keys(store).length },
+      clear() { for (const k of Object.keys(store)) delete store[k] },
+      key(_index: number) { return null },
+    }
+
+    const origWindow = globalThis.window
+    const origLocalStorage = globalThis.localStorage
+    Object.defineProperty(globalThis, 'window', { value: {}, writable: true, configurable: true })
+    Object.defineProperty(globalThis, 'localStorage', { value: fakeLocalStorage, writable: true, configurable: true })
+
+    try {
+      delete store[migrationKey]
+      const oldEvents = [
+        { type: 'capture_created', sourceType: 'text', dockItemId: 99, _ts: Date.now() - 1000, userId: TEST_USER },
+      ]
+      store[oldKey] = JSON.stringify(oldEvents)
+
+      clearEventLog(TEST_USER)
+      await db.table('appEvents').where('userId').equals(TEST_USER).delete()
+
+      getEventLog(TEST_USER)
+
+      await new Promise(r => setTimeout(r, 300))
+
+      const records = await db.table('appEvents')
+        .where('[userId+workspaceId]')
+        .equals([TEST_USER, DEFAULT_WORKSPACE_ID])
+        .toArray()
+
+      expect(records.length).toBeGreaterThanOrEqual(1)
+      const migrated = records.find(r => r.eventType === 'capture_created')
+      expect(migrated).toBeDefined()
+      if (migrated) {
+        expect(migrated.id).toBeTruthy()
+        expect(migrated.workspaceId).toBe(DEFAULT_WORKSPACE_ID)
+      }
+
+      expect(store[oldKey]).toBeUndefined()
+      expect(store[migrationKey]).toBe('1')
+    } finally {
+      Object.defineProperty(globalThis, 'window', { value: origWindow, writable: true, configurable: true })
+      Object.defineProperty(globalThis, 'localStorage', { value: origLocalStorage, writable: true, configurable: true })
+    }
   })
 })

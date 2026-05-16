@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { db } from '@/lib/db'
+import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
 import {
   addTagToItem,
   archiveItem,
@@ -20,6 +21,7 @@ import {
   removeTagFromItem,
   reopenItem,
   restoreItem,
+  resolveRecommendationCandidate,
   suggestItem,
   updateArchivedEntry,
   updateChainLinks,
@@ -879,6 +881,190 @@ describe('repository', () => {
       if (provenance?.sourceTitle) {
         expect(provenance.sourceTitle.length).toBeLessThanOrEqual(60)
       }
+    })
+  })
+
+  describe('resolveRecommendationCandidate workspace isolation', () => {
+    const OTHER_WORKSPACE = 'other-workspace'
+
+    afterEach(cleanAll)
+
+    it('rejects entry from other workspace', async () => {
+      const entryId = await db.table('entries').add({
+        userId: USER_A,
+        workspaceId: OTHER_WORKSPACE,
+        sourceDockItemId: 0,
+        title: 'Other WS Entry',
+        content: 'content',
+        type: 'note',
+        tags: [],
+        project: null,
+        actions: [],
+        createdAt: new Date(),
+        archivedAt: new Date(),
+      })
+
+      const result = await resolveRecommendationCandidate(USER_A, 'entry', String(entryId))
+      expect(result).toBeNull()
+    })
+
+    it('rejects document from other workspace', async () => {
+      const entryId = await db.table('entries').add({
+        userId: USER_A,
+        workspaceId: OTHER_WORKSPACE,
+        sourceDockItemId: 0,
+        title: 'Other WS Document',
+        content: 'content',
+        type: 'note',
+        tags: [],
+        project: null,
+        actions: [],
+        createdAt: new Date(),
+        archivedAt: new Date(),
+      })
+
+      const result = await resolveRecommendationCandidate(USER_A, 'document', String(entryId))
+      expect(result).toBeNull()
+    })
+
+    it('rejects dockItem from other workspace', async () => {
+      const itemId = await db.table('dockItems').add({
+        userId: USER_A,
+        workspaceId: OTHER_WORKSPACE,
+        rawText: 'Other WS DockItem',
+        topic: null,
+        sourceType: 'text',
+        status: 'pending',
+        suggestions: [],
+        userTags: [],
+        selectedActions: [],
+        selectedProject: null,
+        sourceId: null,
+        parentId: null,
+        processedAt: null,
+        createdAt: new Date(),
+      })
+
+      const result = await resolveRecommendationCandidate(USER_A, 'dockItem', String(itemId))
+      expect(result).toBeNull()
+    })
+
+    it('rejects tag from other workspace', async () => {
+      await db.table('tags').add({
+        id: 'other-ws-tag',
+        userId: USER_A,
+        workspaceId: OTHER_WORKSPACE,
+        name: 'Other WS Tag',
+        color: '#000',
+        createdAt: new Date(),
+      })
+
+      const result = await resolveRecommendationCandidate(USER_A, 'tag', 'other-ws-tag')
+      expect(result).toBeNull()
+    })
+
+    it('rejects project/collection from other workspace', async () => {
+      await db.table('collections').add({
+        id: 'other-ws-project',
+        userId: USER_A,
+        workspaceId: OTHER_WORKSPACE,
+        name: 'Other WS Project',
+        collectionType: 'project',
+        createdAt: new Date(),
+      })
+
+      const result = await resolveRecommendationCandidate(USER_A, 'project', 'other-ws-project')
+      expect(result).toBeNull()
+    })
+
+    it('rejects mindNode from other workspace', async () => {
+      await db.table('mindNodes').add({
+        id: 'other-ws-node',
+        userId: USER_A,
+        workspaceId: OTHER_WORKSPACE,
+        nodeType: 'document',
+        label: 'Other WS Node',
+        state: 'anchored',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+
+      const result = await resolveRecommendationCandidate(USER_A, 'mindNode', 'other-ws-node')
+      expect(result).toBeNull()
+    })
+
+    it('accepts entry from default workspace', async () => {
+      const entryId = await db.table('entries').add({
+        userId: USER_A,
+        workspaceId: DEFAULT_WORKSPACE_ID,
+        sourceDockItemId: 0,
+        title: 'Default WS Entry',
+        content: 'content',
+        type: 'note',
+        tags: [],
+        project: null,
+        actions: [],
+        createdAt: new Date(),
+        archivedAt: new Date(),
+      })
+
+      const result = await resolveRecommendationCandidate(USER_A, 'entry', String(entryId))
+      expect(result).not.toBeNull()
+      if (result) {
+        expect(result.title).toBe('Default WS Entry')
+      }
+    })
+  })
+
+  describe('createDockItem cross-workspace chain link isolation', () => {
+    const OTHER_WORKSPACE = 'other-workspace'
+
+    afterEach(cleanAll)
+
+    it('rejects sourceId pointing to other workspace DockItem', async () => {
+      const otherItemId = await db.table('dockItems').add({
+        userId: USER_A,
+        workspaceId: OTHER_WORKSPACE,
+        rawText: 'Other WS DockItem',
+        topic: null,
+        sourceType: 'text',
+        status: 'pending',
+        suggestions: [],
+        userTags: [],
+        selectedActions: [],
+        selectedProject: null,
+        sourceId: null,
+        parentId: null,
+        processedAt: null,
+        createdAt: new Date(),
+      })
+
+      await expect(
+        createDockItem(USER_A, '非法链接', 'text', { sourceId: otherItemId as number }),
+      ).rejects.toThrow()
+    })
+
+    it('rejects parentId pointing to other workspace DockItem', async () => {
+      const otherItemId = await db.table('dockItems').add({
+        userId: USER_A,
+        workspaceId: OTHER_WORKSPACE,
+        rawText: 'Other WS DockItem',
+        topic: null,
+        sourceType: 'text',
+        status: 'pending',
+        suggestions: [],
+        userTags: [],
+        selectedActions: [],
+        selectedProject: null,
+        sourceId: null,
+        parentId: null,
+        processedAt: null,
+        createdAt: new Date(),
+      })
+
+      await expect(
+        createDockItem(USER_A, '非法链接', 'text', { parentId: otherItemId as number }),
+      ).rejects.toThrow()
     })
   })
 })
