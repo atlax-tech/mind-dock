@@ -70,4 +70,9 @@ apps/web/.next/
 apps/web/app/seed/
 apps/web/app/seed-mind/
 apps/web/scripts/
-docs/
+docs/*
+!docs/engineering/
+docs/engineering/*
+!docs/engineering/dev_log/
+!docs/engineering/dev_log/**
+docs/engineering/dev_log/**/.DS_Store
