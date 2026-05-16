@@ -59,7 +59,6 @@ import {
   LayoutTemplate,
   FileSignature,
   Newspaper,
-  CloudCog,
   ArrowRightLeft,
   Crown,
   Layers,
@@ -153,9 +152,10 @@ interface HomeViewProps {
   onOpenDock?: () => void
   onOpenReview?: () => void
   onOpenBriefing?: () => void
+  onOpenMind?: () => void
 }
 
-const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToast, intelligence, intelligenceLoading, onOpenDraft, onOpenEntry, onOpenDock, onOpenReview, onOpenBriefing }: HomeViewProps) => {
+const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToast, intelligence, intelligenceLoading, onOpenDraft, onOpenEntry, onOpenDock, onOpenReview, onOpenBriefing, onOpenMind }: HomeViewProps) => {
   const activeSessionCount = intelligence.mindNodeCount + intelligence.activeDraftCount + intelligence.activeTipCount
   return (
     <div className="max-w-[1400px] mx-auto animate-in fade-in duration-500">
@@ -330,6 +330,22 @@ const HomeView = ({ tips, tipsLoading, onConvertTipToDraft, onDiscardTip, onToas
             </div>
           </GlassPanel>
 
+          {/* 思维图谱入口 */}
+          {intelligence.mindNodeCount > 0 && (
+            <GlassPanel className="p-5 cursor-pointer group" onClick={() => onOpenMind?.()}>
+              <div className="flex justify-between items-center">
+                <div>
+                  <p className="text-[9px] font-semibold tracking-wider text-[#899298] uppercase mb-1">思维图谱</p>
+                  <h3 className="text-base font-medium text-white mb-0.5 group-hover:text-[#86d7ff] transition-colors">Mind</h3>
+                  <p className="text-[11px] text-[#899298]">{intelligence.mindNodeCount} 个节点 · {intelligence.mindEdgeCount} 条连线</p>
+                </div>
+                <div className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center group-hover:bg-[#86d7ff]/20 transition-colors">
+                  <Brain className="w-4 h-4 text-[#899298] group-hover:text-[#86d7ff] transition-colors" />
+                </div>
+              </div>
+            </GlassPanel>
+          )}
+
           {/* 待处理数据包 */}
           <GlassPanel className="p-5 cursor-pointer group" onClick={onOpenDock}>
             <div className="flex justify-between items-center mb-1.5">
@@ -375,7 +391,6 @@ const ToolboxView = () => {
     { id: 'editor_paper', title: 'Editor 纸张材质', desc: '解锁羊皮纸、深色方格本、工程图纸等沉浸式书写背景主题和高阶排版。', icon: FileSignature, isPro: true },
     { id: 'brief_custom', title: '简报生成定制', desc: '自定义每日知识简报的 AI 总结 Prompt 和数据抓取源，精准聚焦核心信息。', icon: Newspaper, isPro: true },
     { id: 'widgets', title: '系统小组件', desc: '将 Atlax 核心数据与捕获入口直接嵌入到您的 OS 桌面或菜单栏中。', icon: LayoutDashboard, isPro: true },
-    { id: 'cloud_storage', title: '企业级云端接入', desc: '解锁 S3, WebDAV, Google Drive 等第三方高级同步协议，数据完全自主掌控。', icon: CloudCog, isPro: true },
     { id: 'io_control', title: '导入导出总控', desc: '完整的数据流控中心，支持批量 Markdown、PDF 甚至外部数据库级无损迁移。', icon: ArrowRightLeft, isPro: false },
   ];
 
@@ -436,11 +451,11 @@ const ToolboxView = () => {
             </p>
 
             <div className="mt-auto">
-              <button className={`w-full py-2 rounded-lg text-xs font-semibold transition-all ${tool.isPro
-                  ? 'bg-[#c8a0f0]/10 text-[#c8a0f0] border border-[#c8a0f0]/20 hover:bg-[#c8a0f0]/20'
-                  : 'bg-white/5 text-white border border-white/10 hover:bg-white/10'
+              <button disabled className={`w-full py-2 rounded-lg text-xs font-semibold transition-all cursor-not-allowed opacity-50 ${tool.isPro
+                  ? 'bg-[#c8a0f0]/10 text-[#c8a0f0] border border-[#c8a0f0]/20'
+                  : 'bg-white/5 text-[#899298] border border-white/10'
                 }`}>
-                {tool.isPro ? '订阅解锁' : '立即配置'}
+                {tool.isPro ? 'Pro · Preview' : 'Preview'}
               </button>
             </div>
           </GlassPanel>
@@ -1028,15 +1043,22 @@ const MindView = ({ userId, onToast, onSelectionChange, onOpenEditor, initialFoc
 
 // 3. 停靠区视图 (Dock View) — 知识结构控制台
 // Phase 3.2 DOCK-REAL-002: 真实 Recommendation Queue + Apply/Reject/Ignore + Inspector Actions
-const DockView = ({ userId, onOpenEditor, onToast, onFocusMindNode }: {
+const DockView = ({ userId, onOpenEditor, onToast, onFocusMindNode, initialHealthFilter }: {
   userId: string
   onOpenEditor?: (documentId: number, sourceType: 'draft' | 'document') => void
   onToast?: (msg: string) => void
   onFocusMindNode?: (nodeId: string) => void
+  initialHealthFilter?: string | null
 }) => {
   const { data: dockData, loading: dockLoading, error: dockError, refresh: dockRefresh } = useDockData(userId);
   const vm = useDockViewModel(userId);
   const [selectedEntityId, setSelectedEntityId] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (initialHealthFilter) {
+      vm.setDockMode('health', initialHealthFilter as any);
+    }
+  }, [initialHealthFilter]);
   const [selectedRecId, setSelectedRecId] = React.useState<string | null>(null);
   const [relatedMindNode, setRelatedMindNode] = React.useState<StoredMindNode | null>(null);
   const [recActionLoading, setRecActionLoading] = React.useState<string | null>(null);
@@ -2407,7 +2429,7 @@ const DockView = ({ userId, onOpenEditor, onToast, onFocusMindNode }: {
 
 // 5. 回顾视图 (Review View) - 高密度聚合仪表盘
 // 已接入 LocalHealthReport，核心数据面板展示真实 IndexedDB 数据
-const ReviewView = ({ onNavigateToMind }: { onNavigateToMind?: () => void }) => {
+const ReviewView = ({ onNavigateToMind, onNavigateToSuggestion }: { onNavigateToMind?: () => void; onNavigateToSuggestion?: (target: { tab: string; filter?: string }) => void }) => {
   const [isPeriodDropdownOpen, setIsPeriodDropdownOpen] = useState(false);
   const [periodType, setPeriodType] = useState<'日' | '周' | '月' | '年'>('周');
   const [healthReport, setHealthReport] = useState<LocalHealthReport | null>(null)
@@ -2684,14 +2706,14 @@ const ReviewView = ({ onNavigateToMind }: { onNavigateToMind?: () => void }) => 
             </div>
             <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 space-y-1.5">
               {healthReport && healthReport.suggestions.length > 0 ? healthReport.suggestions.map((sug) => (
-                <div key={sug.id} className="bg-white/[0.02] hover:bg-white/5 border border-white/5 rounded-lg p-2.5 flex justify-between items-center group transition-colors cursor-pointer">
+                <div key={sug.id} className="bg-white/[0.02] hover:bg-white/5 border border-white/5 hover:border-[#86d7ff]/30 rounded-lg p-2.5 flex justify-between items-center group transition-all cursor-pointer" onClick={() => { if (sug.navigationTarget) onNavigateToSuggestion?.(sug.navigationTarget); }}>
                   <div className="overflow-hidden flex-1 pr-2">
                     <p className="text-[11px] text-white truncate mb-0.5">{sug.title}</p>
                     <p className="text-[9px] text-[#ffb4ab]">{sug.type}</p>
                   </div>
-                  <button disabled className="text-[9px] px-2 py-1 rounded bg-white/5 text-[#899298] opacity-50 cursor-not-allowed">
-                    {sug.action}
-                  </button>
+                  <span className="text-[9px] px-2 py-1 rounded bg-white/5 text-[#899298] opacity-50">
+                    {sug.navigationTarget ? '前往 ↗' : sug.action}
+                  </span>
                 </div>
               )) : (
                 <div className="text-[11px] text-[#899298] text-center py-4">暂无清理建议</div>
@@ -2807,7 +2829,7 @@ const SettingsView = () => (
                 value="Browser Local Storage Mode"
                 className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-[#e0e3e6] focus:outline-none focus:border-[#86d7ff]/50"
               />
-              <button disabled className="px-3 py-1.5 bg-white/5 text-[#899298] rounded-lg text-xs cursor-not-allowed opacity-50" title="Desktop 打包后再开放真实本地金库路径">更改位置</button>
+              <button disabled className="px-3 py-1.5 bg-white/5 text-[#899298] rounded-lg text-xs cursor-not-allowed opacity-50" title="Desktop App 后开放真实本地金库路径">更改位置</button>
             </div>
             <p className="text-[9px] text-[#899298]/60 mt-1.5">Desktop 打包后再开放真实本地金库路径</p>
           </div>
@@ -2825,34 +2847,9 @@ const SettingsView = () => (
 
       <GlassPanel className="p-6">
         <h2 className="text-base font-medium text-white mb-4 border-b border-white/10 pb-3 flex items-center gap-2">
-          <Cloud className="w-4 h-4 text-[#86d7ff]" /> 同步提供商
+          <Cloud className="w-4 h-4 text-[#899298]" /> 云端同步
         </h2>
-        <div className="space-y-3">
-          <div className="flex items-center justify-between p-3 border border-white/10 bg-white/[0.02] rounded-xl">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 bg-white/10 rounded-full flex items-center justify-center">
-                <Cloud className="w-4 h-4 text-[#86d7ff]" />
-              </div>
-              <div>
-                <p className="text-white text-xs font-medium">Atlax Cloud 同步 (E2EE)</p>
-                <p className="text-[#899298] text-[10px] mt-0.5">Planned · 需要 Cloud Service 接入</p>
-              </div>
-            </div>
-            <span className="text-[9px] bg-[#c8a0f0]/20 text-[#c8a0f0] px-2 py-0.5 rounded-full border border-[#c8a0f0]/30 font-semibold tracking-wider uppercase">Planned</span>
-          </div>
-          <div className="flex items-center justify-between p-3 border border-white/10 rounded-xl opacity-50 cursor-not-allowed">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 bg-white/5 rounded-full flex items-center justify-center">
-                <HardDrive className="w-4 h-4 text-[#899298]" />
-              </div>
-              <div>
-                <p className="text-white text-xs font-medium">自托管 (WebDAV / S3)</p>
-                <p className="text-[#899298] text-[10px] mt-0.5">Planned · 需要 Connector Service 接入</p>
-              </div>
-            </div>
-            <span className="text-[9px] bg-[#c8a0f0]/20 text-[#c8a0f0] px-2 py-0.5 rounded-full border border-[#c8a0f0]/30 font-semibold tracking-wider uppercase">Planned</span>
-          </div>
-        </div>
+        <p className="text-xs text-[#899298] leading-relaxed">云端存储不属于当前路线。Atlax 当前仅支持本地 IndexedDB 存储，所有数据保存在您的设备上。</p>
       </GlassPanel>
     </div>
   </div>
@@ -3049,7 +3046,7 @@ const DailyBriefingView = ({ brief, briefLoading, onOpenDraft, onOpenEntry, onOp
                   <div key={i} className="py-2.5 flex justify-between items-center group cursor-pointer hover:bg-white/5 rounded-lg px-2 -mx-2 transition-colors" onClick={() => {
                     switch (hint.type) {
                       case 'tip_pressure': onOpenDock?.(); break;
-                      case 'draft_pressure': onOpenDraft?.(); break;
+                      case 'draft_pressure': onOpenDraft?.(hint.targetId as number | undefined); break;
                       case 'document_empty': onOpenEntry?.(); break;
                       case 'mind_empty': onOpenMind?.(); break;
                       case 'collection_active':
@@ -3130,6 +3127,7 @@ export default function WorkspacePage() {
   const [pendingOpenDraftId, setPendingOpenDraftId] = useState<number | null>(null);
   const [pendingOpenEntryId, setPendingOpenEntryId] = useState<number | null>(null);
   const [pendingMindFocusNodeId, setPendingMindFocusNodeId] = useState<string | null>(null);
+  const [pendingDockFilter, setPendingDockFilter] = useState<string | null>(null);
   const [activeEditorMeta, setActiveEditorMeta] = useState<{ id: number | null; title: string; status: string }>({ id: null, title: 'Untitled', status: 'idle' });
 
   useEffect(() => {
@@ -3310,15 +3308,15 @@ export default function WorkspacePage() {
         <main className={`flex-1 min-w-0 ${activeTab === 'editor' || activeTab === 'dock' || activeTab === 'mind' ? 'overflow-hidden pb-0' : 'overflow-y-auto pb-12 custom-scrollbar'} ${activeTab === 'dock' || activeTab === 'mind' ? 'px-0' : 'px-8'}`}>
           {activeTab === 'home' && (
             <>
-              <HomeView tips={tipsHook.tips} tipsLoading={tipsHook.loading} onConvertTipToDraft={async (tipId: number) => { const result = await tipsHook.convertTipToDraft(tipId); if (result.draftId) emit({ type: 'tip_converted', tipId, draftId: result.draftId }); return result; }} onDiscardTip={async (tipId: number) => { const result = await tipsHook.discardTip(tipId); emit({ type: 'tip_discarded', tipId }); return result; }} onToast={showToast} intelligence={homeIntelligence.data} intelligenceLoading={homeIntelligence.loading} onOpenDraft={(draftId) => { if (draftId) setPendingOpenDraftId(draftId); setActiveTab('editor'); }} onOpenEntry={(entryId) => { if (entryId) setPendingOpenEntryId(entryId); setActiveTab('editor'); }} onOpenDock={() => setActiveTab('dock')} onOpenReview={() => setActiveTab('review')} onOpenBriefing={() => setActiveTab('briefing')} />
+              <HomeView tips={tipsHook.tips} tipsLoading={tipsHook.loading} onConvertTipToDraft={async (tipId: number) => { const result = await tipsHook.convertTipToDraft(tipId); if (result.draftId) emit({ type: 'tip_converted', tipId, draftId: result.draftId }); return result; }} onDiscardTip={async (tipId: number) => { const result = await tipsHook.discardTip(tipId); emit({ type: 'tip_discarded', tipId }); return result; }} onToast={showToast} intelligence={homeIntelligence.data} intelligenceLoading={homeIntelligence.loading} onOpenDraft={(draftId) => { if (draftId) setPendingOpenDraftId(draftId); setActiveTab('editor'); }} onOpenEntry={(entryId) => { if (entryId) setPendingOpenEntryId(entryId); setActiveTab('editor'); }} onOpenDock={() => setActiveTab('dock')} onOpenReview={() => setActiveTab('review')} onOpenBriefing={() => setActiveTab('briefing')} onOpenMind={() => setActiveTab('mind')} />
             </>
           )}
           {activeTab === 'briefing' && <DailyBriefingView brief={dailyBriefHook.data} briefLoading={dailyBriefHook.loading} onOpenDraft={(draftId) => { if (draftId) setPendingOpenDraftId(draftId); setActiveTab('editor'); }} onOpenEntry={(entryId) => { if (entryId) setPendingOpenEntryId(entryId); setActiveTab('editor'); }} onOpenDock={() => setActiveTab('dock')} onOpenMind={() => setActiveTab('mind')} onOpenReview={() => setActiveTab('review')} />}
           {activeTab === 'toolbox' && <ToolboxView />}
           {activeTab === 'mind' && <MindView userId={userId} onToast={showToast} onSelectionChange={setIsNodeSelected} initialFocusNodeId={pendingMindFocusNodeId} onFocusNodeConsumed={() => setPendingMindFocusNodeId(null)} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} />}
-          {activeTab === 'dock' && <DockView userId={userId} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} onToast={showToast} onFocusMindNode={(nodeId: string) => { setPendingMindFocusNodeId(nodeId); setActiveTab('mind'); }} />}
+          {activeTab === 'dock' && <DockView userId={userId} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} onToast={showToast} onFocusMindNode={(nodeId: string) => { setPendingMindFocusNodeId(nodeId); setActiveTab('mind'); }} initialHealthFilter={pendingDockFilter} />}
           {activeTab === 'editor' && <DraftEditorView userId={userId} showSourcePacket={showSourcePacket} showInspector={showInspector} onToggleSourcePacket={() => setShowSourcePacket(v => !v)} onToggleInspector={() => setShowInspector(v => !v)} onToast={showToast} initialDraftId={pendingOpenDraftId} initialEntryId={pendingOpenEntryId} onInitialDraftConsumed={() => setPendingOpenDraftId(null)} onInitialEntryConsumed={() => setPendingOpenEntryId(null)} onActiveDraftMetaChange={setActiveEditorMeta} />}
-          {activeTab === 'review' && <ReviewView onNavigateToMind={() => setActiveTab('mind')} />}
+          {activeTab === 'review' && <ReviewView onNavigateToMind={() => setActiveTab('mind')} onNavigateToSuggestion={(target) => { setActiveTab(target.tab as any); if (target.filter) { setPendingDockFilter(target.filter); } }} />}
           {activeTab === 'settings' && <SettingsView />}
         </main>
       </div>

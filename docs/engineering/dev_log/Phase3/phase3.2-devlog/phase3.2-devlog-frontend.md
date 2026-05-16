@@ -2,6 +2,117 @@
 
 ---
 
+## Phase 3.2 + Round 19 devlog -- P32-CLOSEOUT-003: Final Punch List & Algorithm Readiness
+
+**日期**: 2026-05-16
+**任务起始时间**: 2026-05-16 06:50
+**任务结束时间**: 2026-05-16 07:05
+**工时**: 15 分钟
+**卡号**: P32-CLOSEOUT-003
+
+### 任务目标
+
+Phase 3.2 最后一轮可实现补洞：解决本阶段不该继续拖延的 disabled / planned / readonly 小闭环，复核全页面可信状态，并为 Phase 3.3 模型驱动算法准备可用的数据入口、反馈入口和风险清单。
+
+### 变更摘要
+
+#### 1. Review Suggestion Click Navigation
+- `LocalHealthSuggestion` 接口新增 `navigationTarget?: { tab: string; filter?: string }` 字段
+- `getLocalHealthReport` 为 5 种建议类型填充 navigationTarget（orphan_documents→dock/weaklyClassified、duplicate_tags→dock/duplicates、stale_drafts→editor、isolated_mind_nodes→mind、weakly_classified→dock/weaklyClassified）
+- ReviewView suggestion 卡片添加 onClick handler，点击导航到对应视图
+- WorkspacePage 新增 `pendingDockFilter` 状态，ReviewView 导航时设置 activeTab + dock filter
+- 点击 suggestion 不触发任何 destructive action，suggestion 保持 readonly
+
+#### 2. Recommendation Shown Tracking
+- `useDockData` 新增 `markRecommendationsShown` 函数，筛选 status=generated 且 isShown=false 的推荐调用 `markRecommendationDockQueueItemShown`
+- 新增模块级 `markedShownIds` Set 去重，避免重复打点
+- 新增导出 `markSingleRecommendationShown` 供 drawer/inspector 使用
+- useEffect 在 rawRecommendations 变化时自动 mark shown
+
+#### 3. Editor Source Packet Real Source Display
+- 新增 `sourceData` state，useEffect 根据 draft.sourceEntryId 查询源文档
+- 无 sourceEntryId → "Direct Draft" 可信空态
+- 有 sourceEntryId → 通过 entriesTable.get 查询源文档，显示 title、日期、标签数、项目
+- 移除"0 个项目"静态假说明
+- 未扩大 entriesTable 使用范围，未发明新字段
+
+#### 4. Editor Metadata Minimal Exposure
+- 验证 tags/project 已有完整展示和编辑功能（handleTagsChange/handleProjectChange → updateDraft）
+- Collection 显示 Planned 标注
+- 无需额外改动
+
+#### 5. Settings/Toolbox Planned Boundary Closure
+- "更改位置"按钮添加 disabled + opacity-50 + cursor-not-allowed + title tooltip
+- 移除 Cloud/WebDAV/S3 假连接状态，替换为"云端存储不属于当前路线"文本
+- 移除 CloudCog 未使用 import
+- Toolbox 插件按钮改为 disabled + "Preview" 标注
+- Pro 功能按钮改为 "Pro · Preview"
+- 移除 cloud_storage 工具卡片
+
+#### 6. Home/Daily Brief Small Closure
+- `BriefHint` 接口新增 `targetId` 字段
+- draft_pressure/tip_pressure 类型提示填入 targetId
+- DailyBriefingView 点击时传入 hint.targetId
+- HomeView 新增 Mind 入口卡片（mindNodeCount > 0 时显示）
+- HomeViewProps 新增 onOpenMind 回调
+
+#### 7. Dock/Review Health Parity Fix
+- `computeHealthDetails` weaklyClassifiedEntries 过滤逻辑从 `(e.tags && e.tags.length === 0)` 改为 `(!e.tags || e.tags.length === 0)`
+- 修复 tags 为 undefined/null 时被错误排除的 bug
+
+#### 8. Phase 3.2 Risk Register
+- 创建 `docs/engineering/Phase3/phase3.2-final-risk-register.md`
+- 5 个分类：Solved in P32-CLOSEOUT-003、Phase 3.3 Must Take、Phase 3.3 Cleanup、Phase 4 / Desktop Deferred、Observation Only
+
+#### 9. Phase 3.3 Algorithm Readiness
+- 创建 `docs/engineering/Phase3/phase3.3-model-driven-algorithm-readiness.md`
+- 覆盖 deterministic recommendation、feedback 事件、shown/accepted/rejected/ignored 路径、health signal source、maintenance queue、metadata 输入、Phase 3.3 首轮任务清单
+
+### 改动文件
+
+| 文件 | 改动行数 |
+|------|----------|
+| apps/web/app/workspace/features/dock/useDockData.ts | +41 |
+| apps/web/app/workspace/features/editor/DraftEditorView.tsx | +80/-10 |
+| apps/web/app/workspace/features/home/useDailyBrief.ts | +5 |
+| apps/web/app/workspace/page.tsx | +50/-38 |
+| apps/web/lib/localHealthReport.ts | +18 |
+| apps/web/tests/spotlight-navigation.test.ts | +5/-4 |
+| docs/engineering/Phase3/phase3.2-final-risk-register.md | 新增 |
+| docs/engineering/Phase3/phase3.3-model-driven-algorithm-readiness.md | 新增 |
+
+### 遇到的问题及解决方式
+
+1. **Lint 错误**: DraftEditorView.tsx 使用 non-null assertion (`draft.sourceEntryId!`)，改为 `as number` 类型断言
+2. **未使用 import**: page.tsx 中 CloudCog import 未使用（Cloud/WebDAV/S3 移除后），删除
+3. **测试失败**: spotlight-navigation.test.ts 期望 Cloud/WebDAV/S3 标记为 "Planned"，但实际已改为"不属于当前路线"，更新测试断言
+
+### 自动验证结果
+
+- `pnpm validate`: ✅ 34 test files, 967 tests passed, lint 0 errors, typecheck passed, terminology check passed
+- `pnpm build:web`: ✅ build succeeded, all 8 pages generated
+
+### 手工验证步骤
+
+1. 打开 Review 页面，点击 suggestion 卡片，确认导航到 Dock/Mind/Editor 对应视图，不触发归档/删除等操作
+2. 打开 Dock 页面，确认推荐队列首次展示时自动 mark shown，刷新后不重复打点
+3. 打开 Editor，创建有 sourceEntryId 的草稿，确认 Source Packet 显示真实来源信息；创建无来源的草稿，确认显示 "Direct Draft"
+4. 打开 Editor Inspector，确认 tags 可添加/删除，project 可修改，collection 显示 Planned
+5. 打开 Settings，确认"更改位置"按钮灰色不可点击且有 hover 提示，确认无 Cloud/WebDAV/S3 假连接
+6. 打开 Toolbox，确认插件按钮显示 Preview 不可安装，Pro 功能显示不可执行
+7. 打开 Home，确认 Mind 入口卡片可点击跳转到 Mind 视图
+8. 打开 Daily Brief，确认 BriefHint 有 targetId 时精准跳转
+
+### 当前风险
+
+1. **entriesTable 直接访问**: DraftEditorView Source Packet 仍使用 entriesTable.get()，未扩大但未消除
+2. **workspaceId 缺失**: 当前仅使用 userId，多工作区隔离不可用
+3. **Review export disabled**: 导出功能保持禁用，待 Desktop App 打包后实现
+4. **Cloud/WebDAV/S3 不在路线**: 不作为 Planned Feature，归入 Phase 4 / Future Consideration
+5. **Seed 路由暴露**: /seed 和 /seed-mind 路由在生产构建中可访问
+
+---
+
 ## Phase 3.2 + Round 18 devlog -- P32-CLOSEOUT-002: Workspace Utility & Home Brief Completion
 
 **日期**: 2026-05-16

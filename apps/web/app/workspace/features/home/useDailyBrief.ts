@@ -45,6 +45,7 @@ export interface BriefHint {
   label: string
   detail: string
   priority: 'high' | 'medium' | 'low'
+  targetId?: number | string
 }
 
 export function useDailyBrief(userId: string) {
@@ -98,6 +99,7 @@ export function useDailyBrief(userId: string) {
           label: '整理 Quick Notes',
           detail: `有 ${tips.length} 条 Tips 待整理`,
           priority: 'high',
+          targetId: tips[0]?.id,
         })
       } else if (tips.length > 0) {
         briefHints.push({
@@ -105,6 +107,7 @@ export function useDailyBrief(userId: string) {
           label: 'Quick Notes',
           detail: `有 ${tips.length} 条 Tips 待整理`,
           priority: 'medium',
+          targetId: tips[0]?.id,
         })
       }
 
@@ -114,6 +117,7 @@ export function useDailyBrief(userId: string) {
           label: '继续编辑草稿',
           detail: `有 ${drafts.length} 份未完成草稿需要决策`,
           priority: 'high',
+          targetId: drafts[0]?.id,
         })
       } else if (drafts.length > 0) {
         briefHints.push({
@@ -121,6 +125,7 @@ export function useDailyBrief(userId: string) {
           label: '草稿箱',
           detail: `有 ${drafts.length} 份草稿进行中`,
           priority: 'medium',
+          targetId: drafts[0]?.id,
         })
       }
 

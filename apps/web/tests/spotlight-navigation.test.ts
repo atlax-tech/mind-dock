@@ -204,12 +204,11 @@ describe('Spotlight Search & Navigation Wiring', () => {
       expect(pageContent).not.toContain('断开连接')
     })
 
-    it('Cloud/WebDAV/S3 are marked as Planned', () => {
-      const cloudSection = pageContent.substring(
-        pageContent.indexOf('同步提供商'),
-        pageContent.indexOf('同步提供商') + 2000,
-      )
-      expect(cloudSection).toContain('Planned')
+    it('Cloud/WebDAV/S3 are not in current roadmap, no fake cloud entry', () => {
+      expect(pageContent).not.toContain('已连接并实时同步中')
+      expect(pageContent).not.toContain('WebDAV')
+      expect(pageContent).not.toContain('S3')
+      expect(pageContent).toContain('不属于当前路线')
     })
   })
 

@@ -10,6 +10,7 @@ import {
   listCollections,
   listTags,
   listRecommendationDockQueue,
+  markRecommendationDockQueueItemShown,
   findMindNodeByDocumentId,
   convertTipToDraft,
   applyRecommendation,
@@ -124,6 +125,38 @@ const REFRESH_EVENTS = [
   'recommendation_applied', 'recommendation_rejected', 'recommendation_ignored',
   'collection_updated', 'tag_updated',
 ] as const
+
+const markedShownIds = new Set<string>()
+
+async function markRecommendationsShown(
+  userId: string,
+  rawRecommendations: RecommendationDockQueueItem[],
+) {
+  const toMark = rawRecommendations.filter(
+    r => r.status === 'generated' && !r.isShown && !markedShownIds.has(r.id),
+  )
+  for (const r of toMark) {
+    markedShownIds.add(r.id)
+    try {
+      await markRecommendationDockQueueItemShown({ userId, recommendationId: r.id })
+    } catch {
+      // shown tracking must not break Dock
+    }
+  }
+}
+
+export async function markSingleRecommendationShown(
+  userId: string,
+  recommendationId: string,
+) {
+  if (markedShownIds.has(recommendationId)) return
+  markedShownIds.add(recommendationId)
+  try {
+    await markRecommendationDockQueueItemShown({ userId, recommendationId })
+  } catch {
+    // shown tracking must not break Dock
+  }
+}
 
 function entryToEntity(entry: StoredEntry): DockEntity {
   return {
@@ -292,7 +325,7 @@ export function computeHealthDetails(
     }
   })
 
-  const weaklyClassifiedEntries = entries.filter(e => !e.project || (e.tags && e.tags.length === 0))
+  const weaklyClassifiedEntries = entries.filter(e => !e.project || (!e.tags || e.tags.length === 0))
 
   const totalNodes = visibleNodes.length
   const connectedNodes = visibleNodes.filter(n => connectedNodeIds.has(n.id)).length
@@ -598,6 +631,12 @@ export function useDockData(userId: string) {
     })
     return unsub
   }, [])
+
+  useEffect(() => {
+    if (data.rawRecommendations.length > 0 && userId) {
+      markRecommendationsShown(userId, data.rawRecommendations)
+    }
+  }, [data.rawRecommendations, userId])
 
   const forceRefresh = useCallback(() => {
     setRefreshKey((k) => k + 1)

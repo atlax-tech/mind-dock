@@ -64,6 +64,7 @@ export interface LocalHealthSuggestion {
   reason: string
   severity: 'info' | 'warning' | 'critical'
   status: 'readonly'
+  navigationTarget?: { tab: string; filter?: string }
 }
 
 export interface ProjectDistribution {
@@ -343,6 +344,7 @@ export async function getLocalHealthReport(userId: string): Promise<LocalHealthR
       reason: '为孤立文档添加标签或项目归属，或在 Mind 中建立关联节点',
       severity: 'warning',
       status: 'readonly',
+      navigationTarget: { tab: 'dock', filter: 'weaklyClassified' },
     })
   }
 
@@ -355,6 +357,7 @@ export async function getLocalHealthReport(userId: string): Promise<LocalHealthR
       reason: '合并大小写不同的同名标签，保持标签体系整洁',
       severity: 'info',
       status: 'readonly',
+      navigationTarget: { tab: 'dock', filter: 'duplicates' },
     })
   }
 
@@ -367,6 +370,7 @@ export async function getLocalHealthReport(userId: string): Promise<LocalHealthR
       reason: `发布或丢弃超过 ${STALE_THRESHOLD_DAYS} 天未更新的草稿`,
       severity: 'warning',
       status: 'readonly',
+      navigationTarget: { tab: 'editor' },
     })
   }
 
@@ -379,6 +383,20 @@ export async function getLocalHealthReport(userId: string): Promise<LocalHealthR
       reason: '为孤立思维节点建立与其他节点的关联',
       severity: 'warning',
       status: 'readonly',
+      navigationTarget: { tab: 'mind' },
+    })
+  }
+
+  if (weaklyClassified.length > 0) {
+    suggestions.push({
+      id: `sug-weakly-classified-${sugIdx++}`,
+      title: `${weaklyClassified.length} 篇弱归类文档需要补充分类`,
+      type: 'weakly_classified',
+      action: '分类',
+      reason: '这些文档缺少项目归属或标签分类，建议补充完善',
+      severity: 'info',
+      status: 'readonly',
+      navigationTarget: { tab: 'dock', filter: 'weaklyClassified' },
     })
   }
 

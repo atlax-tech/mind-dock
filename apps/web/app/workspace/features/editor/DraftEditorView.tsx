@@ -14,7 +14,6 @@ import {
   TerminalSquare,
   SlidersHorizontal,
   Globe,
-  Mic,
   Calendar,
   Sparkles,
   Check,
@@ -105,6 +104,7 @@ export default function DraftEditorView({
   const [discardTargetId, setDiscardTargetId] = useState<number | null>(null)
   const [showDeleteAllConfirm, setShowDeleteAllConfirm] = useState(false)
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
+  const [sourceData, setSourceData] = useState<{ type: string; title: string; subtitle: string; meta: string } | null>(null)
 
   const {
     title,
@@ -332,6 +332,42 @@ export default function DraftEditorView({
     })
   }, [activeDraftId, displayTitle, onActiveDraftMetaChange])
 
+  useEffect(() => {
+    if (activeDraftId == null) {
+      setSourceData(null)
+      return
+    }
+    const draft = drafts.find((d) => d.id === activeDraftId)
+    if (!draft?.sourceEntryId) {
+      setSourceData({ type: 'Direct Draft', title: '直接创建的草稿', subtitle: 'Editor Draft', meta: '' })
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      const entry = await entriesTable.get(draft.sourceEntryId as number)
+      if (cancelled) return
+      if (entry) {
+        const dateStr = entry.archivedAt
+          ? new Date(entry.archivedAt).toLocaleDateString('zh-CN')
+          : new Date(entry.createdAt).toLocaleDateString('zh-CN')
+        const tagsCount = entry.tags?.length ?? 0
+        const projectStr = entry.project ?? ''
+        const metaParts: string[] = [dateStr]
+        if (tagsCount > 0) metaParts.push(`${tagsCount} 个标签`)
+        if (projectStr) metaParts.push(projectStr)
+        setSourceData({
+          type: 'Document',
+          title: entry.title || 'Untitled',
+          subtitle: `归档文档 #${entry.id}`,
+          meta: metaParts.join(' · '),
+        })
+      } else {
+        setSourceData({ type: 'Document', title: '文档已删除', subtitle: `文档 #${draft.sourceEntryId}`, meta: '' })
+      }
+    })()
+    return () => { cancelled = true }
+  }, [activeDraftId, drafts])
+
   const saveStatusLabel = (): string => {
     switch (saveStatus) {
       case 'saving': return 'Saving...'
@@ -450,23 +486,53 @@ export default function DraftEditorView({
             <div className="flex items-center gap-2 text-white font-medium text-sm">
               <TerminalSquare className="w-4 h-4" /> 源数据包
             </div>
-            <span className="px-1.5 py-0.5 rounded-full bg-white/10 text-[9px] text-[#899298] font-medium tracking-wider">0 个项目</span>
+            {sourceData && (
+              <span className="px-1.5 py-0.5 rounded-full bg-white/10 text-[9px] text-[#899298] font-medium tracking-wider">{sourceData.type === 'Direct Draft' ? 'Direct' : '1 个项目'}</span>
+            )}
           </div>
           <div className="flex items-center gap-1.5 text-[#899298] text-[11px] mb-5 px-4">
-            <Globe className="w-3 h-3" /> 源自 <span className="text-white">Editor Draft</span>
+            <Globe className="w-3 h-3" /> 源自 <span className="text-white">{sourceData?.type ?? '—'}</span>
           </div>
           <div className="px-4">
-            <div className="p-3.5 flex flex-col gap-2.5 bg-[#1c2023]/40 backdrop-blur-[20px] border-[0.5px] border-white/5 rounded-[16px]">
-              <div className="absolute left-0 top-0 w-1 h-full bg-[#9cf4d4]/80"></div>
-              <div className="flex justify-between items-center">
-                <div className="flex items-center gap-1.5 text-[#9cf4d4] text-[11px] font-medium">
-                  <Mic className="w-3 h-3" /> 草稿来源
+            {sourceData?.type === 'Direct Draft' ? (
+              <div className="p-3.5 flex flex-col gap-2.5 bg-[#1c2023]/40 backdrop-blur-[20px] border-[0.5px] border-white/5 rounded-[16px] relative">
+                <div className="absolute left-0 top-0 w-1 h-full bg-[#9cf4d4]/80 rounded-l-[16px]"></div>
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-1.5 text-[#9cf4d4] text-[11px] font-medium">
+                    <FileText className="w-3 h-3" /> Direct Draft
+                  </div>
                 </div>
+                <p className="text-[#899298] text-[11px] leading-relaxed">
+                  此草稿由 Editor 直接创建，暂无关联的源数据包。
+                </p>
               </div>
-              <p className="text-[#899298] text-[11px] leading-relaxed">
-                此草稿由 Editor 直接创建，暂无关联的源数据包。
-              </p>
-            </div>
+            ) : sourceData ? (
+              <div className="p-3.5 flex flex-col gap-2.5 bg-[#1c2023]/40 backdrop-blur-[20px] border-[0.5px] border-white/5 rounded-[16px] relative">
+                <div className="absolute left-0 top-0 w-1 h-full bg-[#86d7ff]/80 rounded-l-[16px]"></div>
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-1.5 text-[#86d7ff] text-[11px] font-medium">
+                    <FileText className="w-3 h-3" /> {sourceData.type}
+                  </div>
+                </div>
+                <div className="text-white text-[12px] font-medium leading-tight truncate">
+                  {sourceData.title}
+                </div>
+                <div className="text-[#899298] text-[10px]">
+                  {sourceData.subtitle}
+                </div>
+                {sourceData.meta && (
+                  <div className="text-[#899298] text-[10px] leading-relaxed">
+                    {sourceData.meta}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="p-3.5 flex flex-col gap-2.5 bg-[#1c2023]/40 backdrop-blur-[20px] border-[0.5px] border-white/5 rounded-[16px]">
+                <p className="text-[#899298] text-[11px] leading-relaxed">
+                  加载中...
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}
