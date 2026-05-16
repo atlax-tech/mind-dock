@@ -79,6 +79,7 @@ import {
   type TagRelationSource,
   type TemporalActivityType,
   type TemporalActivityEntityType,
+  DEFAULT_WORKSPACE_ID,
   type WidgetType,
 } from '@atlax/domain'
 
@@ -387,6 +388,7 @@ export async function createDockItem(
 
   const id = await dockItemsTable.add({
     userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     rawText,
     topic: options?.topic ?? null,
     sourceType,
@@ -404,7 +406,7 @@ export async function createDockItem(
 }
 
 export async function listDockItems(userId: string): Promise<PersistedDockItem[]> {
-  const items = await dockItemsTable.where('userId').equals(userId).reverse().sortBy('createdAt')
+  const items = await dockItemsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).reverse().sortBy('createdAt')
 
   return items.flatMap((item) => {
     const persistedItem = toPersistedDockItem(item)
@@ -413,7 +415,7 @@ export async function listDockItems(userId: string): Promise<PersistedDockItem[]
 }
 
 export async function listItemsByStatus(userId: string, status: EntryStatus): Promise<PersistedDockItem[]> {
-  const all = await dockItemsTable.where('userId').equals(userId).toArray()
+  const all = await dockItemsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray()
   const filtered = all.filter((i) => i.status === status)
 
   return filtered.flatMap((item) => {
@@ -423,11 +425,11 @@ export async function listItemsByStatus(userId: string, status: EntryStatus): Pr
 }
 
 export async function countDockItems(userId: string): Promise<number> {
-  return dockItemsTable.where('userId').equals(userId).count()
+  return dockItemsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).count()
 }
 
 export async function listArchivedEntries(userId: string): Promise<PersistedEntry[]> {
-  const all = await entriesTable.where('userId').equals(userId).reverse().sortBy('archivedAt')
+  const all = await entriesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).reverse().sortBy('archivedAt')
 
   return all.flatMap((entry) => {
     if (!isArchived(entry)) return []
@@ -437,7 +439,7 @@ export async function listArchivedEntries(userId: string): Promise<PersistedEntr
 }
 
 export async function listArchivedEntriesByType(userId: string, type: string): Promise<PersistedEntry[]> {
-  const all = await entriesTable.where('userId').equals(userId).and((e) => e.type === type).reverse().sortBy('archivedAt')
+  const all = await entriesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).and((e) => e.type === type).reverse().sortBy('archivedAt')
   return all.flatMap((entry) => {
     if (!isArchived(entry)) return []
     const persistedEntry = toPersistedEntry(entry)
@@ -447,7 +449,7 @@ export async function listArchivedEntriesByType(userId: string, type: string): P
 
 export async function listArchivedEntriesByTag(userId: string, tag: string): Promise<PersistedEntry[]> {
   const normalized = normalizeTagName(tag).toLowerCase()
-  const all = await entriesTable.where('userId').equals(userId).and((e) =>
+  const all = await entriesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).and((e) =>
     e.tags.some((t: string) => normalizeTagName(t).toLowerCase() === normalized)
   ).reverse().sortBy('archivedAt')
   return all.flatMap((entry) => {
@@ -458,7 +460,7 @@ export async function listArchivedEntriesByTag(userId: string, tag: string): Pro
 }
 
 export async function listArchivedEntriesByProject(userId: string, project: string): Promise<PersistedEntry[]> {
-  const all = await entriesTable.where('userId').equals(userId).and((e) => e.project === project).reverse().sortBy('archivedAt')
+  const all = await entriesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).and((e) => e.project === project).reverse().sortBy('archivedAt')
   return all.flatMap((entry) => {
     if (!isArchived(entry)) return []
     const persistedEntry = toPersistedEntry(entry)
@@ -476,9 +478,9 @@ export async function getWorkspaceStats(userId: string): Promise<{
   tagCount: number
 }> {
   const [allDockItems, allEntries, allTags] = await Promise.all([
-    dockItemsTable.where('userId').equals(userId).toArray(),
-    entriesTable.where('userId').equals(userId).count(),
-    tagsTable.where('userId').equals(userId).count(),
+    dockItemsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray(),
+    entriesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).count(),
+    tagsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).count(),
   ])
 
   return {
@@ -493,7 +495,13 @@ export async function getWorkspaceStats(userId: string): Promise<{
 }
 
 export async function getEntryByDockItemId(userId: string, dockItemId: number): Promise<PersistedEntry | null> {
-  const entry = await entriesTable.where('userId').equals(userId).and((e) => e.sourceDockItemId === dockItemId).first()
+  const entry = await entriesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).and((e) => e.sourceDockItemId === dockItemId).first()
+  return toPersistedEntry(entry)
+}
+
+export async function getEntryById(userId: string, entryId: number): Promise<PersistedEntry | null> {
+  const entry = await entriesTable.get(entryId)
+  if (!entry || entry.userId !== userId || entry.workspaceId !== DEFAULT_WORKSPACE_ID) return null
   return toPersistedEntry(entry)
 }
 
@@ -551,6 +559,7 @@ export async function archiveItem(userId: string, id: number): Promise<Persisted
 
   await entriesTable.add({
     userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     sourceDockItemId: id,
     title: built.title,
     content: built.content,
@@ -740,7 +749,7 @@ export async function removeTagFromItem(userId: string, id: number, tagName: str
 }
 
 export async function listTags(userId: string): Promise<PersistedTag[]> {
-  const tags = await tagsTable.where('userId').equals(userId).sortBy('name')
+  const tags = await tagsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).sortBy('name')
 
   return tags.flatMap((tag) => {
     const persistedTag = toPersistedTag(tag)
@@ -750,7 +759,7 @@ export async function listTags(userId: string): Promise<PersistedTag[]> {
 
 async function findTagByName(userId: string, name: string): Promise<PersistedTag | null> {
   const normalized = normalizeTagName(name).toLowerCase()
-  const tag = await tagsTable.where('userId').equals(userId).and((t) => normalizeTagName(t.name).toLowerCase() === normalized).first()
+  const tag = await tagsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).and((t) => normalizeTagName(t.name).toLowerCase() === normalized).first()
   return toPersistedTag(tag)
 }
 
@@ -769,6 +778,7 @@ export async function createStoredTag(userId: string, name: string): Promise<Per
   await tagsTable.add({
     id: scopedId,
     userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     name: tag.name,
     createdAt: tag.createdAt,
   })
@@ -845,6 +855,7 @@ export async function createChatSession(input: ChatSessionCreateInput): Promise<
   const now = new Date()
   const id = await chatSessionsTable.add({
     userId: input.userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     title: input.title ?? null,
     topic: input.topic ?? null,
     selectedType: input.selectedType ?? null,
@@ -865,7 +876,7 @@ export async function getChatSession(userId: string, id: number): Promise<Persis
 }
 
 export async function listChatSessions(userId: string): Promise<PersistedChatSession[]> {
-  const sessions = await chatSessionsTable.where('userId').equals(userId).toArray()
+  const sessions = await chatSessionsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray()
 
   const sorted = sessions.sort((a, b) => {
     if (a.pinned !== b.pinned) {
@@ -882,8 +893,8 @@ export async function listChatSessions(userId: string): Promise<PersistedChatSes
 
 export async function listActiveChatSessions(userId: string): Promise<PersistedChatSession[]> {
   const sessions = await chatSessionsTable
-    .where('userId')
-    .equals(userId)
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
     .and((s) => s.status === 'active')
     .toArray()
 
@@ -942,7 +953,8 @@ export async function unpinChatSession(userId: string, id: number): Promise<Pers
   return toPersistedChatSession(await chatSessionsTable.get(id))
 }
 
-export async function deleteChatSession(userId: string, id: number): Promise<boolean> {
+export async function deleteChatSession(userId: string, id: number, options?: { confirmed?: boolean }): Promise<boolean> {
+  assertNotIrreversible('deleteChatSession', options?.confirmed === true)
   const session = await getChatSessionForUser(userId, id)
   if (!session) return false
 
@@ -1037,8 +1049,8 @@ function toPersistedWidget(widget: WidgetRecord | undefined): PersistedWidget | 
 
 export async function getActiveWidget(userId: string): Promise<PersistedWidget | null> {
   const widget = await widgetsTable
-    .where('userId')
-    .equals(userId)
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
     .and((w) => w.active === true)
     .first()
   return toPersistedWidget(widget)
@@ -1046,8 +1058,8 @@ export async function getActiveWidget(userId: string): Promise<PersistedWidget |
 
 export async function activateWidget(userId: string, widgetType: WidgetType): Promise<PersistedWidget> {
   const existing = await widgetsTable
-    .where('userId')
-    .equals(userId)
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
     .toArray()
 
   for (const w of existing) {
@@ -1063,6 +1075,7 @@ export async function activateWidget(userId: string, widgetType: WidgetType): Pr
   const now = new Date()
   const id = await widgetsTable.add({
     userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     widgetType,
     active: true,
     config: {},
@@ -1082,12 +1095,12 @@ export async function deactivateWidget(userId: string): Promise<PersistedWidget 
 }
 
 export async function queryCalendarDay(userId: string, date: string): Promise<CalendarDayResult> {
-  const entries = await entriesTable.where('userId').equals(userId).toArray()
+  const entries = await entriesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray()
   return queryEntriesByDate(entries, userId, date)
 }
 
 export async function queryCalendarMonth(userId: string, year: number, month: number): Promise<CalendarMonthOverview> {
-  const entries = await entriesTable.where('userId').equals(userId).toArray()
+  const entries = await entriesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray()
   return queryMonthOverview(entries, userId, year, month)
 }
 
@@ -1132,7 +1145,7 @@ function toPersistedTemporalActivity(act: TemporalActivityRecord | undefined): P
 }
 
 export async function listCollections(userId: string): Promise<PersistedCollection[]> {
-  const cols = await collectionsTable.where('userId').equals(userId).sortBy('sortOrder')
+  const cols = await collectionsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).sortBy('sortOrder')
   return cols.flatMap((c) => { const p = toPersistedCollection(c); return p ? [p] : [] })
 }
 
@@ -1151,6 +1164,7 @@ export async function createCollection(input: {
   const record: CollectionRecord = {
     id,
     userId: input.userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     name: input.name,
     description: input.description ?? null,
     icon: input.icon ?? null,
@@ -1178,7 +1192,7 @@ export async function updateCollection(
 }
 
 export async function listEntryTagRelations(userId: string): Promise<PersistedEntryTagRelation[]> {
-  const rels = await entryTagRelationsTable.where('userId').equals(userId).toArray()
+  const rels = await entryTagRelationsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray()
   return rels.flatMap((r) => { const p = toPersistedEntryTagRelation(r); return p ? [p] : [] })
 }
 
@@ -1194,6 +1208,7 @@ export async function addEntryTagRelation(input: {
   const record: EntryTagRelationRecord = {
     id,
     userId: input.userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     entryId: input.entryId,
     tagId: input.tagId,
     source: input.source ?? 'user',
@@ -1213,7 +1228,7 @@ export async function removeEntryTagRelation(userId: string, entryId: number, ta
 }
 
 export async function listEntryRelations(userId: string): Promise<PersistedEntryRelation[]> {
-  const rels = await entryRelationsTable.where('userId').equals(userId).toArray()
+  const rels = await entryRelationsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray()
   return rels.flatMap((r) => { const p = toPersistedEntryRelation(r); return p ? [p] : [] })
 }
 
@@ -1244,6 +1259,7 @@ export async function createEntryRelation(input: {
   const record: EntryRelationRecord = {
     id,
     userId: input.userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     sourceEntryId: input.sourceEntryId,
     targetEntryId: input.targetEntryId,
     relationType: input.relationType,
@@ -1302,7 +1318,7 @@ export async function deleteEntryRelation(userId: string, relationId: string): P
 }
 
 export async function listKnowledgeEvents(userId: string): Promise<PersistedKnowledgeEvent[]> {
-  const evts = await knowledgeEventsTable.where('userId').equals(userId).reverse().sortBy('createdAt')
+  const evts = await knowledgeEventsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).reverse().sortBy('createdAt')
   return evts.flatMap((e) => { const p = toPersistedKnowledgeEvent(e); return p ? [p] : [] })
 }
 
@@ -1318,6 +1334,7 @@ export async function recordKnowledgeEvent(input: {
   const record: KnowledgeEventRecord = {
     id,
     userId: input.userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     eventType: input.eventType,
     targetType: input.targetType,
     targetId: input.targetId ?? null,
@@ -1329,7 +1346,7 @@ export async function recordKnowledgeEvent(input: {
 }
 
 export async function listTemporalActivities(userId: string): Promise<PersistedTemporalActivity[]> {
-  const acts = await temporalActivitiesTable.where('userId').equals(userId).reverse().sortBy('occurredAt')
+  const acts = await temporalActivitiesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).reverse().sortBy('occurredAt')
   return acts.flatMap((a) => { const p = toPersistedTemporalActivity(a); return p ? [p] : [] })
 }
 
@@ -1351,6 +1368,7 @@ export async function recordTemporalActivity(input: {
   const record: TemporalActivityRecord = {
     id,
     userId: input.userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     type: input.type,
     entityType: input.entityType,
     entityId: input.entityId,
@@ -1379,11 +1397,11 @@ export async function recordTemporalActivity(input: {
 
 export async function getStructureProjection(userId: string): Promise<StructureProjection> {
   const [entries, tags, collections, tagRels, entryRels] = await Promise.all([
-    entriesTable.where('userId').equals(userId).toArray(),
-    tagsTable.where('userId').equals(userId).toArray(),
-    collectionsTable.where('userId').equals(userId).toArray(),
-    entryTagRelationsTable.where('userId').equals(userId).toArray(),
-    entryRelationsTable.where('userId').equals(userId).toArray(),
+    entriesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray(),
+    tagsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray(),
+    collectionsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray(),
+    entryTagRelationsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray(),
+    entryRelationsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray(),
   ])
 
   return buildStructureProjection({
@@ -1433,10 +1451,10 @@ export async function backfillStructureData(userId: string): Promise<{
   collectionsCreated: number
 }> {
   const [entries, tags, existingTagRels, existingCollections] = await Promise.all([
-    entriesTable.where('userId').equals(userId).toArray(),
-    tagsTable.where('userId').equals(userId).toArray(),
-    entryTagRelationsTable.where('userId').equals(userId).toArray(),
-    collectionsTable.where('userId').equals(userId).toArray(),
+    entriesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray(),
+    tagsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray(),
+    entryTagRelationsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray(),
+    collectionsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray(),
   ])
 
   const now = new Date()
@@ -1459,7 +1477,7 @@ export async function backfillStructureData(userId: string): Promise<{
   })
 
   for (const rel of newTagRels) {
-    await entryTagRelationsTable.put(rel)
+    await entryTagRelationsTable.put({ ...rel, workspaceId: DEFAULT_WORKSPACE_ID })
   }
 
   const newCollections = backfillProjectCollections({
@@ -1483,7 +1501,7 @@ export async function backfillStructureData(userId: string): Promise<{
   })
 
   for (const col of newCollections) {
-    await collectionsTable.put(col)
+    await collectionsTable.put({ ...col, workspaceId: DEFAULT_WORKSPACE_ID })
   }
 
   return {
@@ -1535,6 +1553,7 @@ export async function createCaptureToDocumentFlow(
 
   const docId = await entriesTable.add({
     userId: input.userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     sourceDockItemId: captureId,
     title,
     content: input.rawText,
@@ -1674,12 +1693,12 @@ function toPersistedMindEdge(edge: MindEdgeRecord | undefined): PersistedMindEdg
 }
 
 export async function listMindNodes(userId: string): Promise<PersistedMindNode[]> {
-  const nodes = await mindNodesTable.where('userId').equals(userId).toArray()
+  const nodes = await mindNodesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray()
   return nodes.flatMap((n) => { const p = toPersistedMindNode(n); return p ? [p] : [] })
 }
 
 export async function listMindNodesByType(userId: string, nodeType: MindNodeType): Promise<PersistedMindNode[]> {
-  const nodes = await mindNodesTable.where('userId').equals(userId).and((n) => n.nodeType === nodeType).toArray()
+  const nodes = await mindNodesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).and((n) => n.nodeType === nodeType).toArray()
   return nodes.flatMap((n) => { const p = toPersistedMindNode(n); return p ? [p] : [] })
 }
 
@@ -1711,6 +1730,7 @@ export async function upsertMindNode(input: {
   const record: MindNodeRecord = {
     id,
     userId: input.userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     nodeType: input.nodeType,
     label: input.label,
     state: input.state ?? existing?.state ?? 'drifting',
@@ -1746,7 +1766,8 @@ export async function updateMindNodePosition(
   return toPersistedMindNode(await mindNodesTable.get(id))
 }
 
-export async function deleteMindNode(userId: string, id: string): Promise<boolean> {
+export async function deleteMindNode(userId: string, id: string, options?: { confirmed?: boolean }): Promise<boolean> {
+  assertNotIrreversible('deleteMindNode', options?.confirmed === true)
   const existing = await mindNodesTable.get(id)
   if (!existing || existing.userId !== userId) return false
   await mindNodesTable.delete(id)
@@ -1785,8 +1806,9 @@ export async function restoreMindNode(userId: string, id: string): Promise<Persi
 
 export async function listArchivedMindNodes(userId: string): Promise<PersistedMindNode[]> {
   const nodes = await mindNodesTable
-    .where('[userId+state]')
-    .equals([userId, 'archived'])
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
+    .filter(n => n.state === 'archived')
     .toArray()
   return nodes.map(n => toPersistedMindNode(n)).filter((n): n is PersistedMindNode => n !== null)
 }
@@ -1795,9 +1817,12 @@ export async function findMindNodeByDocumentId(
   userId: string,
   documentId: number,
 ): Promise<PersistedMindNode | null> {
-  const nodes = await mindNodesTable.where('userId').equals(userId).toArray()
-  const found = nodes.find(n => n.documentId === documentId)
-  return found ? toPersistedMindNode(found) as PersistedMindNode : null
+  const node = await mindNodesTable
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
+    .filter(n => n.documentId === documentId)
+    .first()
+  return node ? toPersistedMindNode(node) as PersistedMindNode : null
 }
 
 export async function findMindNodeBySourceType(
@@ -1805,27 +1830,30 @@ export async function findMindNodeBySourceType(
   documentId: number,
   sourceType: 'draft' | 'document',
 ): Promise<PersistedMindNode | null> {
-  const nodes = await mindNodesTable.where('userId').equals(userId).toArray()
-  const found = nodes.find(n =>
-    n.documentId === documentId &&
-    n.metadata != null &&
-    (n.metadata as Record<string, unknown>).sourceType === sourceType
-  )
-  return found ? toPersistedMindNode(found) as PersistedMindNode : null
+  const node = await mindNodesTable
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
+    .filter(n =>
+      n.documentId === documentId &&
+      n.metadata != null &&
+      (n.metadata as Record<string, unknown>).sourceType === sourceType
+    )
+    .first()
+  return node ? toPersistedMindNode(node) as PersistedMindNode : null
 }
 
 export async function listMindEdges(userId: string): Promise<PersistedMindEdge[]> {
-  const edges = await mindEdgesTable.where('userId').equals(userId).toArray()
+  const edges = await mindEdgesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray()
   return edges.flatMap((e) => { const p = toPersistedMindEdge(e); return p ? [p] : [] })
 }
 
 export async function listMindEdgesBySourceNode(userId: string, sourceNodeId: string): Promise<PersistedMindEdge[]> {
-  const edges = await mindEdgesTable.where('userId').equals(userId).and((e) => e.sourceNodeId === sourceNodeId).toArray()
+  const edges = await mindEdgesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).and((e) => e.sourceNodeId === sourceNodeId).toArray()
   return edges.flatMap((e) => { const p = toPersistedMindEdge(e); return p ? [p] : [] })
 }
 
 export async function listMindEdgesByTargetNode(userId: string, targetNodeId: string): Promise<PersistedMindEdge[]> {
-  const edges = await mindEdgesTable.where('userId').equals(userId).and((e) => e.targetNodeId === targetNodeId).toArray()
+  const edges = await mindEdgesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).and((e) => e.targetNodeId === targetNodeId).toArray()
   return edges.flatMap((e) => { const p = toPersistedMindEdge(e); return p ? [p] : [] })
 }
 
@@ -1835,8 +1863,8 @@ export async function checkDocumentNameConflict(
   parentEdgeType: MindEdgeType = 'parent_child',
 ): Promise<{ hasConflict: boolean; conflictingParentIds: string[]; hasRootLevelConflict: boolean }> {
   const normalized = label.trim().toLowerCase()
-  const allNodes = await mindNodesTable.where('userId').equals(userId).toArray()
-  const allEdges = await mindEdgesTable.where('userId').equals(userId).toArray()
+  const allNodes = await mindNodesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray()
+  const allEdges = await mindEdgesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray()
   const documentNodes = allNodes.filter(n => n.nodeType === 'document')
   const sameNameNodes = documentNodes.filter(n => n.label.trim().toLowerCase() === normalized)
   if (sameNameNodes.length === 0) return { hasConflict: false, conflictingParentIds: [], hasRootLevelConflict: false }
@@ -1867,8 +1895,8 @@ async function findMindEdgeBetweenNodes(
   nodeB: string,
 ): Promise<PersistedMindEdge | null> {
   const edges = await mindEdgesTable
-    .where('userId')
-    .equals(userId)
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
     .and(e =>
       (e.sourceNodeId === nodeA && e.targetNodeId === nodeB) ||
       (e.sourceNodeId === nodeB && e.targetNodeId === nodeA),
@@ -1906,6 +1934,7 @@ export async function upsertMindEdge(input: {
   const record: MindEdgeRecord = {
     id,
     userId: input.userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     sourceNodeId: input.sourceNodeId,
     targetNodeId: input.targetNodeId,
     edgeType: input.edgeType,
@@ -1920,12 +1949,18 @@ export async function upsertMindEdge(input: {
   return toPersistedMindEdge(await mindEdgesTable.get(id)) as PersistedMindEdge
 }
 
-export async function deleteMindEdge(userId: string, id: string): Promise<boolean> {
+export async function deleteMindEdge(userId: string, id: string, options?: { confirmed?: boolean }): Promise<boolean> {
+  assertNotIrreversible('deleteMindEdge', options?.confirmed === true)
   const existing = await mindEdgesTable.get(id)
   if (!existing || existing.userId !== userId) return false
   if (existing.reason === 'baseline-auto-connect') return false
   await mindEdgesTable.delete(id)
   return true
+}
+
+/** Product-safe edge removal API. Use this in UI paths instead of deleteMindEdge. */
+export async function removeMindEdge(userId: string, edgeId: string): Promise<boolean> {
+  return deleteMindEdge(userId, edgeId, { confirmed: true })
 }
 
 export async function forceDeleteBaselineEdge(userId: string, id: string): Promise<boolean> {
@@ -2187,6 +2222,7 @@ async function addDraftRecord(
   const normalizedContent = buildEditorContentRecord(content, contentFields)
   const id = await editorDraftsTable.add({
     userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     draftKey: 0,
     title,
     content: normalizedContent.content,
@@ -2225,8 +2261,8 @@ export async function createDraft(
 
 export async function listDrafts(userId: string): Promise<PersistedEditorDraft[]> {
   const drafts = await editorDraftsTable
-    .where('userId')
-    .equals(userId)
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
     .reverse()
     .sortBy('updatedAt')
   return drafts.flatMap((d) => {
@@ -2241,16 +2277,16 @@ export async function findActiveDraftBySourceEntryId(
   entryId: number,
 ): Promise<PersistedEditorDraft | null> {
   const drafts = await editorDraftsTable
-    .where('[userId+sourceEntryId]')
-    .equals([userId, entryId])
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
+    .filter(d => d.sourceEntryId === entryId && d.status === 'active')
     .toArray()
-  const active = drafts.find((d) => d.status === 'active')
-  return active ? toPersistedEditorDraft(active) : null
+  return drafts.length > 0 ? toPersistedEditorDraft(drafts[0]) : null
 }
 
 export async function getDraft(userId: string, draftId: number): Promise<PersistedEditorDraft | null> {
   const draft = await editorDraftsTable.get(draftId)
-  if (!draft || draft.userId !== userId) return null
+  if (!draft || draft.userId !== userId || draft.workspaceId !== DEFAULT_WORKSPACE_ID) return null
   return toPersistedEditorDraft(draft)
 }
 
@@ -2260,7 +2296,7 @@ export async function updateDraft(
   updates: DraftUpdateInput,
 ): Promise<PersistedEditorDraft | null> {
   const draft = await editorDraftsTable.get(draftId)
-  if (!draft || draft.userId !== userId) return null
+  if (!draft || draft.userId !== userId || draft.workspaceId !== DEFAULT_WORKSPACE_ID) return null
   const patch: Partial<EditorDraftRecord> = { updatedAt: new Date() }
   if (updates.title !== undefined) patch.title = updates.title
   if (
@@ -2304,7 +2340,7 @@ export async function publishDraftToDocument(
   publishMode: PublishMode = 'update_original',
 ): Promise<PublishResult> {
   const draft = await editorDraftsTable.get(draftId)
-  if (!draft || draft.userId !== userId || (draft.status && draft.status !== 'active')) {
+  if (!draft || draft.userId !== userId || draft.workspaceId !== DEFAULT_WORKSPACE_ID || (draft.status && draft.status !== 'active')) {
     return { draft: null, entry: null }
   }
 
@@ -2333,7 +2369,7 @@ export async function publishDraftToDocument(
 
   if (draft.sourceEntryId != null && publishMode === 'update_original') {
     const existing = await entriesTable.get(draft.sourceEntryId)
-    if (existing && existing.userId === userId) {
+    if (existing && existing.userId === userId && existing.workspaceId === DEFAULT_WORKSPACE_ID) {
       const updatePayload: Record<string, unknown> = {
         title: effectiveTitle,
         content: draftContent.content,
@@ -2357,6 +2393,7 @@ export async function publishDraftToDocument(
   if (!entry) {
     const entryId = await entriesTable.add({
       userId,
+      workspaceId: DEFAULT_WORKSPACE_ID,
       sourceDockItemId: draft.sourceEntryId ?? 0,
       title: effectiveTitle,
       content: draftContent.content,
@@ -2431,13 +2468,9 @@ export async function discardDraft(
   userId: string,
   draftId: number,
   discardMode: DiscardMode = 'abandon_changes',
-  options?: { confirmed?: boolean },
 ): Promise<PersistedEditorDraft | null> {
   const draft = await editorDraftsTable.get(draftId)
-  if (!draft || draft.userId !== userId) return null
-  if (discardMode === 'delete_all') {
-    assertNotIrreversible('discardDraft:delete_all', options?.confirmed === true)
-  }
+  if (!draft || draft.userId !== userId || draft.workspaceId !== DEFAULT_WORKSPACE_ID) return null
   await editorDraftsTable.update(draftId, {
     status: 'discarded',
     updatedAt: new Date(),
@@ -2451,11 +2484,11 @@ export async function discardDraft(
   if (draft.sourceEntryId != null && discardMode === 'delete_all') {
     const entryNode = await findMindNodeBySourceType(userId, draft.sourceEntryId, 'document')
     if (entryNode) {
-      await mindNodesTable.delete(entryNode.id)
+      await mindNodesTable.update(entryNode.id, { state: 'archived', updatedAt: new Date() })
     }
     const existing = await entriesTable.get(draft.sourceEntryId)
-    if (existing && existing.userId === userId) {
-      await entriesTable.delete(draft.sourceEntryId)
+    if (existing && existing.userId === userId && existing.workspaceId === DEFAULT_WORKSPACE_ID) {
+      await entriesTable.update(draft.sourceEntryId, { archivedAt: new Date() })
     }
   }
   return toPersistedEditorDraft(await editorDraftsTable.get(draftId))
@@ -2469,8 +2502,9 @@ export async function saveEditorDraft(
 ): Promise<PersistedEditorDraft | null> {
   const now = new Date()
   const existing = await editorDraftsTable
-    .where('[userId+draftKey]')
-    .equals([userId, draftKey])
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
+    .filter(d => d.draftKey === draftKey)
     .first()
 
   if (existing) {
@@ -2484,6 +2518,7 @@ export async function saveEditorDraft(
 
   const id = await editorDraftsTable.add({
     userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     draftKey,
     title,
     content,
@@ -2504,16 +2539,17 @@ export async function loadEditorDraft(
   draftKey: number,
 ): Promise<PersistedEditorDraft | null> {
   const draft = await editorDraftsTable
-    .where('[userId+draftKey]')
-    .equals([userId, draftKey])
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
+    .filter(d => d.draftKey === draftKey)
     .first()
   return toPersistedEditorDraft(draft)
 }
 
 export async function loadAllEditorDrafts(userId: string): Promise<PersistedEditorDraft[]> {
   const drafts = await editorDraftsTable
-    .where('userId')
-    .equals(userId)
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
     .sortBy('updatedAt')
   return drafts.flatMap((d) => {
     const p = toPersistedEditorDraft(d)
@@ -2521,10 +2557,12 @@ export async function loadAllEditorDrafts(userId: string): Promise<PersistedEdit
   })
 }
 
-export async function deleteEditorDraft(userId: string, draftKey: number): Promise<boolean> {
+export async function deleteEditorDraft(userId: string, draftKey: number, options?: { confirmed?: boolean }): Promise<boolean> {
+  assertNotIrreversible('deleteEditorDraft', options?.confirmed === true)
   const draft = await editorDraftsTable
-    .where('[userId+draftKey]')
-    .equals([userId, draftKey])
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
+    .filter(d => d.draftKey === draftKey)
     .first()
   if (!draft || draft.userId !== userId) return false
   await editorDraftsTable.delete(draft.id)
@@ -2561,6 +2599,7 @@ export async function createRecommendation(input: RecommendationCreateInput): Pr
   const record: RecommendationRecord = {
     id,
     userId: input.userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     subjectType: input.subjectType,
     subjectId: input.subjectId,
     recommendationType: input.recommendationType,
@@ -2580,7 +2619,7 @@ export async function listRecommendations(
   userId: string,
   filters?: { status?: RecommendationStatus; subjectType?: string },
 ): Promise<PersistedRecommendation[]> {
-  let collection = recommendationsTable.where('userId').equals(userId)
+  let collection = recommendationsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID])
 
   if (filters?.status) {
     collection = collection.and((r) => r.status === filters.status)
@@ -2604,8 +2643,8 @@ export async function listRecommendationDockQueue(
   const sortBy = query.sortBy ?? 'createdAt'
   const sortDirection = query.sortDirection ?? defaultRecommendationDockQueueSortDirection(sortBy)
   const [recommendations, events] = await Promise.all([
-    recommendationsTable.where('userId').equals(userId).toArray(),
-    recommendationEventsTable.where('userId').equals(userId).toArray(),
+    recommendationsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray(),
+    recommendationEventsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray(),
   ])
   const eventsByRecommendation = groupRecommendationEventsByRecommendationId(events)
   const filteredRecommendations = recommendations.filter((recommendation) =>
@@ -2861,8 +2900,8 @@ async function executeApplyChangeInTxn(
       throw new Error(`Dock item not found: ${subjectId}`)
     }
     const dockMindNodes = await mindNodesTable
-      .where('userId')
-      .equals(userId)
+      .where('[userId+workspaceId]')
+      .equals([userId, DEFAULT_WORKSPACE_ID])
       .and((n) => n.documentId === numericSubjectId)
       .toArray()
     let sourceNode = dockMindNodes[0]
@@ -2883,6 +2922,7 @@ async function executeApplyChangeInTxn(
     await mindEdgesTable.put({
       id: edgeId,
       userId,
+      workspaceId: DEFAULT_WORKSPACE_ID,
       sourceNodeId: sourceNode.id,
       targetNodeId: targetNode.id,
       edgeType: 'suggested',
@@ -3220,10 +3260,10 @@ export async function generateBasicCandidates(input: {
   if (!context) return []
 
   const [tags, collections, mindNodes, documents] = await Promise.all([
-    tagsTable.where('userId').equals(input.userId).toArray(),
-    collectionsTable.where('userId').equals(input.userId).toArray(),
-    mindNodesTable.where('userId').equals(input.userId).toArray(),
-    entriesTable.where('userId').equals(input.userId).toArray(),
+    tagsTable.where('[userId+workspaceId]').equals([input.userId, DEFAULT_WORKSPACE_ID]).toArray(),
+    collectionsTable.where('[userId+workspaceId]').equals([input.userId, DEFAULT_WORKSPACE_ID]).toArray(),
+    mindNodesTable.where('[userId+workspaceId]').equals([input.userId, DEFAULT_WORKSPACE_ID]).toArray(),
+    entriesTable.where('[userId+workspaceId]').equals([input.userId, DEFAULT_WORKSPACE_ID]).toArray(),
   ])
 
   return buildBasicCandidates({
@@ -3359,8 +3399,8 @@ export async function generateRecommendationsForContext(input: {
     recommendationEventsTable,
     async () => {
       const existingPending = await recommendationsTable
-        .where('userId')
-        .equals(input.userId)
+        .where('[userId+workspaceId]')
+        .equals([input.userId, DEFAULT_WORKSPACE_ID])
         .and((rec) =>
           isRecommendationPendingStatus(rec.status) &&
           rec.subjectType === input.subjectType &&
@@ -3402,8 +3442,8 @@ export async function generateRecommendationsForContext(input: {
         seenDedupeKeys.add(dedupeKey)
 
         const existingActive = await recommendationsTable
-          .where('userId')
-          .equals(input.userId)
+          .where('[userId+workspaceId]')
+          .equals([input.userId, DEFAULT_WORKSPACE_ID])
           .and((rec) =>
             isRecommendationPendingStatus(rec.status) &&
             rec.subjectType === input.subjectType &&
@@ -3503,7 +3543,7 @@ function buildRecommendationGeneratedMetadata(
 }
 
 async function buildRecommendationSignalSummaries(userId: string): Promise<RecommendationSignalSummary[]> {
-  const events = await userBehaviorEventsTable.where('userId').equals(userId).and((event) => {
+  const events = await userBehaviorEventsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).and((event) => {
     switch (event.eventType) {
       case 'recommendation_accepted':
       case 'recommendation_rejected':
@@ -3844,6 +3884,7 @@ export async function recordRecommendationEvent(input: RecommendationEventInput)
     id,
     recommendationId: input.recommendationId,
     userId: input.userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     eventType: input.eventType,
     metadata: input.metadata ?? null,
     createdAt: now,
@@ -3871,7 +3912,7 @@ export async function listRecommendationEvents(
   userId: string,
   filters?: { recommendationId?: string; eventType?: RecommendationEventType },
 ): Promise<PersistedRecommendationEvent[]> {
-  let collection = recommendationEventsTable.where('userId').equals(userId)
+  let collection = recommendationEventsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID])
 
   if (filters?.recommendationId) {
     collection = collection.and((e) => e.recommendationId === filters.recommendationId)
@@ -3890,6 +3931,7 @@ export async function recordUserBehaviorEvent(input: UserBehaviorEventInput): Pr
   const record: UserBehaviorEventRecord = {
     id,
     userId: input.userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     eventType: input.eventType,
     subjectType: input.subjectType,
     subjectId: input.subjectId ?? null,
@@ -3904,7 +3946,7 @@ export async function listUserBehaviorEvents(
   userId: string,
   filters?: { eventType?: UserBehaviorEventType; subjectType?: UserBehaviorSubjectType },
 ): Promise<PersistedUserBehaviorEvent[]> {
-  let collection = userBehaviorEventsTable.where('userId').equals(userId)
+  let collection = userBehaviorEventsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID])
 
   if (filters?.eventType) {
     collection = collection.and((e) => e.eventType === filters.eventType)
@@ -3934,6 +3976,7 @@ export async function createTip(
   const now = new Date()
   const id = await tipsTable.add({
     userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     content: trimmed,
     sourceType,
     status: 'active',
@@ -3946,8 +3989,8 @@ export async function createTip(
 
 export async function listActiveTips(userId: string): Promise<PersistedTip[]> {
   const tips = await tipsTable
-    .where('userId')
-    .equals(userId)
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
     .reverse()
     .sortBy('createdAt')
   return tips.flatMap((t) => {
@@ -4027,6 +4070,7 @@ export async function convertTipToMindNode(
       await mindNodesTable.put({
         id: mindNodeId,
         userId,
+        workspaceId: DEFAULT_WORKSPACE_ID,
         nodeType: 'fragment',
         label,
         state: 'drifting',
@@ -4256,7 +4300,7 @@ export async function getMindGraphHealthSummary(userId: string): Promise<MindGra
   const conflictEdgeCount = visibleEdges.filter(e => e.edgeType === 'conflict').length
 
   const recommendations = await recommendationsTable
-    .where('userId').equals(userId)
+    .where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID])
     .toArray()
   const rejectedRecommendationCount = recommendations.filter(r => r.status === 'rejected').length
   const deferredRecommendationCount = recommendations.filter(r => r.status === 'ignored').length
@@ -4292,8 +4336,8 @@ export async function generateMindNodeRecommendations(
   connectedIds.add(nodeId)
 
   const existingRecs = await recommendationsTable
-    .where('userId')
-    .equals(userId)
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
     .and(r =>
       r.subjectType === 'mindNode' &&
       String(r.subjectId) === nodeId &&
@@ -4430,8 +4474,8 @@ function toPersistedDockViewSettings(record: DockViewSettingsRecord | undefined)
 
 export async function getDockViewSettings(userId: string): Promise<PersistedDockViewSettings | null> {
   const record = await dockViewSettingsTable
-    .where('userId')
-    .equals(userId)
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
     .first()
   return toPersistedDockViewSettings(record)
 }
@@ -4442,8 +4486,8 @@ export async function saveDockViewSettings(
 ): Promise<PersistedDockViewSettings> {
   const now = new Date()
   const existing = await dockViewSettingsTable
-    .where('userId')
-    .equals(userId)
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
     .first()
 
   if (existing) {
@@ -4458,6 +4502,7 @@ export async function saveDockViewSettings(
   const record: DockViewSettingsRecord = {
     id,
     userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     columnVisibility: settings.columnVisibility ?? { ...DEFAULT_DOCK_VIEW_COLUMN_VISIBILITY },
     density: settings.density ?? DEFAULT_DOCK_VIEW_DENSITY,
     defaultSort: settings.defaultSort ?? DEFAULT_DOCK_VIEW_DEFAULT_SORT,
@@ -4465,4 +4510,34 @@ export async function saveDockViewSettings(
   }
   await dockViewSettingsTable.add(record)
   return toPersistedDockViewSettings(await dockViewSettingsTable.get(id)) as PersistedDockViewSettings
+}
+
+/** @debug-only - Not for use in UI main paths. Reads data across all workspaces. */
+export async function debugListDockItemsAllWorkspaces(userId: string): Promise<PersistedDockItem[]> {
+  const items = await dockItemsTable.where('userId').equals(userId).toArray()
+  return items.flatMap(i => { const p = toPersistedDockItem(i); return p ? [p] : [] })
+}
+
+/** @debug-only - Not for use in UI main paths. Reads data across all workspaces. */
+export async function debugListEntriesAllWorkspaces(userId: string): Promise<PersistedEntry[]> {
+  const entries = await entriesTable.where('userId').equals(userId).toArray()
+  return entries.flatMap(e => { const p = toPersistedEntry(e); return p ? [p] : [] })
+}
+
+/** @debug-only - Not for use in UI main paths. Reads data across all workspaces. */
+export async function debugListMindNodesAllWorkspaces(userId: string): Promise<PersistedMindNode[]> {
+  const nodes = await mindNodesTable.where('userId').equals(userId).toArray()
+  return nodes.flatMap(n => { const p = toPersistedMindNode(n); return p ? [p] : [] })
+}
+
+/** @debug-only - Not for use in UI main paths. Reads data across all workspaces. */
+export async function debugListMindEdgesAllWorkspaces(userId: string): Promise<PersistedMindEdge[]> {
+  const edges = await mindEdgesTable.where('userId').equals(userId).toArray()
+  return edges.flatMap(e => { const p = toPersistedMindEdge(e); return p ? [p] : [] })
+}
+
+/** @debug-only - Not for use in UI main paths. Reads data across all workspaces. */
+export async function debugListTipsAllWorkspaces(userId: string): Promise<PersistedTip[]> {
+  const tips = await tipsTable.where('userId').equals(userId).toArray()
+  return tips.flatMap(t => { const p = toPersistedTip(t); return p ? [p] : [] })
 }

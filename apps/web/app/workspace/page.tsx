@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { getCurrentUser, listLocalUsers, registerUser } from '@/lib/auth';
+import { getCurrentUser, listLocalUsers, registerUser, loginByUserId } from '@/lib/auth';
 import DraftEditorView from './features/editor/DraftEditorView';
 import { useTips } from './features/tips/useTips';
 import QuickCapture from './features/tips/QuickCapture';
@@ -3121,7 +3121,7 @@ export default function WorkspacePage() {
   const [activeTab, setActiveTab] = useState('home');
   const [showSourcePacket, setShowSourcePacket] = useState(false);
   const [showInspector, setShowInspector] = useState(false);
-  const [userId, setUserId] = useState('_legacy');
+  const [userId, setUserId] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [isNodeSelected, setIsNodeSelected] = useState(false);
   const [pendingOpenDraftId, setPendingOpenDraftId] = useState<number | null>(null);
@@ -3129,9 +3129,10 @@ export default function WorkspacePage() {
   const [pendingMindFocusNodeId, setPendingMindFocusNodeId] = useState<string | null>(null);
   const [pendingDockFilter, setPendingDockFilter] = useState<string | null>(null);
   const [activeEditorMeta, setActiveEditorMeta] = useState<{ id: number | null; title: string; status: string }>({ id: null, title: 'Untitled', status: 'idle' });
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
-    // Reset selection state when switching tabs
     setIsNodeSelected(false);
   }, [activeTab]);
 
@@ -3142,7 +3143,7 @@ export default function WorkspacePage() {
       const existingUsers = listLocalUsers()
       if (existingUsers.length > 0) {
         resolvedUser = existingUsers[0]
-        localStorage.setItem('atlax_current_user', JSON.stringify(resolvedUser))
+        loginByUserId(resolvedUser.id)
       } else {
         resolvedUser = registerUser('Atlax User')
       }
@@ -3153,29 +3154,12 @@ export default function WorkspacePage() {
     }
   }, [])
 
-  const showToast = useCallback((msg: string) => {
-    setToastMsg(msg)
-    setTimeout(() => setToastMsg(null), 3000)
-  }, [])
+  const effectiveUserId = userId || ''
+  const tipsHook = useTips(effectiveUserId)
+  const homeIntelligence = useHomeIntelligence(effectiveUserId)
+  const dailyBriefHook = useDailyBrief(effectiveUserId)
+  const spotlightSearch = useSpotlightSearch(effectiveUserId, searchQuery);
 
-  const tipsHook = useTips(userId)
-  const homeIntelligence = useHomeIntelligence(userId)
-  const dailyBriefHook = useDailyBrief(userId)
-
-  // 聚焦搜索相关状态
-  const [isSearchOpen, setIsSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const spotlightSearch = useSpotlightSearch(userId, searchQuery);
-
-  const navItems = [
-    { id: 'home', icon: Home, label: '主页' },
-    { id: 'mind', icon: Brain, label: '思维' },
-    { id: 'dock', icon: Archive, label: '停靠区' },
-    { id: 'editor', icon: PenTool, label: '编辑器' },
-    { id: 'review', icon: BookOpen, label: '回顾' },
-  ];
-
-  // 监听全局快捷键唤起搜索 (Cmd+K / Ctrl+K)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -3190,12 +3174,32 @@ export default function WorkspacePage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // 搜索框关闭时清空输入
   useEffect(() => {
     if (!isSearchOpen) {
       setTimeout(() => setSearchQuery(''), 200);
     }
   }, [isSearchOpen]);
+
+  const showToast = useCallback((msg: string) => {
+    setToastMsg(msg)
+    setTimeout(() => setToastMsg(null), 3000)
+  }, [])
+
+  if (!userId) {
+    return (
+      <div className="min-h-screen bg-[#0b0f11] flex items-center justify-center">
+        <div className="text-[#899298] text-sm">正在初始化用户...</div>
+      </div>
+    )
+  }
+
+  const navItems = [
+    { id: 'home', icon: Home, label: '主页' },
+    { id: 'mind', icon: Brain, label: '思维' },
+    { id: 'dock', icon: Archive, label: '停靠区' },
+    { id: 'editor', icon: PenTool, label: '编辑器' },
+    { id: 'review', icon: BookOpen, label: '回顾' },
+  ];
 
   return (
     <div className="min-h-screen bg-[#0b0f11] text-[#e0e3e6] font-sans selection:bg-[#86d7ff]/30 selection:text-white flex relative overflow-hidden">

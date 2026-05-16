@@ -285,7 +285,7 @@ describe('MIND-REAL-004: Baseline Edge Deletion Protection', () => {
 
     expect(edge.reason).not.toBe('baseline-auto-connect')
 
-    const deleted = await deleteMindEdge(USER, edge.id)
+    const deleted = await deleteMindEdge(USER, edge.id, { confirmed: true })
     expect(deleted).toBe(true)
 
     const reRead = await getMindEdge(USER, edge.id)
@@ -306,7 +306,7 @@ describe('MIND-REAL-004: Baseline Edge Deletion Protection', () => {
     expect(edge).not.toBeNull()
     if (!edge) return
 
-    await deleteMindEdge(USER, edge.id)
+    await deleteMindEdge(USER, edge.id, { confirmed: true })
 
     const edges = await listMindEdges(USER)
     expect(edges.length).toBe(0)
@@ -329,7 +329,7 @@ describe('MIND-REAL-004: Baseline Edge Deletion Protection', () => {
     expect(edge).not.toBeNull()
     if (!edge) return
 
-    await deleteMindEdge(USER, edge.id)
+    await deleteMindEdge(USER, edge.id, { confirmed: true })
     emit({ type: 'mind_edge_deleted', edgeId: edge.id })
 
     expect(listener).toHaveBeenCalledWith(
@@ -498,7 +498,7 @@ describe('MIND-REAL-004: HoverCard / Node Details Unlink & Baseline Protection',
 
     expect(edge.reason).not.toBe('baseline-auto-connect')
 
-    await deleteMindEdge(USER, edge.id)
+    await deleteMindEdge(USER, edge.id, { confirmed: true })
     emit({ type: 'mind_edge_deleted', edgeId: edge.id })
 
     const reRead = await getMindEdge(USER, edge.id)
@@ -605,7 +605,7 @@ describe('MIND-REAL-004: HoverCard / Node Details Unlink & Baseline Protection',
     expect(userEdge).not.toBeNull()
     if (!userEdge) return
 
-    await deleteMindEdge(USER, userEdge.id)
+    await deleteMindEdge(USER, userEdge.id, { confirmed: true })
 
     const baselineReRead = await getMindEdge(USER, baselineEdge.id)
     expect(baselineReRead).not.toBeNull()
@@ -682,7 +682,7 @@ describe('MIND-REAL-PHASE3: Repository Edge Guards', () => {
     expect(baselineEdge).not.toBeNull()
     if (!baselineEdge) return
 
-    const deleted = await deleteMindEdge(USER, baselineEdge.id)
+    const deleted = await deleteMindEdge(USER, baselineEdge.id, { confirmed: true })
     expect(deleted).toBe(false)
 
     const reRead = await getMindEdge(USER, baselineEdge.id)
@@ -778,7 +778,7 @@ describe('MIND-REAL-005: Parent/Root Rules', () => {
 
     expect(edge1.sourceNodeId).toBe(topic1.id)
 
-    await deleteMindEdge(USER, edge1.id)
+    await deleteMindEdge(USER, edge1.id, { confirmed: true })
 
     const edge2 = await upsertMindEdge({
       userId: USER,
@@ -820,7 +820,7 @@ describe('MIND-REAL-005: Parent/Root Rules', () => {
     expect(realEdge).not.toBeNull()
     if (!realEdge) return
 
-    await deleteMindEdge(USER, realEdge.id)
+    await deleteMindEdge(USER, realEdge.id, { confirmed: true })
 
     const nodes = await listMindNodes(USER)
     const edges = await listMindEdges(USER)
@@ -1129,7 +1129,7 @@ describe('MIND-REAL-005: Dock/Review Bridge', () => {
     expect(createEvents[0].subjectType).toBe('mindNode')
     expect(createEvents[0].subjectId).toBe(edge.id)
 
-    await deleteMindEdge(USER, edge.id)
+    await deleteMindEdge(USER, edge.id, { confirmed: true })
 
     await recordUserBehaviorEvent({
       userId: USER,
@@ -1704,7 +1704,7 @@ describe('MIND-REAL-006: Move Parent / Change Parent', () => {
       if (oldEdge.reason === 'baseline-auto-connect') {
         await forceDeleteBaselineEdge(USER, oldEdge.id)
       } else {
-        await deleteMindEdge(USER, oldEdge.id)
+        await deleteMindEdge(USER, oldEdge.id, { confirmed: true })
       }
     }
 
@@ -1749,7 +1749,7 @@ describe('MIND-REAL-006: Move Parent / Change Parent', () => {
       if (oldEdge.reason === 'baseline-auto-connect') {
         await forceDeleteBaselineEdge(USER, oldEdge.id)
       } else {
-        await deleteMindEdge(USER, oldEdge.id)
+        await deleteMindEdge(USER, oldEdge.id, { confirmed: true })
       }
     }
 
@@ -1789,7 +1789,7 @@ describe('MIND-REAL-006: Move Parent / Change Parent', () => {
       e.edgeType === 'parent_child' && e.targetNodeId === doc.id
     )
     for (const oldEdge of existingParentEdges) {
-      await deleteMindEdge(USER, oldEdge.id)
+      await deleteMindEdge(USER, oldEdge.id, { confirmed: true })
     }
 
     await upsertMindEdge({
@@ -1829,7 +1829,7 @@ describe('MIND-REAL-006: Move Parent / Change Parent', () => {
       e.edgeType === 'parent_child' && e.targetNodeId === doc.id
     )
     for (const oldEdge of existingParentEdges) {
-      await deleteMindEdge(USER, oldEdge.id)
+      await deleteMindEdge(USER, oldEdge.id, { confirmed: true })
     }
 
     await upsertMindEdge({
@@ -1868,7 +1868,7 @@ describe('MIND-REAL-006: Move Parent / Change Parent', () => {
       e.edgeType === 'parent_child' && e.targetNodeId === doc.id
     )
     for (const oldEdge of existingParentEdges) {
-      await deleteMindEdge(USER, oldEdge.id)
+      await deleteMindEdge(USER, oldEdge.id, { confirmed: true })
     }
 
     await upsertMindEdge({

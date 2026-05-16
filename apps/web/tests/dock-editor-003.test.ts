@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { db, entriesTable, tipsTable, mindNodesTable } from '@/lib/db'
+import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
 import {
   createDraft,
   updateDraft,
@@ -159,6 +160,7 @@ describe('DOCK-EDITOR-003: Dock → Editor context', () => {
   it('entry-origin draft inherits entry metadata', async () => {
     const entryId = await entriesTable.add({
       userId: USER_A,
+      workspaceId: DEFAULT_WORKSPACE_ID,
       sourceDockItemId: 0,
       title: 'Original Entry',
       content: 'entry content',
@@ -269,6 +271,7 @@ describe('DOCK-EDITOR-003 Review Fix: update_original publish syncs metadata to 
   it('update_original publish writes draft tags to existing entry', async () => {
     const entryId = await entriesTable.add({
       userId: USER_A,
+      workspaceId: DEFAULT_WORKSPACE_ID,
       sourceDockItemId: 0,
       title: 'Original',
       content: 'original content',
@@ -292,6 +295,7 @@ describe('DOCK-EDITOR-003 Review Fix: update_original publish syncs metadata to 
   it('update_original publish preserves entry tags when draft has empty tags', async () => {
     const entryId = await entriesTable.add({
       userId: USER_A,
+      workspaceId: DEFAULT_WORKSPACE_ID,
       sourceDockItemId: 0,
       title: 'Original',
       content: 'original content',
@@ -312,6 +316,7 @@ describe('DOCK-EDITOR-003 Review Fix: update_original publish syncs metadata to 
   it('update_original publish does not write collectionId to entry', async () => {
     const entryId = await entriesTable.add({
       userId: USER_A,
+      workspaceId: DEFAULT_WORKSPACE_ID,
       sourceDockItemId: 0,
       title: 'Original',
       content: 'original content',
@@ -419,6 +424,7 @@ describe('DOCK-EDITOR-003 Review Fix: View in Mind disabled without relatedMindN
     const { findRelatedMindNode } = await import('@/app/workspace/features/dock/useDockData')
     const entryId = await entriesTable.add({
       userId: USER_A,
+      workspaceId: DEFAULT_WORKSPACE_ID,
       sourceDockItemId: 0,
       title: 'Test Entry',
       content: 'content',
@@ -446,6 +452,7 @@ describe('DOCK-EDITOR-003 Review Fix: View in Mind disabled without relatedMindN
       metadata: { sourceType: 'document', entryId: entryId as number },
       createdAt: new Date(),
       updatedAt: new Date(),
+      workspaceId: DEFAULT_WORKSPACE_ID,
     })
     const entity = {
       id: 'test-2',

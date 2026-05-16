@@ -313,19 +313,19 @@ describe('ChatSession repository (real Dexie)', () => {
     it('deletes a session', async () => {
       const session = unwrap(await createChatSession({ userId: USER_A, topic: 'test' }))
 
-      expect(await deleteChatSession(USER_A, session.id)).toBe(true)
+      expect(await deleteChatSession(USER_A, session.id, { confirmed: true })).toBe(true)
       expect(await getChatSession(USER_A, session.id)).toBeNull()
     })
 
     it('blocks cross-user delete', async () => {
       const session = unwrap(await createChatSession({ userId: USER_A, topic: 'test' }))
 
-      expect(await deleteChatSession(USER_B, session.id)).toBe(false)
+      expect(await deleteChatSession(USER_B, session.id, { confirmed: true })).toBe(false)
       expect(await getChatSession(USER_A, session.id)).not.toBeNull()
     })
 
     it('returns false for nonexistent session', async () => {
-      expect(await deleteChatSession(USER_A, 99999)).toBe(false)
+      expect(await deleteChatSession(USER_A, 99999, { confirmed: true })).toBe(false)
     })
   })
 
@@ -399,7 +399,7 @@ describe('ChatSession repository (real Dexie)', () => {
 
       expect(await getChatSession(USER_B, sessionA.id)).toBeNull()
       expect(await updateChatSession(USER_B, sessionA.id, { topic: 'hacked' })).toBeNull()
-      expect(await deleteChatSession(USER_B, sessionA.id)).toBe(false)
+      expect(await deleteChatSession(USER_B, sessionA.id, { confirmed: true })).toBe(false)
       expect(await pinChatSession(USER_B, sessionA.id)).toBeNull()
 
       const original = unwrap(await getChatSession(USER_A, sessionA.id))

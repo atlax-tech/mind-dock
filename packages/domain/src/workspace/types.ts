@@ -1,3 +1,7 @@
+export type WorkspaceId = string
+
+export const DEFAULT_WORKSPACE_ID: WorkspaceId = 'default'
+
 export type TabType =
   | 'home'
   | 'mind'

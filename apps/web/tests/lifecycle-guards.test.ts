@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { db, type EntryRecord, type DraftStatus, type TipStatus } from '@/lib/db'
+import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
 import {
   addTagToItem,
   archiveItem,
@@ -188,12 +189,13 @@ describe('listArchivedEntries semantic closure', () => {
   })
 })
 
-describe('Draft delete_all guard', () => {
+describe('Draft delete_all Trash-first', () => {
   afterEach(cleanAll)
 
-  it('discardDraft delete_all 模式无 confirmed 标记时抛错', async () => {
+  it('discardDraft delete_all archives entry instead of physical delete', async () => {
     const entryId = await db.table('entries').add({
       userId: USER_A,
+      workspaceId: DEFAULT_WORKSPACE_ID,
       sourceDockItemId: 0,
       title: '原始文档',
       content: '原始内容',
@@ -207,35 +209,18 @@ describe('Draft delete_all guard', () => {
 
     const draft = unwrap(await createDraft(USER_A, '修改标题', '修改内容', entryId as number, 'entry'))
 
-    await expect(
-      discardDraft(USER_A, draft.id, 'delete_all'),
-    ).rejects.toThrow('Irreversible action "discardDraft:delete_all" requires explicit confirmation')
-  })
-
-  it('discardDraft delete_all 模式有 confirmed: true 时不抛错', async () => {
-    const entryId = await db.table('entries').add({
-      userId: USER_A,
-      sourceDockItemId: 0,
-      title: '原始文档',
-      content: '原始内容',
-      type: 'note',
-      tags: [],
-      project: null,
-      actions: [],
-      createdAt: new Date(),
-      archivedAt: new Date(),
-    })
-
-    const draft = unwrap(await createDraft(USER_A, '修改标题', '修改内容', entryId as number, 'entry'))
-
-    const result = await discardDraft(USER_A, draft.id, 'delete_all', { confirmed: true })
+    const result = await discardDraft(USER_A, draft.id, 'delete_all')
     expect(result).not.toBeNull()
     expect(unwrap(result).status).toBe('discarded')
+
+    const entry = await db.table('entries').get(entryId as number)
+    expect(entry).not.toBeUndefined()
   })
 
-  it('discardDraft abandon_changes 模式不需要 confirmed 标记', async () => {
+  it('discardDraft abandon_changes preserves entry', async () => {
     const entryId = await db.table('entries').add({
       userId: USER_A,
+      workspaceId: DEFAULT_WORKSPACE_ID,
       sourceDockItemId: 0,
       title: '原始文档',
       content: '原始内容',

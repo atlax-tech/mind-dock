@@ -37,6 +37,7 @@ import { createEditorContentPayload, textToTiptapDoc, type TiptapJSONContent } f
 export interface DockItemRecord {
   id?: number
   userId: string
+  workspaceId?: string
   rawText: string
   topic: string | null
   sourceType: SourceType
@@ -61,6 +62,7 @@ export type PersistedCapture = PersistedDockItem
 export interface TagRecord {
   id?: string
   userId: string
+  workspaceId?: string
   name: string
   createdAt: Date
 }
@@ -72,6 +74,7 @@ export interface PersistedTag extends TagRecord {
 export interface EntryRecord {
   id?: number
   userId: string
+  workspaceId?: string
   sourceDockItemId: number
   title: string
   content: string
@@ -97,6 +100,7 @@ export type PersistedDocument = PersistedEntry
 export interface ChatSessionRecord {
   id?: number
   userId: string
+  workspaceId?: string
   title: string | null
   topic: string | null
   selectedType: string | null
@@ -132,6 +136,7 @@ export interface PersistedWidget extends WidgetRecord {
 export interface CollectionRecord {
   id?: string
   userId: string
+  workspaceId?: string
   name: string
   description: string | null
   icon: string | null
@@ -150,6 +155,7 @@ export interface PersistedCollection extends CollectionRecord {
 export interface EntryTagRelationRecord {
   id?: string
   userId: string
+  workspaceId?: string
   entryId: number
   tagId: string
   source: TagRelationSource
@@ -164,6 +170,7 @@ export interface PersistedEntryTagRelation extends EntryTagRelationRecord {
 export interface EntryRelationRecord {
   id?: string
   userId: string
+  workspaceId?: string
   sourceEntryId: number
   targetEntryId: number
   relationType: EntryRelationType
@@ -182,6 +189,7 @@ export interface PersistedEntryRelation extends EntryRelationRecord {
 export interface KnowledgeEventRecord {
   id?: string
   userId: string
+  workspaceId?: string
   eventType: KnowledgeEventType
   targetType: KnowledgeEventTargetType
   targetId: string | null
@@ -196,6 +204,7 @@ export interface PersistedKnowledgeEvent extends KnowledgeEventRecord {
 export interface TemporalActivityRecord {
   id?: string
   userId: string
+  workspaceId?: string
   type: TemporalActivityType
   entityType: TemporalActivityEntityType
   entityId: string
@@ -217,6 +226,7 @@ export interface PersistedTemporalActivity extends TemporalActivityRecord {
 export interface MindNodeRecord {
   id?: string
   userId: string
+  workspaceId?: string
   nodeType: MindNodeType
   label: string
   state: MindNodeState
@@ -240,6 +250,7 @@ export interface PersistedMindNode extends MindNodeRecord {
 export interface MindEdgeRecord {
   id?: string
   userId: string
+  workspaceId?: string
   sourceNodeId: string
   targetNodeId: string
   edgeType: MindEdgeType
@@ -308,6 +319,7 @@ export type TipStatus = 'active' | 'converted' | 'discarded' | 'linked'
 export interface TipRecord {
   id?: number
   userId: string
+  workspaceId?: string
   content: string
   sourceType: TipSourceType
   status: TipStatus
@@ -327,6 +339,7 @@ export type DraftSourceType = 'entry' | 'document'
 export interface EditorDraftRecord {
   id?: number
   userId: string
+  workspaceId?: string
   draftKey: number
   title: string
   content: string
@@ -351,6 +364,7 @@ export interface PersistedEditorDraft extends EditorDraftRecord {
 export interface RecommendationRecord {
   id?: string
   userId: string
+  workspaceId?: string
   subjectType: RecommendationSubjectType
   subjectId: number | string
   recommendationType: string
@@ -371,6 +385,7 @@ export interface RecommendationEventRecord {
   id?: string
   recommendationId: string
   userId: string
+  workspaceId?: string
   eventType: RecommendationEventType
   metadata: Record<string, unknown> | null
   createdAt: Date
@@ -383,6 +398,7 @@ export interface PersistedRecommendationEvent extends RecommendationEventRecord 
 export interface UserBehaviorEventRecord {
   id?: string
   userId: string
+  workspaceId?: string
   eventType: UserBehaviorEventType
   subjectType: UserBehaviorSubjectType
   subjectId: string | null
@@ -397,6 +413,7 @@ export interface PersistedUserBehaviorEvent extends UserBehaviorEventRecord {
 export interface DockViewSettingsRecord {
   id?: string
   userId: string
+  workspaceId?: string
   columnVisibility: {
     space: boolean
     status: boolean
@@ -413,6 +430,7 @@ export interface PersistedDockViewSettings extends DockViewSettingsRecord {
   id: string
 }
 
+/** @migration-only - Only used in Dexie upgrade migrations. New code must NOT reference this constant. */
 const FALLBACK_USER_ID = '_legacy'
 
 export function runV8Upgrade(tx: {
@@ -444,6 +462,19 @@ export function runV8Upgrade(tx: {
   })
 }
 
+export interface AppEventRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  eventType: string
+  payload: Record<string, unknown> | null
+  _ts: number
+}
+
+export interface PersistedAppEvent extends AppEventRecord {
+  id: string
+}
+
 const db = new Dexie('AtlaxDB') as Dexie & {
   dockItems: EntityTable<DockItemRecord, 'id'>
   tags: EntityTable<TagRecord, 'id'>
@@ -466,6 +497,7 @@ const db = new Dexie('AtlaxDB') as Dexie & {
   recommendationEvents: EntityTable<RecommendationEventRecord, 'id'>
   userBehaviorEvents: EntityTable<UserBehaviorEventRecord, 'id'>
   dockViewSettings: EntityTable<DockViewSettingsRecord, 'id'>
+  appEvents: EntityTable<AppEventRecord, 'id'>
 }
 
 db.version(1).stores({
@@ -919,6 +951,45 @@ db.version(25).stores({
   dockViewSettings: 'id, userId, [userId]',
 })
 
+// v26: workspaceId migration — workspaceSessions, workspaceOpenTabs, recentDocuments
+// are UI/session state and do NOT need workspaceId (they are scoped per-user, not per-workspace).
+db.version(26).stores({
+  dockItems: '++id, userId, workspaceId, rawText, topic, sourceType, status, createdAt, [userId+workspaceId]',
+  tags: 'id, userId, workspaceId, name, [userId+name], [userId+workspaceId]',
+  entries: '++id, userId, workspaceId, sourceDockItemId, type, archivedAt, [userId+workspaceId]',
+  chatSessions: '++id, userId, workspaceId, status, pinned, dockItemId, createdAt, updatedAt, [userId+workspaceId]',
+  widgets: '++id, userId, workspaceId, widgetType, active, createdAt, updatedAt, [userId+workspaceId]',
+  collections: 'id, userId, workspaceId, collectionType, parentId, createdAt, updatedAt, [userId+workspaceId]',
+  entryTagRelations: 'id, userId, workspaceId, entryId, tagId, [userId+entryId], [userId+tagId], createdAt, [userId+workspaceId]',
+  entryRelations: 'id, userId, workspaceId, sourceEntryId, targetEntryId, relationType, [userId+sourceEntryId], [userId+targetEntryId], createdAt, [userId+workspaceId]',
+  knowledgeEvents: 'id, userId, workspaceId, eventType, targetType, createdAt, [userId+workspaceId]',
+  temporalActivities: 'id, userId, workspaceId, type, occurredAt, dayKey, weekKey, monthKey, [userId+dayKey], [userId+monthKey], createdAt, [userId+workspaceId]',
+  mindNodes: 'id, userId, workspaceId, nodeType, state, label, [userId+nodeType], [userId+state], createdAt, updatedAt, [userId+workspaceId]',
+  mindEdges: 'id, userId, workspaceId, sourceNodeId, targetNodeId, edgeType, [userId+sourceNodeId], [userId+targetNodeId], [userId+edgeType], createdAt, updatedAt, [userId+workspaceId]',
+  workspaceSessions: 'id, userId, createdAt, updatedAt',
+  workspaceOpenTabs: 'id, userId, sessionId, tabType, documentId, isPinned, isActive, sortOrder, [userId+sessionId], [userId+tabType], [userId+documentId], openedAt, updatedAt',
+  recentDocuments: 'id, userId, documentId, [userId+documentId], lastOpenedAt, openCount, createdAt, updatedAt',
+  editorDrafts: '++id, userId, workspaceId, draftKey, status, sourceEntryId, sourceType, [userId+status], [userId+draftKey], [userId+sourceEntryId], createdAt, updatedAt, [userId+workspaceId]',
+  tips: '++id, userId, workspaceId, sourceType, status, [userId+status], createdAt, updatedAt, [userId+workspaceId]',
+  recommendations: 'id, userId, workspaceId, subjectType, status, [userId+status], [userId+subjectType], createdAt, updatedAt, [userId+workspaceId]',
+  recommendationEvents: 'id, userId, workspaceId, recommendationId, eventType, [userId+recommendationId], [userId+eventType], createdAt, [userId+workspaceId]',
+  userBehaviorEvents: 'id, userId, workspaceId, eventType, subjectType, [userId+eventType], [userId+subjectType], createdAt, [userId+workspaceId]',
+  dockViewSettings: 'id, userId, workspaceId, [userId], [userId+workspaceId]',
+  appEvents: 'id, userId, workspaceId, eventType, [userId+workspaceId], [userId+workspaceId+_ts], _ts',
+}).upgrade(tx => {
+  const coreTables = [
+    'dockItems', 'entries', 'tags', 'chatSessions', 'widgets', 'collections',
+    'entryTagRelations', 'entryRelations', 'knowledgeEvents', 'temporalActivities',
+    'mindNodes', 'mindEdges', 'editorDrafts', 'tips', 'recommendations',
+    'recommendationEvents', 'userBehaviorEvents', 'dockViewSettings',
+  ] as const
+  for (const tableName of coreTables) {
+    tx.table(tableName).toCollection().modify((record: Record<string, unknown>) => {
+      if (!record.workspaceId) record.workspaceId = 'default'
+    })
+  }
+})
+
 export { db }
 export const dockItemsTable = db.table('dockItems')
 export const capturesTable = dockItemsTable
@@ -943,3 +1014,4 @@ export const recommendationsTable = db.table('recommendations')
 export const recommendationEventsTable = db.table('recommendationEvents')
 export const userBehaviorEventsTable = db.table('userBehaviorEvents')
 export const dockViewSettingsTable = db.table('dockViewSettings')
+export const appEventsTable = db.table('appEvents')

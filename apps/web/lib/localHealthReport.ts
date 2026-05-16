@@ -1,12 +1,11 @@
 import {
   listMindNodes,
   listMindEdges,
-  listCollections,
-  listTags,
   listRecommendations,
 } from '@/lib/repository'
 import { isArchived, isDiscarded, isHidden } from '@/lib/lifecycleGuards'
-import { entriesTable, tipsTable, editorDraftsTable } from '@/lib/db'
+import { entriesTable, tipsTable, editorDraftsTable, collectionsTable, tagsTable } from '@/lib/db'
+import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
 
 export const STALE_THRESHOLD_DAYS = 7
 export const RECENTLY_UPDATED_DAYS = 7
@@ -143,13 +142,13 @@ export async function getLocalHealthReport(userId: string): Promise<LocalHealthR
   const now = Date.now()
 
   const [rawEntries, rawTips, rawDrafts, mindNodes, mindEdges, collections, tags, recommendations] = await Promise.all([
-    entriesTable.where('userId').equals(userId).toArray(),
-    tipsTable.where('userId').equals(userId).toArray(),
-    editorDraftsTable.where('userId').equals(userId).toArray(),
+    entriesTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray(),
+    tipsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray(),
+    editorDraftsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).toArray(),
     listMindNodes(userId),
     listMindEdges(userId),
-    listCollections(userId),
-    listTags(userId),
+    collectionsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).sortBy('sortOrder'),
+    tagsTable.where('[userId+workspaceId]').equals([userId, DEFAULT_WORKSPACE_ID]).sortBy('name'),
     listRecommendations(userId),
   ])
 

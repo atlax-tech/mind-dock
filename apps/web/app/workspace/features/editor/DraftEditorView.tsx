@@ -33,7 +33,7 @@ import { useEditorDraft } from './useEditorDraft'
 import type { StoredDraft, PublishMode, DiscardMode } from '@/lib/repository'
 import type { EditorContentPayload } from '@/lib/editorContentAdapter'
 import type { EditorOutlineItem, EditorWidthMode } from './TiptapEditor'
-import { entriesTable } from '@/lib/db'
+import { getEntryById } from '@/lib/repository'
 
 const TiptapEditor = dynamic(
   () => import('./TiptapEditor').then((mod) => mod.TiptapEditor),
@@ -214,7 +214,7 @@ export default function DraftEditorView({
         onToast?.('已打开关联此文档的草稿')
         return
       }
-      const entry = await entriesTable.get(initialEntryId)
+      const entry = await getEntryById(userId, initialEntryId)
       if (cancelled) return
       if (!entry) {
         onToast?.('无法打开 Editor：文档不存在或已被删除')
@@ -293,8 +293,7 @@ export default function DraftEditorView({
     setDiscarding(draftId)
     setShowDiscardChoice(false)
     try {
-      const opts = discardMode === 'delete_all' ? { confirmed: true } : undefined
-      const ok = await handleDiscardDraft(draftId, discardMode, opts)
+      const ok = await handleDiscardDraft(draftId, discardMode)
       if (ok) {
         if (activeDraftId === draftId) {
           setActiveDraftId(null)
@@ -302,7 +301,7 @@ export default function DraftEditorView({
         if (discardMode === 'abandon_changes') {
           onToast?.('已放弃更改')
         } else {
-          onToast?.('已删除草稿及原文档')
+          onToast?.('已丢弃草稿并归档原文档')
         }
       }
     } finally {
@@ -344,7 +343,7 @@ export default function DraftEditorView({
     }
     let cancelled = false
     ;(async () => {
-      const entry = await entriesTable.get(draft.sourceEntryId as number)
+      const entry = await getEntryById(userId, draft.sourceEntryId as number)
       if (cancelled) return
       if (entry) {
         const dateStr = entry.archivedAt
@@ -992,10 +991,10 @@ export default function DraftEditorView({
                 >
                   <div className="flex items-center gap-2.5 mb-1.5">
                     <Trash2 className="w-4 h-4 text-red-400" />
-                    <span className="text-[12px] font-medium text-red-400">删除草稿及原文档</span>
+                    <span className="text-[12px] font-medium text-red-400">丢弃草稿并归档原文档</span>
                   </div>
                   <p className="text-[10px] text-[#899298] pl-6">
-                    同时删除草稿和原文档，此操作不可恢复
+                    丢弃草稿，原文档归档保留，可恢复
                   </p>
                 </button>
               </div>
@@ -1020,7 +1019,7 @@ export default function DraftEditorView({
           />
           <div className="relative w-[420px] bg-[#1c2023]/90 backdrop-blur-[40px] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
             <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
-              <h3 className="text-sm font-medium text-red-400">确认不可逆删除</h3>
+              <h3 className="text-sm font-medium text-red-400">确认归档原文档</h3>
               <button
                 onClick={() => { setShowDeleteAllConfirm(false); setDeleteConfirmText('') }}
                 className="p-1 rounded-md hover:bg-white/10 text-[#899298] hover:text-white transition-colors"
@@ -1029,14 +1028,14 @@ export default function DraftEditorView({
               </button>
             </div>
             <div className="px-5 py-3">
-              <p className="text-[11px] text-[#ffb4ab] mb-3">此操作将同时删除草稿和原文档，不可恢复。</p>
-              <p className="text-[11px] text-[#899298] mb-3">请输入 <span className="text-white font-mono font-bold">DELETE</span> 以确认：</p>
+              <p className="text-[11px] text-[#ffb4ab] mb-3">此操作将丢弃草稿并归档原文档，原文档可恢复。</p>
+              <p className="text-[11px] text-[#899298] mb-3">请输入 <span className="text-white font-mono font-bold">ARCHIVE</span> 以确认：</p>
               <input
                 type="text"
                 value={deleteConfirmText}
                 onChange={(e) => setDeleteConfirmText(e.target.value)}
                 className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-red-500/50 font-mono"
-                placeholder="输入 DELETE"
+                placeholder="输入 ARCHIVE"
                 autoFocus
               />
             </div>
@@ -1049,10 +1048,10 @@ export default function DraftEditorView({
               </button>
               <button
                 onClick={() => { executeDiscard(discardTargetId, 'delete_all'); setShowDeleteAllConfirm(false); setDeleteConfirmText('') }}
-                disabled={deleteConfirmText !== 'DELETE' || discarding === discardTargetId}
+                disabled={deleteConfirmText !== 'ARCHIVE' || discarding === discardTargetId}
                 className="flex-1 py-2 rounded-lg bg-red-500/20 text-[11px] text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               >
-                确认删除
+                确认归档
               </button>
             </div>
           </div>

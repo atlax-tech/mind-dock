@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { db } from '@/lib/db'
+import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
 import {
   createDraft,
   listDrafts,
@@ -18,6 +19,7 @@ import {
 
 const USER_A = 'user_draft_test_a'
 const USER_B = 'user_draft_test_b'
+const OTHER_WORKSPACE = 'other-workspace'
 
 async function cleanAll() {
   await db.table('editorDrafts').clear()
@@ -29,6 +31,23 @@ async function cleanAll() {
 function unwrap<T>(value: T | null): T {
   expect(value).not.toBeNull()
   return value as T
+}
+
+function makeEntry(overrides: Record<string, unknown> = {}) {
+  return {
+    userId: USER_A,
+    workspaceId: DEFAULT_WORKSPACE_ID,
+    sourceDockItemId: 0,
+    title: '测试文档',
+    content: '测试内容',
+    type: 'note' as const,
+    tags: [] as string[],
+    project: null as string | null,
+    actions: [] as unknown[],
+    createdAt: new Date(),
+    archivedAt: new Date(),
+    ...overrides,
+  }
 }
 
 describe('draft repository', () => {
@@ -100,6 +119,26 @@ describe('draft repository', () => {
       const found = await getDraft(USER_B, created.id)
       expect(found).toBeNull()
     })
+
+    it('returns null for draft in different workspace', async () => {
+      const id = await db.table('editorDrafts').add({
+        userId: USER_A,
+        workspaceId: OTHER_WORKSPACE,
+        draftKey: 0,
+        title: '其他workspace草稿',
+        content: '内容',
+        status: 'active',
+        sourceEntryId: null,
+        sourceType: null,
+        tags: [],
+        project: null,
+        collectionId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      const found = await getDraft(USER_A, id as number)
+      expect(found).toBeNull()
+    })
   })
 
   describe('updateDraft', () => {
@@ -115,6 +154,26 @@ describe('draft repository', () => {
       const updated = unwrap(await updateDraft(USER_A, created.id, { title: '新标题' }))
       expect(updated.title).toBe('新标题')
       expect(updated.content).toBe('旧内容')
+    })
+
+    it('rejects update for draft in different workspace', async () => {
+      const id = await db.table('editorDrafts').add({
+        userId: USER_A,
+        workspaceId: OTHER_WORKSPACE,
+        draftKey: 0,
+        title: '其他workspace草稿',
+        content: '内容',
+        status: 'active',
+        sourceEntryId: null,
+        sourceType: null,
+        tags: [],
+        project: null,
+        collectionId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      const result = await updateDraft(USER_A, id as number, { title: '尝试修改' })
+      expect(result).toBeNull()
     })
   })
 
@@ -175,18 +234,10 @@ describe('draft repository', () => {
     })
 
     it('write-back to original entry when draft has sourceEntryId', async () => {
-      const entryId = await db.table('entries').add({
-        userId: USER_A,
-        sourceDockItemId: 0,
+      const entryId = await db.table('entries').add(makeEntry({
         title: '原始文档',
         content: '原始内容',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
 
       const draft = unwrap(await createDraft(USER_A, '修改后标题', '修改后内容', entryId as number, 'entry'))
       const result = await publishDraftToDocument(USER_A, draft.id)
@@ -207,18 +258,26 @@ describe('draft repository', () => {
     })
 
     it('creates new entry when sourceEntryId belongs to different user', async () => {
-      const entryId = await db.table('entries').add({
+      const entryId = await db.table('entries').add(makeEntry({
         userId: USER_B,
-        sourceDockItemId: 0,
         title: 'B的文档',
         content: 'B的内容',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
+
+      const draft = unwrap(await createDraft(USER_A, 'A的修改', 'A的内容', entryId as number, 'entry'))
+      const result = await publishDraftToDocument(USER_A, draft.id)
+
+      const entry = unwrap(result.entry)
+      expect(entry.id).not.toBe(entryId as number)
+      expect(entry.title).toBe('A的修改')
+    })
+
+    it('creates new entry when sourceEntryId belongs to different workspace', async () => {
+      const entryId = await db.table('entries').add(makeEntry({
+        workspaceId: OTHER_WORKSPACE,
+        title: '其他workspace文档',
+        content: '其他workspace内容',
+      }))
 
       const draft = unwrap(await createDraft(USER_A, 'A的修改', 'A的内容', entryId as number, 'entry'))
       const result = await publishDraftToDocument(USER_A, draft.id)
@@ -238,18 +297,10 @@ describe('draft repository', () => {
     })
 
     it('updates existing entry MindNode when publishing entry-origin draft', async () => {
-      const entryId = await db.table('entries').add({
-        userId: USER_A,
-        sourceDockItemId: 0,
+      const entryId = await db.table('entries').add(makeEntry({
         title: '原始文档',
         content: '原始内容',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
 
       await upsertMindNode({
         userId: USER_A,
@@ -270,18 +321,10 @@ describe('draft repository', () => {
     })
 
     it('deletes draft MindNode when publishing entry-origin draft', async () => {
-      const entryId = await db.table('entries').add({
-        userId: USER_A,
-        sourceDockItemId: 0,
+      const entryId = await db.table('entries').add(makeEntry({
         title: '原始文档',
         content: '原始内容',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
 
       const draft = unwrap(await createDraft(USER_A, '修改后标题', '修改后内容', entryId as number, 'entry'))
 
@@ -301,18 +344,10 @@ describe('draft repository', () => {
     })
 
     it('creates new entry when publishMode is as_new', async () => {
-      const entryId = await db.table('entries').add({
-        userId: USER_A,
-        sourceDockItemId: 0,
+      const entryId = await db.table('entries').add(makeEntry({
         title: '原始文档',
         content: '原始内容',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
 
       const draft = unwrap(await createDraft(USER_A, '新文档标题', '新文档内容', entryId as number, 'entry'))
       const result = await publishDraftToDocument(USER_A, draft.id, 'as_new')
@@ -329,18 +364,10 @@ describe('draft repository', () => {
     })
 
     it('creates new MindNode when publishMode is as_new', async () => {
-      const entryId = await db.table('entries').add({
-        userId: USER_A,
-        sourceDockItemId: 0,
+      const entryId = await db.table('entries').add(makeEntry({
         title: '原始文档',
         content: '原始内容',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
 
       await upsertMindNode({
         userId: USER_A,
@@ -364,18 +391,10 @@ describe('draft repository', () => {
     })
 
     it('update_original mode updates original entry (default)', async () => {
-      const entryId = await db.table('entries').add({
-        userId: USER_A,
-        sourceDockItemId: 0,
+      const entryId = await db.table('entries').add(makeEntry({
         title: '原始文档',
         content: '原始内容',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
 
       const draft = unwrap(await createDraft(USER_A, '修改后标题', '修改后内容', entryId as number, 'entry'))
       const result = await publishDraftToDocument(USER_A, draft.id, 'update_original')
@@ -430,18 +449,10 @@ describe('draft repository', () => {
     })
 
     it('does not delete entry MindNode when discarding entry-origin draft', async () => {
-      const entryId = await db.table('entries').add({
-        userId: USER_A,
-        sourceDockItemId: 0,
+      const entryId = await db.table('entries').add(makeEntry({
         title: '原始文档',
         content: '原始内容',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
 
       await upsertMindNode({
         userId: USER_A,
@@ -460,19 +471,11 @@ describe('draft repository', () => {
       expect(unwrap(entryNode).label).toBe('原始文档')
     })
 
-    it('delete_all mode deletes original entry and its MindNode', async () => {
-      const entryId = await db.table('entries').add({
-        userId: USER_A,
-        sourceDockItemId: 0,
+    it('delete_all mode archives original entry and its MindNode (Trash-first)', async () => {
+      const entryId = await db.table('entries').add(makeEntry({
         title: '原始文档',
         content: '原始内容',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
 
       await upsertMindNode({
         userId: USER_A,
@@ -484,28 +487,22 @@ describe('draft repository', () => {
       })
 
       const draft = unwrap(await createDraft(USER_A, '修改后标题', '修改后内容', entryId as number, 'entry'))
-      await discardDraft(USER_A, draft.id, 'delete_all', { confirmed: true })
+      await discardDraft(USER_A, draft.id, 'delete_all')
 
       const entryNode = await findMindNodeByDocumentId(USER_A, entryId as number)
-      expect(entryNode).toBeNull()
+      expect(entryNode).not.toBeNull()
+      expect(unwrap(entryNode).state).toBe('archived')
 
-      const deletedEntry = await db.table('entries').get(entryId as number)
-      expect(deletedEntry).toBeUndefined()
+      const archivedEntry = await db.table('entries').get(entryId as number)
+      expect(archivedEntry).not.toBeUndefined()
+      expect((archivedEntry as Record<string, unknown>).archivedAt).not.toBeUndefined()
     })
 
     it('abandon_changes mode preserves original entry (default)', async () => {
-      const entryId = await db.table('entries').add({
-        userId: USER_A,
-        sourceDockItemId: 0,
+      const entryId = await db.table('entries').add(makeEntry({
         title: '原始文档',
         content: '原始内容',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
 
       await upsertMindNode({
         userId: USER_A,
@@ -527,25 +524,52 @@ describe('draft repository', () => {
       expect(preservedEntry).not.toBeUndefined()
     })
 
-    it('delete_all mode does not affect entries of other users', async () => {
-      const entryId = await db.table('entries').add({
+    it('delete_all mode does not archive entries of other users', async () => {
+      const entryId = await db.table('entries').add(makeEntry({
         userId: USER_B,
-        sourceDockItemId: 0,
         title: 'B的文档',
         content: 'B的内容',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
 
       const draft = unwrap(await createDraft(USER_A, 'A的修改', 'A的内容', entryId as number, 'entry'))
-      await discardDraft(USER_A, draft.id, 'delete_all', { confirmed: true })
+      await discardDraft(USER_A, draft.id, 'delete_all')
 
       const bEntry = await db.table('entries').get(entryId as number)
       expect(bEntry).not.toBeUndefined()
+    })
+
+    it('delete_all mode does not archive entries in different workspace', async () => {
+      const entryId = await db.table('entries').add(makeEntry({
+        workspaceId: OTHER_WORKSPACE,
+        title: '其他workspace文档',
+        content: '其他workspace内容',
+      }))
+
+      const draft = unwrap(await createDraft(USER_A, 'A的修改', 'A的内容', entryId as number, 'entry'))
+      await discardDraft(USER_A, draft.id, 'delete_all')
+
+      const otherEntry = await db.table('entries').get(entryId as number)
+      expect(otherEntry).not.toBeUndefined()
+    })
+
+    it('rejects discard for draft in different workspace', async () => {
+      const id = await db.table('editorDrafts').add({
+        userId: USER_A,
+        workspaceId: OTHER_WORKSPACE,
+        draftKey: 0,
+        title: '其他workspace草稿',
+        content: '内容',
+        status: 'active',
+        sourceEntryId: null,
+        sourceType: null,
+        tags: [],
+        project: null,
+        collectionId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      const result = await discardDraft(USER_A, id as number)
+      expect(result).toBeNull()
     })
   })
 
@@ -598,18 +622,10 @@ describe('draft repository', () => {
     })
 
     it('as_new publish returns nameConflict when same name under same parent', async () => {
-      const entryId = await db.table('entries').add({
-        userId: USER_A,
-        sourceDockItemId: 0,
+      const entryId = await db.table('entries').add(makeEntry({
         title: 'My Doc',
         content: '原始内容',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
 
       const parentNode = await upsertMindNode({
         userId: USER_A,
@@ -643,18 +659,10 @@ describe('draft repository', () => {
     })
 
     it('as_new publish returns conflict when root level same name', async () => {
-      const entryId = await db.table('entries').add({
-        userId: USER_A,
-        sourceDockItemId: 0,
+      const entryId = await db.table('entries').add(makeEntry({
         title: 'My Doc',
         content: '原始内容',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
 
       await upsertMindNode({
         userId: USER_A,
@@ -676,31 +684,15 @@ describe('draft repository', () => {
 
   describe('MindNode ID collision safety (draftId vs entryId)', () => {
     it('publish entry-origin draft does not delete entry MindNode when draftId equals another entryId', async () => {
-      const entryA = await db.table('entries').add({
-        userId: USER_A,
-        sourceDockItemId: 0,
+      const entryA = await db.table('entries').add(makeEntry({
         title: 'Entry A',
         content: 'Content A',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
 
-      const entryB = await db.table('entries').add({
-        userId: USER_A,
-        sourceDockItemId: 0,
+      const entryB = await db.table('entries').add(makeEntry({
         title: 'Entry B',
         content: 'Content B',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
 
       const entryBNode = await upsertMindNode({
         userId: USER_A,
@@ -753,18 +745,10 @@ describe('draft repository', () => {
     })
 
     it('discard standalone draft does not delete entry MindNode with same numeric ID', async () => {
-      const entryId = await db.table('entries').add({
-        userId: USER_A,
-        sourceDockItemId: 0,
+      const entryId = await db.table('entries').add(makeEntry({
         title: 'Real Entry',
         content: 'Real Content',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
 
       const entryNode = await upsertMindNode({
         userId: USER_A,
@@ -832,18 +816,10 @@ describe('draft repository', () => {
 
   describe('MIND-REAL-004 Round 3: name conflict for new drafts without sourceEntryId', () => {
     it('new draft without sourceEntryId published as update_original also checks name conflict', async () => {
-      const existingEntryId = await db.table('entries').add({
-        userId: USER_A,
-        sourceDockItemId: 0,
+      const existingEntryId = await db.table('entries').add(makeEntry({
         title: 'Untitled',
         content: 'existing content',
-        type: 'note',
-        tags: [],
-        project: null,
-        actions: [],
-        createdAt: new Date(),
-        archivedAt: new Date(),
-      })
+      }))
 
       await upsertMindNode({
         userId: USER_A,
@@ -925,6 +901,164 @@ describe('draft repository', () => {
       const nodes = await db.table('mindNodes').where('userId').equals(USER_A).toArray()
       const docNodes = nodes.filter(n => n.nodeType === 'document')
       expect(docNodes.length).toBe(0)
+    })
+  })
+
+  describe('cross-workspace isolation', () => {
+    it('getDraft rejects draft from different workspace', async () => {
+      const id = await db.table('editorDrafts').add({
+        userId: USER_A,
+        workspaceId: OTHER_WORKSPACE,
+        draftKey: 0,
+        title: '其他workspace草稿',
+        content: '内容',
+        status: 'active',
+        sourceEntryId: null,
+        sourceType: null,
+        tags: [],
+        project: null,
+        collectionId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      const found = await getDraft(USER_A, id as number)
+      expect(found).toBeNull()
+    })
+
+    it('updateDraft rejects draft from different workspace', async () => {
+      const id = await db.table('editorDrafts').add({
+        userId: USER_A,
+        workspaceId: OTHER_WORKSPACE,
+        draftKey: 0,
+        title: '其他workspace草稿',
+        content: '内容',
+        status: 'active',
+        sourceEntryId: null,
+        sourceType: null,
+        tags: [],
+        project: null,
+        collectionId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      const result = await updateDraft(USER_A, id as number, { title: '尝试修改' })
+      expect(result).toBeNull()
+    })
+
+    it('publishDraftToDocument rejects draft from different workspace', async () => {
+      const id = await db.table('editorDrafts').add({
+        userId: USER_A,
+        workspaceId: OTHER_WORKSPACE,
+        draftKey: 0,
+        title: '其他workspace草稿',
+        content: '内容',
+        status: 'active',
+        sourceEntryId: null,
+        sourceType: null,
+        tags: [],
+        project: null,
+        collectionId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      const result = await publishDraftToDocument(USER_A, id as number)
+      expect(result.draft).toBeNull()
+      expect(result.entry).toBeNull()
+    })
+
+    it('discardDraft rejects draft from different workspace', async () => {
+      const id = await db.table('editorDrafts').add({
+        userId: USER_A,
+        workspaceId: OTHER_WORKSPACE,
+        draftKey: 0,
+        title: '其他workspace草稿',
+        content: '内容',
+        status: 'active',
+        sourceEntryId: null,
+        sourceType: null,
+        tags: [],
+        project: null,
+        collectionId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      const result = await discardDraft(USER_A, id as number)
+      expect(result).toBeNull()
+    })
+
+    it('publishDraftToDocument does not update entry from different workspace', async () => {
+      const entryId = await db.table('entries').add(makeEntry({
+        workspaceId: OTHER_WORKSPACE,
+        title: '其他workspace文档',
+        content: '原始内容',
+      }))
+
+      const draft = unwrap(await createDraft(USER_A, 'A的修改', 'A的内容', entryId as number, 'entry'))
+      const result = await publishDraftToDocument(USER_A, draft.id, 'update_original')
+
+      const entry = unwrap(result.entry)
+      expect(entry.id).not.toBe(entryId as number)
+
+      const originalEntry = await db.table('entries').get(entryId as number)
+      expect((originalEntry as Record<string, unknown>).title).toBe('其他workspace文档')
+      expect((originalEntry as Record<string, unknown>).content).toBe('原始内容')
+    })
+
+    it('discardDraft delete_all does not archive entry from different workspace', async () => {
+      const entryId = await db.table('entries').add(makeEntry({
+        workspaceId: OTHER_WORKSPACE,
+        title: '其他workspace文档',
+        content: '原始内容',
+      }))
+
+      const draft = unwrap(await createDraft(USER_A, 'A的修改', 'A的内容', entryId as number, 'entry'))
+      await discardDraft(USER_A, draft.id, 'delete_all')
+
+      const otherEntry = await db.table('entries').get(entryId as number)
+      expect(otherEntry).not.toBeUndefined()
+      expect((otherEntry as Record<string, unknown>).title).toBe('其他workspace文档')
+    })
+  })
+
+  describe('product path does not trigger irreversible delete', () => {
+    it('discardDraft delete_all archives entry instead of deleting', async () => {
+      const entryId = await db.table('entries').add(makeEntry({
+        title: '原始文档',
+        content: '原始内容',
+      }))
+
+      const draft = unwrap(await createDraft(USER_A, '修改后标题', '修改后内容', entryId as number, 'entry'))
+      await discardDraft(USER_A, draft.id, 'delete_all')
+
+      const entry = await db.table('entries').get(entryId as number)
+      expect(entry).not.toBeUndefined()
+    })
+
+    it('discardDraft delete_all archives MindNode instead of deleting', async () => {
+      const entryId = await db.table('entries').add(makeEntry({
+        title: '原始文档',
+        content: '原始内容',
+      }))
+
+      await upsertMindNode({
+        userId: USER_A,
+        nodeType: 'document',
+        label: '原始文档',
+        documentId: entryId as number,
+        state: 'anchored',
+        metadata: { sourceType: 'document', entryId },
+      })
+
+      const draft = unwrap(await createDraft(USER_A, '修改后标题', '修改后内容', entryId as number, 'entry'))
+      await discardDraft(USER_A, draft.id, 'delete_all')
+
+      const node = await db.table('mindNodes')
+        .where('[userId+workspaceId]')
+        .equals([USER_A, DEFAULT_WORKSPACE_ID])
+        .and(n => n.documentId === entryId && n.metadata?.sourceType === 'document')
+        .first()
+      expect(node).not.toBeUndefined()
+      expect(node?.state).toBe('archived')
     })
   })
 })

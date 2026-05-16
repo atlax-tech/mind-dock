@@ -97,7 +97,7 @@ describe('Mind Graph CRUD', () => {
 
     it('deletes a node', async () => {
       const node = await upsertMindNode({ userId: USER, nodeType: 'tag', label: 'test' })
-      const deleted = await deleteMindNode(USER, node.id)
+      const deleted = await deleteMindNode(USER, node.id, { confirmed: true })
       expect(deleted).toBe(true)
 
       const fetched = await getMindNode(USER, node.id)
@@ -105,7 +105,7 @@ describe('Mind Graph CRUD', () => {
     })
 
     it('returns false when deleting non-existent node', async () => {
-      const deleted = await deleteMindNode(USER, 'nonexistent')
+      const deleted = await deleteMindNode(USER, 'nonexistent', { confirmed: true })
       expect(deleted).toBe(false)
     })
 
@@ -282,7 +282,7 @@ describe('Mind Graph CRUD', () => {
       expect(edge).not.toBeNull()
       if (!edge) return
 
-      const deleted = await deleteMindEdge(USER, edge.id)
+      const deleted = await deleteMindEdge(USER, edge.id, { confirmed: true })
       expect(deleted).toBe(true)
 
       const fetched = await getMindEdge(USER, edge.id)

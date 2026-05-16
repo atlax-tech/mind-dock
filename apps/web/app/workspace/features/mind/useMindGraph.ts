@@ -7,7 +7,7 @@ import {
   updateMindNodePosition,
   upsertMindEdge,
   upsertMindNode,
-  deleteMindEdge,
+  removeMindEdge,
   forceDeleteBaselineEdge,
   getMindEdge,
   archiveMindNode,
@@ -200,7 +200,7 @@ export function useMindGraph(userId: string) {
     const targetNodeId = edge.targetNodeId
 
     setEdges((prev) => prev.filter((e) => e.id !== edgeId))
-    await deleteMindEdge(userId, edgeId)
+    await removeMindEdge(userId, edgeId)
     emit({ type: 'mind_edge_deleted', edgeId })
 
     await recordUserBehaviorEvent({
@@ -292,7 +292,7 @@ export function useMindGraph(userId: string) {
           await forceDeleteBaselineEdge(userId, oldEdge.id)
           setEdges(prev => prev.filter(e => e.id !== oldEdge.id))
         } else {
-          await deleteMindEdge(userId, oldEdge.id)
+          await removeMindEdge(userId, oldEdge.id)
           setEdges(prev => prev.filter(e => e.id !== oldEdge.id))
           emit({ type: 'mind_edge_deleted', edgeId: oldEdge.id })
         }
@@ -425,7 +425,7 @@ export function useMindGraph(userId: string) {
         await forceDeleteBaselineEdge(userId, oldEdge.id)
         setEdges(prev => prev.filter(e => e.id !== oldEdge.id))
       } else {
-        await deleteMindEdge(userId, oldEdge.id)
+        await removeMindEdge(userId, oldEdge.id)
         setEdges(prev => prev.filter(e => e.id !== oldEdge.id))
         emit({ type: 'mind_edge_deleted', edgeId: oldEdge.id })
       }

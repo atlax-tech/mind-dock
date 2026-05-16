@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { db } from '@/lib/db'
+import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
 import {
   createDockItem,
   suggestItem,
@@ -237,6 +238,7 @@ describe('Documents metrics', () => {
       actions: [],
       createdAt: new Date(),
       archivedAt: null,
+      workspaceId: DEFAULT_WORKSPACE_ID,
     })
 
     const report = await getLocalHealthReport(USER_A)
@@ -579,8 +581,8 @@ describe('Signals and suggestions', () => {
   })
 
   it('generates duplicate tag signal when there are duplicate tags', async () => {
-    await db.table('tags').add({ id: `${USER_A}_tag_react_1`, userId: USER_A, name: 'React', createdAt: new Date(), updatedAt: new Date() })
-    await db.table('tags').add({ id: `${USER_A}_tag_react_2`, userId: USER_A, name: 'react', createdAt: new Date(), updatedAt: new Date() })
+    await db.table('tags').add({ id: `${USER_A}_tag_react_1`, userId: USER_A, name: 'React', createdAt: new Date(), updatedAt: new Date(), workspaceId: DEFAULT_WORKSPACE_ID })
+    await db.table('tags').add({ id: `${USER_A}_tag_react_2`, userId: USER_A, name: 'react', createdAt: new Date(), updatedAt: new Date(), workspaceId: DEFAULT_WORKSPACE_ID })
 
     const report = await getLocalHealthReport(USER_A)
     const signal = report.signals.find(s => s.type === 'duplicate_tags')
@@ -600,6 +602,7 @@ describe('Signals and suggestions', () => {
       actions: [],
       createdAt: new Date(),
       archivedAt: null,
+      workspaceId: DEFAULT_WORKSPACE_ID,
     })
 
     const report = await getLocalHealthReport(USER_A)
@@ -700,14 +703,14 @@ describe('Collection distribution', () => {
   })
 
   it('computes collection distribution based on entries', async () => {
-    await db.table('collections').add({ id: 'col_1', userId: USER_A, name: 'Research', collectionType: 'tag', createdAt: new Date(), updatedAt: new Date() })
+    await db.table('collections').add({ id: 'col_1', userId: USER_A, name: 'Research', collectionType: 'tag', createdAt: new Date(), updatedAt: new Date(), workspaceId: DEFAULT_WORKSPACE_ID })
     await db.table('entries').add({
       userId: USER_A, sourceDockItemId: 0, title: 'Doc1', content: 'c', type: 'note',
-      tags: ['Research'], project: null, actions: [], createdAt: new Date(), archivedAt: null,
+      tags: ['Research'], project: null, actions: [], createdAt: new Date(), archivedAt: null, workspaceId: DEFAULT_WORKSPACE_ID,
     })
     await db.table('entries').add({
       userId: USER_A, sourceDockItemId: 0, title: 'Doc2', content: 'c', type: 'note',
-      tags: ['Research'], project: null, actions: [], createdAt: new Date(), archivedAt: null,
+      tags: ['Research'], project: null, actions: [], createdAt: new Date(), archivedAt: null, workspaceId: DEFAULT_WORKSPACE_ID,
     })
 
     const report = await getLocalHealthReport(USER_A)
@@ -843,18 +846,18 @@ describe('Collection distribution by type', () => {
   afterEach(() => cleanAll())
 
   it('project collection counts entries by entry.project', async () => {
-    await db.table('collections').add({ id: 'col_proj', userId: USER_A, name: 'MindDock', collectionType: 'project', createdAt: new Date(), updatedAt: new Date() })
+    await db.table('collections').add({ id: 'col_proj', userId: USER_A, name: 'MindDock', collectionType: 'project', createdAt: new Date(), updatedAt: new Date(), workspaceId: DEFAULT_WORKSPACE_ID })
     await db.table('entries').add({
       userId: USER_A, sourceDockItemId: 0, title: 'Doc1', content: 'c', type: 'note',
-      tags: [], project: 'MindDock', actions: [], createdAt: new Date(), archivedAt: null,
+      tags: [], project: 'MindDock', actions: [], createdAt: new Date(), archivedAt: null, workspaceId: DEFAULT_WORKSPACE_ID,
     })
     await db.table('entries').add({
       userId: USER_A, sourceDockItemId: 0, title: 'Doc2', content: 'c', type: 'note',
-      tags: [], project: 'MindDock', actions: [], createdAt: new Date(), archivedAt: null,
+      tags: [], project: 'MindDock', actions: [], createdAt: new Date(), archivedAt: null, workspaceId: DEFAULT_WORKSPACE_ID,
     })
     await db.table('entries').add({
       userId: USER_A, sourceDockItemId: 0, title: 'Doc3', content: 'c', type: 'note',
-      tags: [], project: 'Other', actions: [], createdAt: new Date(), archivedAt: null,
+      tags: [], project: 'Other', actions: [], createdAt: new Date(), archivedAt: null, workspaceId: DEFAULT_WORKSPACE_ID,
     })
 
     const report = await getLocalHealthReport(USER_A)
@@ -864,14 +867,14 @@ describe('Collection distribution by type', () => {
   })
 
   it('tag collection counts entries by entry.tags', async () => {
-    await db.table('collections').add({ id: 'col_tag', userId: USER_A, name: 'Research', collectionType: 'tag', createdAt: new Date(), updatedAt: new Date() })
+    await db.table('collections').add({ id: 'col_tag', userId: USER_A, name: 'Research', collectionType: 'tag', createdAt: new Date(), updatedAt: new Date(), workspaceId: DEFAULT_WORKSPACE_ID })
     await db.table('entries').add({
       userId: USER_A, sourceDockItemId: 0, title: 'Doc1', content: 'c', type: 'note',
-      tags: ['Research'], project: null, actions: [], createdAt: new Date(), archivedAt: null,
+      tags: ['Research'], project: null, actions: [], createdAt: new Date(), archivedAt: null, workspaceId: DEFAULT_WORKSPACE_ID,
     })
     await db.table('entries').add({
       userId: USER_A, sourceDockItemId: 0, title: 'Doc2', content: 'c', type: 'note',
-      tags: ['Research', 'Other'], project: null, actions: [], createdAt: new Date(), archivedAt: null,
+      tags: ['Research', 'Other'], project: null, actions: [], createdAt: new Date(), archivedAt: null, workspaceId: DEFAULT_WORKSPACE_ID,
     })
 
     const report = await getLocalHealthReport(USER_A)
@@ -881,7 +884,7 @@ describe('Collection distribution by type', () => {
   })
 
   it('project collection with no matching entries has count 0', async () => {
-    await db.table('collections').add({ id: 'col_empty', userId: USER_A, name: 'EmptyProject', collectionType: 'project', createdAt: new Date(), updatedAt: new Date() })
+    await db.table('collections').add({ id: 'col_empty', userId: USER_A, name: 'EmptyProject', collectionType: 'project', createdAt: new Date(), updatedAt: new Date(), workspaceId: DEFAULT_WORKSPACE_ID })
 
     const report = await getLocalHealthReport(USER_A)
     const emptyCol = report.collectionDistribution.find(c => c.name === 'EmptyProject')

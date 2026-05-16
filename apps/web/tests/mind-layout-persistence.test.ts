@@ -263,7 +263,7 @@ describe('MIND-REAL-003: Root/Parent Baseline Connection', () => {
     const edgesBeforeDelete = await listMindEdges(USER)
     expect(edgesBeforeDelete).toHaveLength(1)
 
-    const deleted = await deleteMindEdge(USER, baselineEdge.id)
+    const deleted = await deleteMindEdge(USER, baselineEdge.id, { confirmed: true })
     expect(deleted).toBe(false)
 
     const edgesAfterDelete = await listMindEdges(USER)
@@ -320,7 +320,7 @@ describe('MIND-REAL-003: Root/Parent Baseline Connection', () => {
     expect(semanticEdge).not.toBeNull()
     if (!semanticEdge) return
 
-    await deleteMindEdge(USER, semanticEdge.id)
+    await deleteMindEdge(USER, semanticEdge.id, { confirmed: true })
 
     const edgesAfterDelete = await listMindEdges(USER)
     expect(edgesAfterDelete).toHaveLength(1)

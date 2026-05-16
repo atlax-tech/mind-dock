@@ -1,3 +1,6 @@
+import { appEventsTable } from './db'
+import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
+
 export type AppEvent =
   | { type: 'mode_switched'; from: AppMode; to: AppMode }
   | { type: 'capture_created'; sourceType: SourceType; dockItemId: number }
@@ -35,22 +38,8 @@ export type EventListener = (event: AppEvent) => void
 
 const listeners: EventListener[] = []
 
-let memoryLog: PersistedEvent[] | null = null
-
-function getMemoryLog(userId: string): PersistedEvent[] {
-  if (memoryLog === null) {
-    memoryLog = []
-  }
-  return memoryLog.filter(e => e.userId === userId)
-}
-
-function hasLocalStorage(): boolean {
-  try {
-    return typeof window !== 'undefined' && typeof localStorage !== 'undefined'
-  } catch {
-    return false
-  }
-}
+const memoryCache = new Map<string, PersistedEvent[]>()
+const hydratedUsers = new Set<string>()
 
 export function subscribe(listener: EventListener): () => void {
   listeners.push(listener)
@@ -66,61 +55,118 @@ export function emit(event: AppEvent): void {
   }
 }
 
-function getEventLogKey(userId: string) {
-  return `atlax_event_log_${userId}`
-}
-
-function loadEventLog(userId: string): PersistedEvent[] {
-  if (hasLocalStorage()) {
-    try {
-      const raw = localStorage.getItem(getEventLogKey(userId))
-      if (raw) return JSON.parse(raw) as PersistedEvent[]
-    } catch {
-      // fall through to memory
-    }
-  }
-  return getMemoryLog(userId)
-}
-
-function saveEventLog(userId: string, events: PersistedEvent[]): void {
-  const trimmed = events.slice(-500)
-  if (hasLocalStorage()) {
-    try {
-      localStorage.setItem(getEventLogKey(userId), JSON.stringify(trimmed))
-      return
-    } catch {
-      // fall through to memory
-    }
-  }
-  const otherEvents = (memoryLog || []).filter(e => e.userId !== userId)
-  memoryLog = [...otherEvents, ...trimmed]
-}
-
 export function recordEvent(userId: string, event: AppEvent): void {
   emit(event)
   if (!userId) return
-  const log = loadEventLog(userId)
+
   const persisted: PersistedEvent = { ...event, _ts: Date.now(), userId }
-  log.push(persisted)
-  saveEventLog(userId, log)
+
+  const cache = memoryCache.get(userId) || []
+  cache.push(persisted)
+  if (cache.length > 500) cache.splice(0, cache.length - 500)
+  memoryCache.set(userId, cache)
+
+  appEventsTable.add({
+    userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
+    eventType: event.type,
+    payload: { ...event } as Record<string, unknown>,
+    _ts: persisted._ts,
+  }).catch(() => {})
 }
 
 export function getEventLog(userId: string): PersistedEvent[] {
   if (!userId) return []
-  return loadEventLog(userId)
+
+  const cached = memoryCache.get(userId)
+  if (cached) return cached
+
+  if (!hydratedUsers.has(userId)) {
+    hydratedUsers.add(userId)
+    hydrateFromIndexedDB(userId)
+  }
+
+  return memoryCache.get(userId) || []
+}
+
+async function hydrateFromIndexedDB(userId: string): Promise<void> {
+  try {
+    await migrateFromLocalStorage(userId)
+
+    const records = await appEventsTable
+      .where('[userId+workspaceId]')
+      .equals([userId, DEFAULT_WORKSPACE_ID])
+      .sortBy('_ts')
+
+    const events: PersistedEvent[] = records.map(r => ({
+      ...((r.payload || {}) as AppEvent),
+      _ts: r._ts,
+      userId: r.userId,
+    }))
+
+    const existing = memoryCache.get(userId) || []
+    const existingTsSet = new Set(existing.map(e => e._ts))
+    const newEvents = events.filter(e => !existingTsSet.has(e._ts))
+    const merged = [...existing, ...newEvents].sort((a, b) => a._ts - b._ts)
+    const trimmed = merged.slice(-500)
+    memoryCache.set(userId, trimmed)
+  } catch {}
 }
 
 export function clearEventLog(userId: string): void {
-  if (memoryLog !== null) {
-    memoryLog = memoryLog.filter(e => e.userId !== userId)
+  memoryCache.delete(userId)
+  hydratedUsers.delete(userId)
+
+  appEventsTable
+    .where('[userId+workspaceId]')
+    .equals([userId, DEFAULT_WORKSPACE_ID])
+    .delete()
+    .catch(() => {})
+}
+
+const MIGRATION_KEY_PREFIX = 'atlax_event_log_migrated_'
+
+async function migrateFromLocalStorage(userId: string): Promise<void> {
+  if (typeof window === 'undefined') return
+
+  const migrationKey = `${MIGRATION_KEY_PREFIX}${userId}`
+
+  try {
+    const migrated = localStorage.getItem(migrationKey)
+    if (migrated) return
+  } catch {
+    return
   }
-  if (hasLocalStorage()) {
-    try {
-      localStorage.removeItem(getEventLogKey(userId))
-    } catch {
-      // ignore
+
+  const oldKey = `atlax_event_log_${userId}`
+  let raw: string | null = null
+  try {
+    raw = localStorage.getItem(oldKey)
+  } catch {
+    return
+  }
+
+  if (!raw) {
+    try { localStorage.setItem(migrationKey, '1') } catch {}
+    return
+  }
+
+  try {
+    const oldEvents = JSON.parse(raw) as PersistedEvent[]
+    if (Array.isArray(oldEvents) && oldEvents.length > 0) {
+      const records = oldEvents.map(e => ({
+        userId: e.userId,
+        workspaceId: DEFAULT_WORKSPACE_ID,
+        eventType: e.type,
+        payload: { ...e } as Record<string, unknown>,
+        _ts: e._ts,
+      }))
+      await appEventsTable.bulkAdd(records)
     }
-  }
+
+    localStorage.setItem(migrationKey, '1')
+    localStorage.removeItem(oldKey)
+  } catch {}
 }
 
 export interface MetricsResult {
