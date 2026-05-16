@@ -22,6 +22,7 @@ export interface LocalTextFeatureSnapshot extends IntelligenceAuditFields {
   lengthMetrics: Record<string, number>
   structureHints: string[]
   stale: boolean
+  staleKey: 0 | 1
   expiredAt: string | null
 }
 
@@ -41,6 +42,7 @@ export interface SemanticFeatureSnapshot extends IntelligenceAuditFields {
   intent: string
   topics: string[]
   stale: boolean
+  staleKey: 0 | 1
   expiredAt: string | null
 }
 
@@ -141,5 +143,6 @@ export interface SearchIndexRecord extends IntelligenceAuditFields {
   semanticRef: string | null
   contentHash: string
   stale: boolean
+  staleKey: 0 | 1
   expiredAt: string | null
 }

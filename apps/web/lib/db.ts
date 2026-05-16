@@ -494,6 +494,7 @@ export interface LocalTextFeatureSnapshotRecord {
   confidence: number
   safetyLevel: string
   stale: boolean
+  staleKey: 0 | 1
   expiredAt: string | null
   createdAt: string
   updatedAt: string
@@ -524,6 +525,7 @@ export interface SemanticFeatureSnapshotRecord {
   confidence: number
   safetyLevel: string
   stale: boolean
+  staleKey: 0 | 1
   expiredAt: string | null
   createdAt: string
   updatedAt: string
@@ -695,6 +697,7 @@ export interface SearchIndexRecordRecord {
   semanticRef: string | null
   contentHash: string
   stale: boolean
+  staleKey: 0 | 1
   expiredAt: string | null
   source: string
   reason: string
@@ -1234,15 +1237,15 @@ db.version(26).stores({
 })
 
 db.version(27).stores({
-  localTextFeatureSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], [userId+workspaceId+stale], [userId+workspaceId+expiredAt]',
-  semanticFeatureSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], [userId+workspaceId+stale], [userId+workspaceId+expiredAt]',
+  localTextFeatureSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], [userId+workspaceId+staleKey], [userId+workspaceId+expiredAt]',
+  semanticFeatureSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], [userId+workspaceId+staleKey], [userId+workspaceId+expiredAt]',
   preferenceMemories: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+candidateType+candidateId]',
   healthSignals: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+status]',
   growthSignals: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+status]',
   maintenanceActions: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+status]',
   reviewSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+scope+reviewDate]',
   dailyBriefSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+briefDate]',
-  searchIndexRecords: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], [userId+workspaceId+stale], [userId+workspaceId+expiredAt]',
+  searchIndexRecords: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], [userId+workspaceId+staleKey], [userId+workspaceId+expiredAt]',
 })
 
 export { db }

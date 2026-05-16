@@ -18,10 +18,11 @@ import {
   makePreferenceMemoryId,
   makeReviewSnapshotId,
   makeDailyBriefSnapshotId,
-  makeHealthSignalId,
-  makeGrowthSignalId,
-  makeMaintenanceActionId,
 } from '@atlax/domain'
+
+function collisionSafeSuffix(): string {
+  return Math.random().toString(36).slice(2, 10)
+}
 
 export interface IntelligenceSummaryViewModel {
   targetType: string
@@ -55,7 +56,7 @@ export async function upsertLocalTextFeatureSnapshot(
   workspaceId: string = DEFAULT_WORKSPACE_ID,
 ): Promise<void> {
   const id = makeLocalTextFeatureSnapshotId(record.userId, workspaceId, record.targetType, record.targetId)
-  await db.localTextFeatureSnapshots.put({ ...record, id, workspaceId })
+  await db.localTextFeatureSnapshots.put({ ...record, id, workspaceId, staleKey: record.stale ? 1 : 0 as 0 | 1 })
 }
 
 export async function getLocalTextFeatureSnapshotByTarget(
@@ -95,7 +96,7 @@ export async function markLocalTextFeatureSnapshotStale(
     .equals([userId, workspaceId, targetType, targetId])
     .toArray()
   for (const record of results) {
-    if (record.id) await db.localTextFeatureSnapshots.update(record.id, { stale: true, updatedAt: new Date().toISOString() })
+    if (record.id) await db.localTextFeatureSnapshots.update(record.id, { stale: true, staleKey: 1 as const, updatedAt: new Date().toISOString() })
   }
 }
 
@@ -110,7 +111,7 @@ export async function markLocalTextFeatureSnapshotExpired(
     .equals([userId, workspaceId, targetType, targetId])
     .toArray()
   for (const record of results) {
-    if (record.id) await db.localTextFeatureSnapshots.update(record.id, { expiredAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
+    if (record.id) await db.localTextFeatureSnapshots.update(record.id, { expiredAt: new Date().toISOString(), staleKey: 1 as const, updatedAt: new Date().toISOString() })
   }
 }
 
@@ -119,7 +120,7 @@ export async function upsertSemanticFeatureSnapshot(
   workspaceId: string = DEFAULT_WORKSPACE_ID,
 ): Promise<void> {
   const id = makeSemanticFeatureSnapshotId(record.userId, workspaceId, record.targetType, record.targetId)
-  await db.semanticFeatureSnapshots.put({ ...record, id, workspaceId })
+  await db.semanticFeatureSnapshots.put({ ...record, id, workspaceId, staleKey: record.stale ? 1 : 0 as 0 | 1 })
 }
 
 export async function getSemanticFeatureSnapshotByTarget(
@@ -159,7 +160,7 @@ export async function markSemanticFeatureSnapshotStale(
     .equals([userId, workspaceId, targetType, targetId])
     .toArray()
   for (const record of results) {
-    if (record.id) await db.semanticFeatureSnapshots.update(record.id, { stale: true, updatedAt: new Date().toISOString() })
+    if (record.id) await db.semanticFeatureSnapshots.update(record.id, { stale: true, staleKey: 1 as const, updatedAt: new Date().toISOString() })
   }
 }
 
@@ -174,7 +175,7 @@ export async function markSemanticFeatureSnapshotExpired(
     .equals([userId, workspaceId, targetType, targetId])
     .toArray()
   for (const record of results) {
-    if (record.id) await db.semanticFeatureSnapshots.update(record.id, { expiredAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
+    if (record.id) await db.semanticFeatureSnapshots.update(record.id, { expiredAt: new Date().toISOString(), staleKey: 1 as const, updatedAt: new Date().toISOString() })
   }
 }
 
@@ -201,7 +202,7 @@ export async function upsertHealthSignal(
   record: Omit<HealthSignal, 'id'>,
   workspaceId: string = DEFAULT_WORKSPACE_ID,
 ): Promise<void> {
-  const id = makeHealthSignalId(record.userId, workspaceId, record.signalType, record.targetType, record.targetId, Date.now())
+  const id = `${record.userId}_hs_${workspaceId}_${record.signalType}_${record.targetType}_${record.targetId}_${Date.now()}_${collisionSafeSuffix()}`
   await db.healthSignals.add({ ...record, id, workspaceId })
 }
 
@@ -220,7 +221,7 @@ export async function upsertGrowthSignal(
   record: Omit<GrowthSignal, 'id'>,
   workspaceId: string = DEFAULT_WORKSPACE_ID,
 ): Promise<void> {
-  const id = makeGrowthSignalId(record.userId, workspaceId, record.signalType, record.targetType, record.targetId, Date.now())
+  const id = `${record.userId}_gs_${workspaceId}_${record.signalType}_${record.targetType}_${record.targetId}_${Date.now()}_${collisionSafeSuffix()}`
   await db.growthSignals.add({ ...record, id, workspaceId })
 }
 
@@ -239,7 +240,7 @@ export async function createMaintenanceAction(
   record: Omit<MaintenanceAction, 'id'>,
   workspaceId: string = DEFAULT_WORKSPACE_ID,
 ): Promise<void> {
-  const id = makeMaintenanceActionId(record.userId, workspaceId, record.actionType, record.targetType, record.targetId, Date.now())
+  const id = `${record.userId}_ma_${workspaceId}_${record.actionType}_${record.targetType}_${record.targetId}_${Date.now()}_${collisionSafeSuffix()}`
   await db.maintenanceActions.add({ ...record, id, workspaceId })
 }
 
@@ -311,7 +312,7 @@ export async function upsertSearchIndexRecord(
   workspaceId: string = DEFAULT_WORKSPACE_ID,
 ): Promise<void> {
   const id = makeSearchIndexRecordId(record.userId, workspaceId, record.targetType, record.targetId)
-  await db.searchIndexRecords.put({ ...record, id, workspaceId })
+  await db.searchIndexRecords.put({ ...record, id, workspaceId, staleKey: record.stale ? 1 : 0 as 0 | 1 })
 }
 
 export async function searchIndexRecords(
@@ -343,7 +344,7 @@ export async function markSearchIndexRecordStale(
     .equals([userId, workspaceId, targetType, targetId])
     .toArray()
   for (const record of results) {
-    if (record.id) await db.searchIndexRecords.update(record.id, { stale: true, updatedAt: new Date().toISOString() })
+    if (record.id) await db.searchIndexRecords.update(record.id, { stale: true, staleKey: 1 as const, updatedAt: new Date().toISOString() })
   }
 }
 
@@ -358,7 +359,7 @@ export async function markSearchIndexRecordExpired(
     .equals([userId, workspaceId, targetType, targetId])
     .toArray()
   for (const record of results) {
-    if (record.id) await db.searchIndexRecords.update(record.id, { expiredAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
+    if (record.id) await db.searchIndexRecords.update(record.id, { expiredAt: new Date().toISOString(), staleKey: 1 as const, updatedAt: new Date().toISOString() })
   }
 }
 

@@ -76,6 +76,7 @@ function makeLocalTextRecord(userId: string, workspaceId: string, targetType: st
     confidence: 0.9,
     safetyLevel: 'safe',
     stale: false,
+    staleKey: 0 as const,
     expiredAt: null,
     createdAt: nowISO(),
     updatedAt: nowISO(),
@@ -103,6 +104,7 @@ function makeSemanticRecord(userId: string, workspaceId: string, targetType: str
     confidence: 0.8,
     safetyLevel: 'safe',
     stale: false,
+    staleKey: 0 as const,
     expiredAt: null,
     createdAt: nowISO(),
     updatedAt: nowISO(),
@@ -254,6 +256,7 @@ function makeSearchIndexRecord(userId: string, workspaceId: string, targetType: 
     semanticRef: null,
     contentHash: 'hash123',
     stale: false,
+    staleKey: 0 as const,
     expiredAt: null,
     source: 'local',
     reason: 'test',
@@ -287,7 +290,7 @@ describe('Intelligence Store Schema', () => {
     expect(indexNames).toContain(JSON.stringify(['userId', 'workspaceId']))
     expect(indexNames).toContain(JSON.stringify(['userId', 'workspaceId', 'targetType', 'targetId']))
     expect(indexNames).toContain(JSON.stringify(['userId', 'workspaceId', 'targetType', 'targetId', 'contentHash']))
-    expect(indexNames).toContain(JSON.stringify(['userId', 'workspaceId', 'stale']))
+    expect(indexNames).toContain(JSON.stringify(['userId', 'workspaceId', 'staleKey']))
     expect(indexNames).toContain(JSON.stringify(['userId', 'workspaceId', 'expiredAt']))
   })
 
@@ -545,7 +548,7 @@ describe('Intelligence Store Workspace Isolation', () => {
     expect(resultB?.workspaceId).toBe(WS_OTHER)
   })
 
-  it('should isolate stale/expired queries by workspace', async () => {
+  it('should isolate stale/expired queries by workspace using staleKey index', async () => {
     const recordA = makeLocalTextRecord(USER_A, WS_DEFAULT, 'dockItem', '1')
     const recordB = makeLocalTextRecord(USER_A, WS_OTHER, 'dockItem', '2')
     await upsertLocalTextFeatureSnapshot(recordA, WS_DEFAULT)
@@ -554,19 +557,12 @@ describe('Intelligence Store Workspace Isolation', () => {
     await markLocalTextFeatureSnapshotStale(USER_A, 'dockItem', '1', WS_DEFAULT)
 
     const staleInDefault = await db.table('localTextFeatureSnapshots')
-      .where('[userId+workspaceId+stale]').equals([USER_A, WS_DEFAULT, 1]).toArray()
+      .where('[userId+workspaceId+staleKey]').equals([USER_A, WS_DEFAULT, 1]).toArray()
+    const staleInOther = await db.table('localTextFeatureSnapshots')
+      .where('[userId+workspaceId+staleKey]').equals([USER_A, WS_OTHER, 1]).toArray()
 
-    expect(staleInDefault).toHaveLength(0)
-
-    const allInDefault = await db.table('localTextFeatureSnapshots')
-      .where('[userId+workspaceId]').equals([USER_A, WS_DEFAULT]).toArray()
-    const staleRecords = allInDefault.filter(r => r.stale === true)
-    expect(staleRecords).toHaveLength(1)
-
-    const allInOther = await db.table('localTextFeatureSnapshots')
-      .where('[userId+workspaceId]').equals([USER_A, WS_OTHER]).toArray()
-    const staleInOtherRecords = allInOther.filter(r => r.stale === true)
-    expect(staleInOtherRecords).toHaveLength(0)
+    expect(staleInDefault).toHaveLength(1)
+    expect(staleInOther).toHaveLength(0)
   })
 })
 
@@ -621,5 +617,57 @@ describe('Intelligence Store Selectors', () => {
     const vm = await getSearchIndexViewModel(USER_A, 'nonexistent')
     expect(vm.results).toEqual([])
     expect(vm.total).toBe(0)
+  })
+})
+
+describe('Intelligence Store Multi-Instance ID Collision Safety', () => {
+  afterEach(cleanAll)
+
+  it('should create two HealthSignals with same target even when Date.now is mocked to same value', async () => {
+    const originalDateNow = Date.now
+    Date.now = () => 1000
+
+    try {
+      const record1 = makeHealthSignalRecord(USER_A, WS_DEFAULT, 'stale', 'dockItem', '1')
+      const record2 = makeHealthSignalRecord(USER_A, WS_DEFAULT, 'orphan', 'dockItem', '1')
+      await upsertHealthSignal(record1, WS_DEFAULT)
+      await upsertHealthSignal(record2, WS_DEFAULT)
+      const results = await listHealthSignals(USER_A, WS_DEFAULT)
+      expect(results).toHaveLength(2)
+    } finally {
+      Date.now = originalDateNow
+    }
+  })
+
+  it('should create two GrowthSignals with same target even when Date.now is mocked to same value', async () => {
+    const originalDateNow = Date.now
+    Date.now = () => 1000
+
+    try {
+      const record1 = makeGrowthSignalRecord(USER_A, WS_DEFAULT, 'opportunity', 'dockItem', '1')
+      const record2 = makeGrowthSignalRecord(USER_A, WS_DEFAULT, 'trend', 'dockItem', '1')
+      await upsertGrowthSignal(record1, WS_DEFAULT)
+      await upsertGrowthSignal(record2, WS_DEFAULT)
+      const results = await listGrowthSignals(USER_A, WS_DEFAULT)
+      expect(results).toHaveLength(2)
+    } finally {
+      Date.now = originalDateNow
+    }
+  })
+
+  it('should create two MaintenanceActions with same target even when Date.now is mocked to same value', async () => {
+    const originalDateNow = Date.now
+    Date.now = () => 1000
+
+    try {
+      const record1 = makeMaintenanceActionRecord(USER_A, WS_DEFAULT, 'archive', 'dockItem', '1')
+      const record2 = makeMaintenanceActionRecord(USER_A, WS_DEFAULT, 'merge', 'dockItem', '1')
+      await createMaintenanceAction(record1, WS_DEFAULT)
+      await createMaintenanceAction(record2, WS_DEFAULT)
+      const results = await listMaintenanceActions(USER_A, WS_DEFAULT)
+      expect(results).toHaveLength(2)
+    } finally {
+      Date.now = originalDateNow
+    }
   })
 })
