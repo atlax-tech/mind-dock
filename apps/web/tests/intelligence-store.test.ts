@@ -671,3 +671,183 @@ describe('Intelligence Store Multi-Instance ID Collision Safety', () => {
     }
   })
 })
+
+describe('Intelligence Store v28 Migration — staleKey backfill', () => {
+  afterEach(cleanAll)
+
+  it('should backfill staleKey for existing LocalTextFeatureSnapshot records without staleKey', async () => {
+    await db.table('localTextFeatureSnapshots').add({
+      id: 'legacy_ltfs_1',
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      targetType: 'dockItem',
+      targetId: '1',
+      contentHash: 'hash_legacy',
+      language: 'en',
+      keywords: [],
+      entities: [],
+      compactText: 'legacy',
+      lengthMetrics: {},
+      structureHints: [],
+      source: 'local',
+      reason: 'legacy',
+      evidence: 'none',
+      confidence: 0.5,
+      safetyLevel: 'safe',
+      stale: true,
+      expiredAt: null,
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+    })
+
+    const record = await db.table('localTextFeatureSnapshots').get('legacy_ltfs_1')
+    expect(record.stale).toBe(true)
+    if (record.staleKey === undefined) {
+      await db.table('localTextFeatureSnapshots').update('legacy_ltfs_1', { staleKey: record.stale ? 1 : 0 })
+    }
+
+    const updated = await db.table('localTextFeatureSnapshots').get('legacy_ltfs_1')
+    expect(updated.staleKey).toBe(1)
+
+    const staleRecords = await db.table('localTextFeatureSnapshots')
+      .where('[userId+workspaceId+staleKey]').equals([USER_A, WS_DEFAULT, 1]).toArray()
+    expect(staleRecords).toHaveLength(1)
+  })
+
+  it('should backfill staleKey for existing SemanticFeatureSnapshot records', async () => {
+    await db.table('semanticFeatureSnapshots').add({
+      id: 'legacy_sfs_1',
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      targetType: 'dockItem',
+      targetId: '1',
+      contentHash: 'hash_legacy',
+      modelProvider: 'test',
+      modelName: 'test',
+      modelVersion: '1.0',
+      embeddingDim: 768,
+      embeddingRef: 'ref://legacy',
+      semanticSummary: 'legacy',
+      intent: 'inform',
+      topics: [],
+      source: 'local',
+      reason: 'legacy',
+      evidence: 'none',
+      confidence: 0.5,
+      safetyLevel: 'safe',
+      stale: true,
+      expiredAt: null,
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+    })
+
+    const record = await db.table('semanticFeatureSnapshots').get('legacy_sfs_1')
+    if (record.staleKey === undefined) {
+      await db.table('semanticFeatureSnapshots').update('legacy_sfs_1', { staleKey: record.stale ? 1 : 0 })
+    }
+
+    const updated = await db.table('semanticFeatureSnapshots').get('legacy_sfs_1')
+    expect(updated.staleKey).toBe(1)
+
+    const staleRecords = await db.table('semanticFeatureSnapshots')
+      .where('[userId+workspaceId+staleKey]').equals([USER_A, WS_DEFAULT, 1]).toArray()
+    expect(staleRecords).toHaveLength(1)
+  })
+
+  it('should backfill staleKey for existing SearchIndexRecord records', async () => {
+    await db.table('searchIndexRecords').add({
+      id: 'legacy_sir_1',
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      targetType: 'dockItem',
+      targetId: '1',
+      title: 'Legacy',
+      excerpt: 'legacy record',
+      keywordTokens: ['legacy'],
+      semanticRef: null,
+      contentHash: 'hash_legacy',
+      stale: false,
+      expiredAt: null,
+      source: 'local',
+      reason: 'legacy',
+      evidence: 'none',
+      confidence: 0.5,
+      safetyLevel: 'safe',
+      updatedAt: nowISO(),
+      createdAt: nowISO(),
+    })
+
+    const record = await db.table('searchIndexRecords').get('legacy_sir_1')
+    if (record.staleKey === undefined) {
+      await db.table('searchIndexRecords').update('legacy_sir_1', { staleKey: record.stale ? 1 : 0 })
+    }
+
+    const updated = await db.table('searchIndexRecords').get('legacy_sir_1')
+    expect(updated.staleKey).toBe(0)
+
+    const activeRecords = await db.table('searchIndexRecords')
+      .where('[userId+workspaceId+staleKey]').equals([USER_A, WS_DEFAULT, 0]).toArray()
+    expect(activeRecords).toHaveLength(1)
+  })
+
+  it('should isolate staleKey index queries by workspace across all snapshot tables', async () => {
+    await db.table('localTextFeatureSnapshots').add({
+      id: 'ws_a_ltfs',
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      targetType: 'dockItem',
+      targetId: '1',
+      contentHash: 'hash_a',
+      language: 'en',
+      keywords: [],
+      entities: [],
+      compactText: 'a',
+      lengthMetrics: {},
+      structureHints: [],
+      source: 'local',
+      reason: 'test',
+      evidence: 'none',
+      confidence: 0.9,
+      safetyLevel: 'safe',
+      stale: true,
+      staleKey: 1,
+      expiredAt: null,
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+    })
+    await db.table('localTextFeatureSnapshots').add({
+      id: 'ws_b_ltfs',
+      userId: USER_A,
+      workspaceId: WS_OTHER,
+      targetType: 'dockItem',
+      targetId: '2',
+      contentHash: 'hash_b',
+      language: 'en',
+      keywords: [],
+      entities: [],
+      compactText: 'b',
+      lengthMetrics: {},
+      structureHints: [],
+      source: 'local',
+      reason: 'test',
+      evidence: 'none',
+      confidence: 0.9,
+      safetyLevel: 'safe',
+      stale: true,
+      staleKey: 1,
+      expiredAt: null,
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+    })
+
+    const staleInDefault = await db.table('localTextFeatureSnapshots')
+      .where('[userId+workspaceId+staleKey]').equals([USER_A, WS_DEFAULT, 1]).toArray()
+    const staleInOther = await db.table('localTextFeatureSnapshots')
+      .where('[userId+workspaceId+staleKey]').equals([USER_A, WS_OTHER, 1]).toArray()
+
+    expect(staleInDefault).toHaveLength(1)
+    expect(staleInDefault[0].workspaceId).toBe(WS_DEFAULT)
+    expect(staleInOther).toHaveLength(1)
+    expect(staleInOther[0].workspaceId).toBe(WS_OTHER)
+  })
+})

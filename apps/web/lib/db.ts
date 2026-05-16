@@ -1237,6 +1237,18 @@ db.version(26).stores({
 })
 
 db.version(27).stores({
+  localTextFeatureSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], [userId+workspaceId+stale], [userId+workspaceId+expiredAt]',
+  semanticFeatureSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], [userId+workspaceId+stale], [userId+workspaceId+expiredAt]',
+  preferenceMemories: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+candidateType+candidateId]',
+  healthSignals: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+status]',
+  growthSignals: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+status]',
+  maintenanceActions: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+status]',
+  reviewSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+scope+reviewDate]',
+  dailyBriefSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+briefDate]',
+  searchIndexRecords: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], [userId+workspaceId+stale], [userId+workspaceId+expiredAt]',
+})
+
+db.version(28).stores({
   localTextFeatureSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], [userId+workspaceId+staleKey], [userId+workspaceId+expiredAt]',
   semanticFeatureSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], [userId+workspaceId+staleKey], [userId+workspaceId+expiredAt]',
   preferenceMemories: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+candidateType+candidateId]',
@@ -1246,6 +1258,16 @@ db.version(27).stores({
   reviewSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+scope+reviewDate]',
   dailyBriefSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+briefDate]',
   searchIndexRecords: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], [userId+workspaceId+staleKey], [userId+workspaceId+expiredAt]',
+}).upgrade(tx => {
+  const tables = ['localTextFeatureSnapshots', 'semanticFeatureSnapshots', 'searchIndexRecords']
+  return Promise.all(tables.map(tableName => {
+    const table = tx.table(tableName)
+    return table.toCollection().modify(record => {
+      if (record.staleKey === undefined) {
+        record.staleKey = record.stale ? 1 : 0
+      }
+    })
+  }))
 })
 
 export { db }
