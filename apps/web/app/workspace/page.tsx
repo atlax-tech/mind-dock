@@ -37,6 +37,8 @@ import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
 import type { ModelRuntimeStatus, SemanticFeatureSnapshot } from '@atlax/domain'
 import { probeAndSyncStatus } from '@/lib/localModelRuntimeService'
 import { startJobConsumer, stopJobConsumer } from '@/lib/jobConsumer'
+import { reactivatePendingModelJobs, enqueue } from '@/lib/backgroundJobQueue'
+import { computeContentHash } from '@/lib/contentHash'
 import { db } from '@/lib/db'
 import {
   Home,
@@ -3176,6 +3178,28 @@ const SettingsView = ({ onToast }: { onToast: (msg: string) => void }) => {
                       if (!user) return
                       await setEmbeddingEnabledPref(user.id, true, DEFAULT_WORKSPACE_ID)
                       setEmbeddingEnabled(true)
+                      reactivatePendingModelJobs(user.id, { workspaceId: DEFAULT_WORKSPACE_ID }).catch(() => {})
+                      try {
+                        const dockItems = await db.dockItems
+                          .where('[userId+workspaceId]')
+                          .equals([user.id, DEFAULT_WORKSPACE_ID])
+                          .limit(20)
+                          .toArray()
+                        for (const item of dockItems) {
+                          if (!item.rawText) continue
+                          const existingSnap = await db.semanticFeatureSnapshots
+                            .where('[userId+workspaceId]')
+                            .equals([user.id, DEFAULT_WORKSPACE_ID])
+                            .toArray()
+                          const hasSnap = existingSnap.some(s => s.targetId === String(item.id) && s.targetType === 'dockItem')
+                          if (hasSnap) continue
+                          const contentHash = computeContentHash(item.rawText)
+                          await enqueue(user.id, 'recompute_semantic_features', 'dockItem', String(item.id), contentHash, { workspaceId: DEFAULT_WORKSPACE_ID })
+                        }
+                      } catch (err) {
+                        console.error('[Settings] backfill error:', err instanceof Error ? err.message : String(err))
+                      }
+                      refreshModelActivity(user.id)
                     }}
                     className={`px-2 py-1 text-[10px] rounded-md border transition-all duration-200 ${runtimeStatus?.embeddingStatus === 'available' && !embeddingEnabled ? 'bg-[#86d7ff]/10 border-[#86d7ff]/30 text-[#86d7ff] hover:bg-[#86d7ff]/20' : 'bg-white/5 border-white/10 text-[#899298] opacity-40 cursor-not-allowed'}`}
                   >

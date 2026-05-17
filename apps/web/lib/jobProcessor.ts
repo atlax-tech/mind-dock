@@ -1,7 +1,7 @@
 import type { JobStatus } from '@atlax/domain'
 import type { BackgroundJobRecord } from '@/lib/db'
 import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
-import { getCapabilityStatus } from '@/lib/modelProvider'
+import { getModelRuntimeStatus, getEmbeddingEnabledPref, getReasoningEnabledPref } from '@/lib/intelligenceRepository'
 import { generateEmbeddingForTarget, generateSummaryForTarget } from '@/lib/localModelRuntimeService'
 import { runSmokeTest } from '@/lib/modelSmokeService'
 import { localTextFeatureEngine } from '@/lib/localTextFeatureEngine'
@@ -101,9 +101,16 @@ export async function processJob(job: BackgroundJobRecord): Promise<{ status: Jo
     }
 
     case 'embedding_generate': {
-      const capability = getCapabilityStatus()
-      if (capability.mode === 'core') { console.log('[JobProcessor] embedding_generate ← mode=core, pending_model'); return { status: 'pending_model' } }
-      if (capability.mode === 'degraded') { console.log('[JobProcessor] embedding_generate ← mode=degraded'); return { status: 'degraded' } }
+      const runtimeStatus = await getModelRuntimeStatus(job.userId, 'ollama-openai-compatible', job.workspaceId)
+      if (!runtimeStatus || runtimeStatus.embeddingStatus !== 'available') {
+        console.log('[JobProcessor] embedding_generate ← embedding unavailable, pending_model')
+        return { status: 'pending_model' }
+      }
+      const embEnabled = await getEmbeddingEnabledPref(job.userId, job.workspaceId)
+      if (!embEnabled) {
+        console.log('[JobProcessor] embedding_generate ← embedding not enabled, skipped')
+        return { status: 'skipped' }
+      }
       try {
         const text = await resolveTargetText(job.userId, job.workspaceId, job.targetType, job.targetId)
         if (!text) { console.log('[JobProcessor] embedding_generate ← 无文本内容, skipped'); return { status: 'skipped' } }
@@ -117,9 +124,16 @@ export async function processJob(job: BackgroundJobRecord): Promise<{ status: Jo
     }
 
     case 'summary_generate': {
-      const capability = getCapabilityStatus()
-      if (capability.mode === 'core') { console.log('[JobProcessor] summary_generate ← mode=core, pending_model'); return { status: 'pending_model' } }
-      if (capability.mode === 'degraded') { console.log('[JobProcessor] summary_generate ← mode=degraded'); return { status: 'degraded' } }
+      const runtimeStatus = await getModelRuntimeStatus(job.userId, 'ollama-openai-compatible', job.workspaceId)
+      if (!runtimeStatus || runtimeStatus.reasoningStatus !== 'available') {
+        console.log('[JobProcessor] summary_generate ← reasoning unavailable, pending_model')
+        return { status: 'pending_model' }
+      }
+      const reasEnabled = await getReasoningEnabledPref(job.userId, job.workspaceId)
+      if (!reasEnabled) {
+        console.log('[JobProcessor] summary_generate ← reasoning not enabled, skipped')
+        return { status: 'skipped' }
+      }
       try {
         const text = await resolveTargetText(job.userId, job.workspaceId, job.targetType, job.targetId)
         if (!text) { console.log('[JobProcessor] summary_generate ← 无文本内容, skipped'); return { status: 'skipped' } }

@@ -13,6 +13,7 @@ import {
 } from '@/lib/intelligenceRepository'
 import { getCapabilityStatus, initDevProviders, resetProviders } from '@/lib/modelProvider'
 import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
+import { reactivatePendingModelJobs, enqueue } from '@/lib/backgroundJobQueue'
 
 const USER_A = 'user_settings_test'
 const WS = DEFAULT_WORKSPACE_ID
@@ -197,5 +198,49 @@ describe('Settings: Activity Trace 脱敏', () => {
     })
     const logs = await listAuditLogs(USER_A, undefined, WS)
     expect(logs).toHaveLength(0)
+  })
+})
+
+describe('Settings: Dev Provider 不得激活真实语义 job', () => {
+  beforeEach(async () => {
+    await db.table('backgroundJobs').clear()
+    await db.table('dockItems').clear()
+    await db.table('modelRuntimeStatuses').clear()
+    await db.table('userPreferences').clear()
+  })
+
+  afterEach(() => {
+    resetProviders()
+  })
+
+  it('initDevProviders 后 reactivatePendingModelJobs 不激活 pending_model（无 IndexedDB ModelRuntimeStatus）', async () => {
+    initDevProviders()
+    expect(getCapabilityStatus().mode).toBe('model_available')
+
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS,
+      rawText: 'test dev provider isolation',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+
+    const job = await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), 'ch_dev_test')
+    await db.table('backgroundJobs').update(job.id, { status: 'pending_model' })
+
+    const reactivated = await reactivatePendingModelJobs(USER_A, { workspaceId: WS })
+    expect(reactivated).toHaveLength(0)
+
+    const jobs = await db.table('backgroundJobs').toArray()
+    expect(jobs[0].status).toBe('pending_model')
   })
 })

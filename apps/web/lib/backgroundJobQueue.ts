@@ -155,9 +155,18 @@ export async function reactivatePendingModelJobs(
   const workspaceId = options?.workspaceId ?? DEFAULT_WORKSPACE_ID
   const limit = options?.limit ?? 10
 
-  const { getCapabilityStatus } = await import('@/lib/modelProvider')
-  const capability = getCapabilityStatus()
-  if (capability.mode !== 'model_available') return []
+  const { getModelRuntimeStatus } = await import('@/lib/intelligenceRepository')
+  const { getEmbeddingEnabledPref } = await import('@/lib/intelligenceRepository')
+
+  const runtimeStatus = await getModelRuntimeStatus(userId, 'ollama-openai-compatible', workspaceId)
+  if (!runtimeStatus) return []
+
+  const modeOk = runtimeStatus.mode === 'model_available' || runtimeStatus.mode === 'degraded'
+  const embeddingOk = runtimeStatus.embeddingStatus === 'available'
+  if (!modeOk || !embeddingOk) return []
+
+  const embeddingEnabled = await getEmbeddingEnabledPref(userId, workspaceId)
+  if (!embeddingEnabled) return []
 
   const jobs = await backgroundJobsTable
     .where('[userId+workspaceId+status]')

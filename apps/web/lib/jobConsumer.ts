@@ -1,5 +1,5 @@
 import { processBatch, reactivatePendingModelJobs } from './backgroundJobQueue'
-import { getModelRuntimeStatus } from './intelligenceRepository'
+import { getModelRuntimeStatus, getEmbeddingEnabledPref } from './intelligenceRepository'
 
 const DEFAULT_POLL_INTERVAL_MS = 5000
 const DEFAULT_BATCH_LIMIT = 5
@@ -56,8 +56,11 @@ export class JobConsumer {
         this.workspaceId,
       )
 
-      if (runtimeStatus && runtimeStatus.mode === 'model_available') {
-        await reactivatePendingModelJobs(this.userId, { workspaceId: this.workspaceId })
+      if (runtimeStatus && (runtimeStatus.mode === 'model_available' || runtimeStatus.mode === 'degraded') && runtimeStatus.embeddingStatus === 'available') {
+        const embeddingEnabled = await getEmbeddingEnabledPref(this.userId, this.workspaceId)
+        if (embeddingEnabled) {
+          await reactivatePendingModelJobs(this.userId, { workspaceId: this.workspaceId })
+        }
       }
 
       await processBatch(this.userId, {

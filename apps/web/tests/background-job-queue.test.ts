@@ -16,7 +16,7 @@ import {
 } from '@/lib/backgroundJobQueue'
 import { onContentChanged } from '@/lib/contentChangeService'
 import { resetProviders, initDevProviders, getCapabilityStatus } from '@/lib/modelProvider'
-import { upsertLocalTextFeatureSnapshot, upsertSemanticFeatureSnapshot, upsertModelRuntimeStatus, getEmbeddingVectorByTarget, setEmbeddingEnabledPref, setReasoningEnabledPref } from '@/lib/intelligenceRepository'
+import { upsertLocalTextFeatureSnapshot, upsertSemanticFeatureSnapshot, upsertModelRuntimeStatus, getEmbeddingVectorByTarget, setEmbeddingEnabledPref, setReasoningEnabledPref, getModelRuntimeStatus } from '@/lib/intelligenceRepository'
 import * as localModelRuntimeService from '@/lib/localModelRuntimeService'
 import { processJob } from '@/lib/jobProcessor'
 import { localTextFeatureEngine } from '@/lib/localTextFeatureEngine'
@@ -39,6 +39,27 @@ async function cleanAll() {
 
 function nowISO() {
   return new Date().toISOString()
+}
+
+function makeModelRuntimeStatus(userId: string, workspaceId: string, overrides?: Partial<{ mode: 'model_available' | 'degraded' | 'unavailable' | 'core'; embeddingStatus: 'available' | 'unavailable'; reasoningStatus: 'available' | 'unavailable' }>) {
+  return {
+    userId,
+    workspaceId,
+    providerId: 'ollama-openai-compatible',
+    providerName: 'ollama-openai-compatible',
+    mode: overrides?.mode ?? 'model_available' as const,
+    embeddingStatus: overrides?.embeddingStatus ?? 'available' as const,
+    reasoningStatus: overrides?.reasoningStatus ?? 'available' as const,
+    embeddingModelId: 'qwen3-embedding:0.6b',
+    reasoningModelId: 'qwen3:1.7b',
+    lastProbeAt: nowISO(),
+    lastProbeSuccess: true,
+    lastSuccessfulProbeAt: nowISO(),
+    lastErrorCode: null,
+    lastErrorMessage: null,
+    createdAt: nowISO(),
+    updatedAt: nowISO(),
+  }
 }
 
 function makeLocalTextRecord(userId: string, workspaceId: string, targetType: string, targetId: string, contentHash: string) {
@@ -246,9 +267,6 @@ describe('processNext / processBatch', () => {
   })
 
   it('processJob returns skipped when contentHash unchanged for recompute_semantic_features', async () => {
-    initDevProviders()
-    expect(getCapabilityStatus().mode).toBe('model_available')
-
     await setEmbeddingEnabledPref(USER_A, true, WS_DEFAULT)
     await setReasoningEnabledPref(USER_A, true, WS_DEFAULT)
 
@@ -271,24 +289,7 @@ describe('processNext / processBatch', () => {
       createdAt: new Date(),
     })
 
-    await upsertModelRuntimeStatus({
-      userId: USER_A,
-      workspaceId: WS_DEFAULT,
-      providerId: 'ollama-openai-compatible',
-      providerName: 'ollama-openai-compatible',
-      mode: 'model_available',
-      embeddingStatus: 'available',
-      reasoningStatus: 'available',
-      embeddingModelId: 'qwen3-embedding:0.6b',
-      reasoningModelId: 'qwen3:1.7b',
-      lastProbeAt: nowISO(),
-      lastProbeSuccess: true,
-      lastSuccessfulProbeAt: nowISO(),
-      lastErrorCode: null,
-      lastErrorMessage: null,
-      createdAt: nowISO(),
-      updatedAt: nowISO(),
-    }, WS_DEFAULT)
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_DEFAULT), WS_DEFAULT)
 
     await upsertSemanticFeatureSnapshot({
       userId: USER_A,
@@ -372,11 +373,9 @@ describe('processNext / processBatch', () => {
   })
 
   it('recompute_semantic_features calls semanticFeatureEngine.computeFeatures', async () => {
-    initDevProviders()
-    expect(getCapabilityStatus().mode).toBe('model_available')
-
     await setEmbeddingEnabledPref(USER_A, true, WS_DEFAULT)
     await setReasoningEnabledPref(USER_A, true, WS_DEFAULT)
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_DEFAULT), WS_DEFAULT)
 
     const dockItemId = await db.dockItems.add({
       userId: USER_A,
@@ -537,8 +536,8 @@ describe('pending_model lifecycle', () => {
     })
     await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), 'ch_abc')
     await processNext(USER_A)
-    initDevProviders()
-    expect(getCapabilityStatus().mode).toBe('model_available')
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_DEFAULT), WS_DEFAULT)
+    await setEmbeddingEnabledPref(USER_A, true, WS_DEFAULT)
     const reactivated = await reactivatePendingModelJobs(USER_A)
     expect(reactivated).toHaveLength(1)
     expect(reactivated[0].status).toBe('pending')
@@ -565,32 +564,35 @@ describe('pending_model lifecycle', () => {
     })
     await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), 'ch_abc')
     await processNext(USER_A)
-    initDevProviders()
     await setEmbeddingEnabledPref(USER_A, true, WS_DEFAULT)
     await setReasoningEnabledPref(USER_A, true, WS_DEFAULT)
-    await upsertModelRuntimeStatus({
-      userId: USER_A,
-      workspaceId: WS_DEFAULT,
-      providerId: 'ollama-openai-compatible',
-      providerName: 'ollama-openai-compatible',
-      mode: 'model_available',
-      embeddingStatus: 'available',
-      reasoningStatus: 'available',
-      embeddingModelId: 'qwen3-embedding:0.6b',
-      reasoningModelId: 'qwen3:1.7b',
-      lastProbeAt: nowISO(),
-      lastProbeSuccess: true,
-      lastSuccessfulProbeAt: nowISO(),
-      lastErrorCode: null,
-      lastErrorMessage: null,
-      createdAt: nowISO(),
-      updatedAt: nowISO(),
-    }, WS_DEFAULT)
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_DEFAULT), WS_DEFAULT)
     await reactivatePendingModelJobs(USER_A)
+
+    vi.spyOn(localModelRuntimeService, 'generateEmbeddingForTarget').mockResolvedValue({
+      success: true,
+      data: new Float32Array(128),
+      dim: 128,
+      modelProvider: 'test',
+      modelName: 'test-embedding',
+      modelVersion: '1.0.0',
+      auditLogId: 'audit-test-id',
+    })
+    vi.spyOn(localModelRuntimeService, 'generateSummaryForTarget').mockResolvedValue({
+      success: true,
+      summary: 'test summary content',
+      modelProvider: 'test',
+      modelName: 'test-reasoning',
+      modelVersion: '1.0.0',
+      auditLogId: 'audit-test-id-2',
+    })
+
     const result = await processNext(USER_A)
     expect(result).not.toBeNull()
     expect((result as { job: { status: string } }).job.status).toBe('complete')
     expect((result as { result: { status: string } }).result.status).toBe('complete')
+
+    vi.restoreAllMocks()
   })
 
   it('reactivatePendingModelJobs does NOT increase attempts', async () => {
@@ -615,7 +617,8 @@ describe('pending_model lifecycle', () => {
     await processNext(USER_A)
     const beforeJob = await db.table('backgroundJobs').toArray()
     const attemptsBefore = beforeJob[0].attempts
-    initDevProviders()
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_DEFAULT), WS_DEFAULT)
+    await setEmbeddingEnabledPref(USER_A, true, WS_DEFAULT)
     await reactivatePendingModelJobs(USER_A)
     const afterJob = await db.table('backgroundJobs').toArray()
     expect(afterJob[0].attempts).toBe(attemptsBefore)
@@ -659,7 +662,8 @@ describe('pending_model lifecycle', () => {
     await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemIdOther), 'ch_def', { workspaceId: WS_OTHER })
     await processNext(USER_A, { workspaceId: WS_DEFAULT })
     await processNext(USER_A, { workspaceId: WS_OTHER })
-    initDevProviders()
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_DEFAULT), WS_DEFAULT)
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_OTHER), WS_OTHER)
     await setEmbeddingEnabledPref(USER_A, true, WS_DEFAULT)
     await setReasoningEnabledPref(USER_A, true, WS_DEFAULT)
     await setEmbeddingEnabledPref(USER_A, true, WS_OTHER)
@@ -806,8 +810,8 @@ describe('jobProcessor workspace isolation', () => {
   })
 
   it('dockItem: job in WS_OTHER does not read default workspace dockItem with same id', async () => {
-    initDevProviders()
-    expect(getCapabilityStatus().mode).toBe('model_available')
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_OTHER), WS_OTHER)
+    await setEmbeddingEnabledPref(USER_A, true, WS_OTHER)
 
     const dockItemId = await db.dockItems.add({
       userId: USER_A,
@@ -835,8 +839,8 @@ describe('jobProcessor workspace isolation', () => {
   })
 
   it('dockItem: job in same workspace reads content and calls model', async () => {
-    initDevProviders()
-    expect(getCapabilityStatus().mode).toBe('model_available')
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_OTHER), WS_OTHER)
+    await setEmbeddingEnabledPref(USER_A, true, WS_OTHER)
 
     const dockItemId = await db.dockItems.add({
       userId: USER_A,
@@ -873,8 +877,8 @@ describe('jobProcessor workspace isolation', () => {
   })
 
   it('tip: job in WS_OTHER does not read default workspace tip with same id', async () => {
-    initDevProviders()
-    expect(getCapabilityStatus().mode).toBe('model_available')
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_OTHER), WS_OTHER)
+    await setEmbeddingEnabledPref(USER_A, true, WS_OTHER)
 
     const tipId = await db.tips.add({
       userId: USER_A,
@@ -896,8 +900,8 @@ describe('jobProcessor workspace isolation', () => {
   })
 
   it('draft: job in WS_OTHER does not read default workspace draft with same id', async () => {
-    initDevProviders()
-    expect(getCapabilityStatus().mode).toBe('model_available')
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_OTHER), WS_OTHER)
+    await setEmbeddingEnabledPref(USER_A, true, WS_OTHER)
 
     const draftId = await db.editorDrafts.add({
       userId: USER_A,
@@ -923,8 +927,9 @@ describe('jobProcessor workspace isolation', () => {
   })
 
   it('recompute_semantic_features: cross-workspace target returns skipped without writing EmbeddingVector', async () => {
-    initDevProviders()
-    expect(getCapabilityStatus().mode).toBe('model_available')
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_OTHER), WS_OTHER)
+    await setEmbeddingEnabledPref(USER_A, true, WS_OTHER)
+    await setReasoningEnabledPref(USER_A, true, WS_OTHER)
 
     const dockItemId = await db.dockItems.add({
       userId: USER_A,
@@ -958,8 +963,8 @@ describe('jobProcessor workspace isolation', () => {
   })
 
   it('dockItem with undefined workspaceId matches DEFAULT_WORKSPACE_ID', async () => {
-    initDevProviders()
-    expect(getCapabilityStatus().mode).toBe('model_available')
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_DEFAULT), WS_DEFAULT)
+    await setEmbeddingEnabledPref(USER_A, true, WS_DEFAULT)
 
     const dockItemId = await db.dockItems.add({
       userId: USER_A,
@@ -995,8 +1000,8 @@ describe('jobProcessor workspace isolation', () => {
   })
 
   it('dockItem with undefined workspaceId does NOT match WS_OTHER', async () => {
-    initDevProviders()
-    expect(getCapabilityStatus().mode).toBe('model_available')
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_OTHER), WS_OTHER)
+    await setEmbeddingEnabledPref(USER_A, true, WS_OTHER)
 
     const dockItemId = await db.dockItems.add({
       userId: USER_A,
@@ -1020,5 +1025,217 @@ describe('jobProcessor workspace isolation', () => {
     expect(result).not.toBeNull()
     expect((result as { result: { status: string } }).result.status).toBe('skipped')
     expect(spy).not.toHaveBeenCalled()
+  })
+})
+
+describe('reactivatePendingModelJobs: IndexedDB-only (no initDevProviders)', () => {
+  afterEach(async () => {
+    await cleanAll()
+    resetProviders()
+  })
+
+  it('reactivatePendingModelJobs 不依赖 initDevProviders，仅靠 IndexedDB ModelRuntimeStatus + embeddingEnabled=true 激活', async () => {
+    resetProviders()
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'test content for IDB-only reactivation',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), 'ch_abc')
+    await processNext(USER_A)
+
+    expect(getCapabilityStatus().mode).toBe('core')
+
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_DEFAULT), WS_DEFAULT)
+    await setEmbeddingEnabledPref(USER_A, true, WS_DEFAULT)
+
+    const reactivated = await reactivatePendingModelJobs(USER_A)
+    expect(reactivated).toHaveLength(1)
+    expect(reactivated[0].status).toBe('pending')
+  })
+
+  it('embeddingEnabled=false 时 pending_model 不被激活', async () => {
+    resetProviders()
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'test content for disabled reactivation',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), 'ch_abc')
+    await processNext(USER_A)
+
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_DEFAULT), WS_DEFAULT)
+
+    const reactivated = await reactivatePendingModelJobs(USER_A)
+    expect(reactivated).toHaveLength(0)
+
+    const jobs = await db.table('backgroundJobs').toArray()
+    expect(jobs[0].status).toBe('pending_model')
+  })
+
+  it('embeddingEnabled=false 时 pending_model 不被转成 skipped，保持 pending_model', async () => {
+    resetProviders()
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'test content for pending_model preservation',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), 'ch_abc')
+    await processNext(USER_A)
+
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_DEFAULT), WS_DEFAULT)
+
+    const batchResults = await processBatch(USER_A, { limit: 5 })
+    expect(batchResults).toHaveLength(0)
+
+    const jobs = await db.table('backgroundJobs').toArray()
+    expect(jobs[0].status).toBe('pending_model')
+  })
+
+  it('启用 Embedding 后 pending_model 能恢复为 pending 并被消费', async () => {
+    resetProviders()
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'test content for enable-then-consume',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), 'ch_abc')
+    await processNext(USER_A)
+
+    await upsertModelRuntimeStatus(makeModelRuntimeStatus(USER_A, WS_DEFAULT), WS_DEFAULT)
+    await setEmbeddingEnabledPref(USER_A, true, WS_DEFAULT)
+    await setReasoningEnabledPref(USER_A, true, WS_DEFAULT)
+
+    const reactivated = await reactivatePendingModelJobs(USER_A)
+    expect(reactivated).toHaveLength(1)
+    expect(reactivated[0].status).toBe('pending')
+
+    vi.spyOn(localModelRuntimeService, 'generateEmbeddingForTarget').mockResolvedValue({
+      success: true,
+      data: new Float32Array(128),
+      dim: 128,
+      modelProvider: 'test',
+      modelName: 'test-embedding',
+      modelVersion: '1.0.0',
+      auditLogId: 'audit-test-id',
+    })
+    vi.spyOn(localModelRuntimeService, 'generateSummaryForTarget').mockResolvedValue({
+      success: true,
+      summary: 'test summary content',
+      modelProvider: 'test',
+      modelName: 'test-reasoning',
+      modelVersion: '1.0.0',
+      auditLogId: 'audit-test-id-2',
+    })
+
+    const result = await processNext(USER_A)
+    expect(result).not.toBeNull()
+    expect((result as { result: { status: string } }).result.status).toBe('complete')
+
+    vi.restoreAllMocks()
+  })
+
+  it('Dev Provider 不得让真实语义 job complete', async () => {
+    resetProviders()
+    initDevProviders()
+    expect(getCapabilityStatus().mode).toBe('model_available')
+
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'test content for dev provider isolation',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+
+    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), 'ch_abc')
+    await processNext(USER_A)
+
+    const dbStatus = await getModelRuntimeStatus(USER_A, 'ollama-openai-compatible', WS_DEFAULT)
+    expect(dbStatus).toBeNull()
+
+    const reactivated = await reactivatePendingModelJobs(USER_A)
+    expect(reactivated).toHaveLength(0)
+
+    const jobs = await db.table('backgroundJobs').toArray()
+    expect(jobs[0].status).toBe('pending_model')
+  })
+
+  it('无 ModelRuntimeStatus 时 reactivatePendingModelJobs 返回空', async () => {
+    resetProviders()
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'test content for no runtime status',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), 'ch_abc')
+    await processNext(USER_A)
+
+    const reactivated = await reactivatePendingModelJobs(USER_A)
+    expect(reactivated).toHaveLength(0)
   })
 })
