@@ -32,12 +32,21 @@ export interface ExplanationResult {
   error?: string
 }
 
+export interface ProbeResult {
+  available: boolean
+  embeddingAvailable: boolean
+  reasoningAvailable: boolean
+  models?: string[]
+  error?: string
+}
+
 export interface EmbeddedModelProvider {
   readonly providerId: string
   readonly providerName: string
   readonly availability: ModelAvailability
   generateEmbedding(text: string, options?: Record<string, unknown>): Promise<EmbeddingResult>
   generateSummary(text: string, options?: Record<string, unknown>): Promise<SummaryResult>
+  probe(): Promise<ProbeResult>
 }
 
 export interface ReasoningProvider {

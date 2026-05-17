@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import 'fake-indexeddb/auto'
 import { db } from '@/lib/db'
 import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
 import { computeContentHash, isContentDirty } from '@/lib/contentHash'
@@ -15,7 +16,8 @@ import {
 } from '@/lib/backgroundJobQueue'
 import { onContentChanged } from '@/lib/contentChangeService'
 import { resetProviders, initDevProviders, getCapabilityStatus } from '@/lib/modelProvider'
-import { upsertLocalTextFeatureSnapshot } from '@/lib/intelligenceRepository'
+import { upsertLocalTextFeatureSnapshot, getEmbeddingVectorByTarget } from '@/lib/intelligenceRepository'
+import * as localModelRuntimeService from '@/lib/localModelRuntimeService'
 
 const USER_A = 'user_test_a'
 const WS_DEFAULT = DEFAULT_WORKSPACE_ID
@@ -251,7 +253,24 @@ describe('pending_model lifecycle', () => {
 
   it('Restored semantic job can be processed to complete', async () => {
     resetProviders()
-    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', '1', 'ch_abc')
+    await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: DEFAULT_WORKSPACE_ID,
+      rawText: 'Test dock item content for semantic processing',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+    const dockItemId = 1
+    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), 'ch_abc')
     await processNext(USER_A)
     initDevProviders()
     await reactivatePendingModelJobs(USER_A)
@@ -406,5 +425,235 @@ describe('Batch limit', () => {
       .equals([USER_A, WS_DEFAULT, 'pending'])
       .toArray()
     expect(remaining.length).toBe(15)
+  })
+})
+
+describe('jobProcessor workspace isolation', () => {
+  afterEach(async () => {
+    await cleanAll()
+    await db.table('dockItems').clear()
+    await db.table('tips').clear()
+    await db.table('editorDrafts').clear()
+    await db.table('embeddingVectors').clear()
+    await db.table('algorithmAuditLogs').clear()
+    vi.restoreAllMocks()
+    resetProviders()
+  })
+
+  it('dockItem: job in WS_OTHER does not read default workspace dockItem with same id', async () => {
+    initDevProviders()
+    expect(getCapabilityStatus().mode).toBe('model_available')
+
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'default workspace secret content',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+
+    const spy = vi.spyOn(localModelRuntimeService, 'generateEmbeddingForTarget')
+    await enqueue(USER_A, 'embedding_generate', 'dockItem', String(dockItemId), 'ch_test', { workspaceId: WS_OTHER })
+    const result = await processNext(USER_A, { workspaceId: WS_OTHER })
+    expect(result).not.toBeNull()
+    expect((result as { result: { status: string } }).result.status).toBe('skipped')
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('dockItem: job in same workspace reads content and calls model', async () => {
+    initDevProviders()
+    expect(getCapabilityStatus().mode).toBe('model_available')
+
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_OTHER,
+      rawText: 'other workspace content',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+
+    const spy = vi.spyOn(localModelRuntimeService, 'generateEmbeddingForTarget').mockResolvedValue({
+      success: true,
+      data: new Float32Array(128),
+      dim: 128,
+      modelProvider: 'dev',
+      modelName: 'dev-embedding-mock',
+      modelVersion: '1.0.0',
+      auditLogId: 'audit-test-id',
+    })
+
+    await enqueue(USER_A, 'embedding_generate', 'dockItem', String(dockItemId), 'ch_test', { workspaceId: WS_OTHER })
+    const result = await processNext(USER_A, { workspaceId: WS_OTHER })
+    expect(result).not.toBeNull()
+    expect((result as { result: { status: string } }).result.status).toBe('complete')
+    expect(spy).toHaveBeenCalledWith(USER_A, WS_OTHER, 'dockItem', String(dockItemId), 'other workspace content', 'ch_test')
+  })
+
+  it('tip: job in WS_OTHER does not read default workspace tip with same id', async () => {
+    initDevProviders()
+    expect(getCapabilityStatus().mode).toBe('model_available')
+
+    const tipId = await db.tips.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      content: 'default workspace tip secret',
+      sourceType: 'text',
+      status: 'active',
+      convertedDraftId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+
+    const spy = vi.spyOn(localModelRuntimeService, 'generateEmbeddingForTarget')
+    await enqueue(USER_A, 'embedding_generate', 'tip', String(tipId), 'ch_test', { workspaceId: WS_OTHER })
+    const result = await processNext(USER_A, { workspaceId: WS_OTHER })
+    expect(result).not.toBeNull()
+    expect((result as { result: { status: string } }).result.status).toBe('skipped')
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('draft: job in WS_OTHER does not read default workspace draft with same id', async () => {
+    initDevProviders()
+    expect(getCapabilityStatus().mode).toBe('model_available')
+
+    const draftId = await db.editorDrafts.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      draftKey: 1,
+      title: 'Test Draft',
+      content: 'default workspace draft secret',
+      plainText: 'default workspace draft secret',
+      status: 'active',
+      tags: [],
+      project: null,
+      collectionId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+
+    const spy = vi.spyOn(localModelRuntimeService, 'generateEmbeddingForTarget')
+    await enqueue(USER_A, 'embedding_generate', 'draft', String(draftId), 'ch_test', { workspaceId: WS_OTHER })
+    const result = await processNext(USER_A, { workspaceId: WS_OTHER })
+    expect(result).not.toBeNull()
+    expect((result as { result: { status: string } }).result.status).toBe('skipped')
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('recompute_semantic_features: cross-workspace target returns skipped without writing EmbeddingVector', async () => {
+    initDevProviders()
+    expect(getCapabilityStatus().mode).toBe('model_available')
+
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'default workspace content should not leak',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+
+    const embSpy = vi.spyOn(localModelRuntimeService, 'generateEmbeddingForTarget')
+    const sumSpy = vi.spyOn(localModelRuntimeService, 'generateSummaryForTarget')
+
+    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), 'ch_test', { workspaceId: WS_OTHER })
+    const result = await processNext(USER_A, { workspaceId: WS_OTHER })
+    expect(result).not.toBeNull()
+    expect((result as { result: { status: string } }).result.status).toBe('skipped')
+    expect(embSpy).not.toHaveBeenCalled()
+    expect(sumSpy).not.toHaveBeenCalled()
+
+    const vector = await getEmbeddingVectorByTarget(USER_A, 'dockItem', String(dockItemId), WS_OTHER)
+    expect(vector).toBeNull()
+  })
+
+  it('dockItem with undefined workspaceId matches DEFAULT_WORKSPACE_ID', async () => {
+    initDevProviders()
+    expect(getCapabilityStatus().mode).toBe('model_available')
+
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      rawText: 'legacy dock item without workspaceId',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+
+    const spy = vi.spyOn(localModelRuntimeService, 'generateEmbeddingForTarget').mockResolvedValue({
+      success: true,
+      data: new Float32Array(128),
+      dim: 128,
+      modelProvider: 'dev',
+      modelName: 'dev-embedding-mock',
+      modelVersion: '1.0.0',
+      auditLogId: 'audit-test-id',
+    })
+
+    await enqueue(USER_A, 'embedding_generate', 'dockItem', String(dockItemId), 'ch_test', { workspaceId: WS_DEFAULT })
+    const result = await processNext(USER_A, { workspaceId: WS_DEFAULT })
+    expect(result).not.toBeNull()
+    expect((result as { result: { status: string } }).result.status).toBe('complete')
+    expect(spy).toHaveBeenCalledWith(USER_A, WS_DEFAULT, 'dockItem', String(dockItemId), 'legacy dock item without workspaceId', 'ch_test')
+  })
+
+  it('dockItem with undefined workspaceId does NOT match WS_OTHER', async () => {
+    initDevProviders()
+    expect(getCapabilityStatus().mode).toBe('model_available')
+
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      rawText: 'legacy dock item without workspaceId',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+
+    const spy = vi.spyOn(localModelRuntimeService, 'generateEmbeddingForTarget')
+    await enqueue(USER_A, 'embedding_generate', 'dockItem', String(dockItemId), 'ch_test', { workspaceId: WS_OTHER })
+    const result = await processNext(USER_A, { workspaceId: WS_OTHER })
+    expect(result).not.toBeNull()
+    expect((result as { result: { status: string } }).result.status).toBe('skipped')
+    expect(spy).not.toHaveBeenCalled()
   })
 })

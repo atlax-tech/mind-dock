@@ -144,6 +144,7 @@ describe('Model Provider System', () => {
         providerId: 'failing',
         providerName: 'Failing Provider',
         availability: 'available' as ModelAvailability,
+        probe: async () => ({ available: false, embeddingAvailable: false, reasoningAvailable: false }),
         generateEmbedding: async () => { throw new Error('Provider crashed') },
         generateSummary: async () => { throw new Error('Provider crashed') },
       }
@@ -160,6 +161,7 @@ describe('Model Provider System', () => {
         providerId: 'failing',
         providerName: 'Failing Provider',
         availability: 'available' as ModelAvailability,
+        probe: async () => ({ available: false, embeddingAvailable: false, reasoningAvailable: false }),
         generateEmbedding: async () => { throw new Error('crash') },
         generateSummary: async () => { throw new Error('crash') },
       }
@@ -177,6 +179,7 @@ describe('Model Provider System', () => {
         providerId: 'failing',
         providerName: 'Failing Provider',
         availability: 'available' as ModelAvailability,
+        probe: async () => ({ available: false, embeddingAvailable: false, reasoningAvailable: false }),
         generateEmbedding: async () => ({ success: false, modelProvider: 'failing', modelName: 'fail', modelVersion: '1.0', error: 'model error' }),
         generateSummary: async () => ({ success: false, modelProvider: 'failing', modelName: 'fail', modelVersion: '1.0', error: 'model error' }),
       }
@@ -212,6 +215,7 @@ describe('Model Provider System', () => {
         providerId: 'failing',
         providerName: 'Failing Embedding',
         availability: 'available' as ModelAvailability,
+        probe: async () => ({ available: false, embeddingAvailable: false, reasoningAvailable: false }),
         generateEmbedding: async () => { throw new Error('crash') },
         generateSummary: async () => { throw new Error('crash') },
       }

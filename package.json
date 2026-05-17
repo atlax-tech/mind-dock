@@ -14,7 +14,8 @@
     "typecheck": "pnpm --filter @atlax/domain typecheck && pnpm --dir apps/web typecheck",
     "test": "pnpm --filter @atlax/domain test && pnpm --dir apps/web test",
     "check:terminology": "node scripts/check-terminology.mjs",
-    "validate": "pnpm lint && pnpm typecheck && pnpm test && pnpm check:terminology"
+    "validate": "pnpm lint && pnpm typecheck && pnpm test && pnpm check:terminology",
+    "smoke:model": "npx tsx --tsconfig apps/web/tsconfig.json apps/web/scripts/smoke-model.ts"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.31.1",

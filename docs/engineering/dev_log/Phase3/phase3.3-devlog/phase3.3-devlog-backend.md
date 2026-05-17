@@ -4,6 +4,284 @@
 
 ---
 
+## Phase3.3 +Round 9 devlog -- P33-RUNTIME-003 评审修复（workspace 隔离）
+
+**日期**: 2026-05-18
+**任务起始时间**: 00:40
+**任务结束时间**: 00:55
+**工时**: 15分钟
+
+### 任务目标
+
+修复 P33-RUNTIME-003 二次评审发现的 P1 workspace 隔离问题：`resolveTargetText` 不接收 `workspaceId`，tip/draft/dockItem 均不校验 workspace，导致跨 workspace 读取内容并写入模型结果。
+
+### 修复内容
+
+| 问题 | 级别 | 修复 |
+|------|------|------|
+| `resolveTargetText` 不接收 `workspaceId` | P1 | 新增 `workspaceId` 参数，所有调用点传入 `job.workspaceId` |
+| tip 使用 `getTip` 不校验 workspace | P1 | 改为直接 `db.tips.get(id)` + 校验 `matchesWorkspace(tip.workspaceId, workspaceId)` |
+| draft 使用 `getDraft` 硬编码 `DEFAULT_WORKSPACE_ID` | P1 | 改为直接 `db.editorDrafts.get(id)` + 校验 `matchesWorkspace(draft.workspaceId, workspaceId)` |
+| dockItem 只校验 `userId` 不校验 workspace | P1 | 新增 `matchesWorkspace(item.workspaceId, workspaceId)` 校验 |
+| 缺少 workspace 隔离测试 | P2 | 新增 7 个测试用例覆盖跨 workspace skipped 语义 |
+
+### 核心设计
+
+新增 `matchesWorkspace(recordWorkspaceId, jobWorkspaceId)` 辅助函数：
+- 记录的 `workspaceId` 为 `undefined` 时归一化为 `DEFAULT_WORKSPACE_ID`
+- 确保遗留数据（无 workspaceId 字段）与显式 `DEFAULT_WORKSPACE_ID` 匹配
+- 非 default workspace 的 job 不会读到无 workspaceId 的遗留数据
+
+跨 workspace target 返回 `null` → job 结果为 `skipped` → 不调用模型服务 → 不写 EmbeddingVector/SemanticFeatureSnapshot。
+
+### 改动文件
+
+| 文件 | 说明 |
+|------|------|
+| `apps/web/lib/jobProcessor.ts` | 新增 `matchesWorkspace` + `workspaceId` 参数；移除 `getDraft`/`getTip` import，改为直接 Dexie 查询 + workspace 校验 |
+| `apps/web/tests/background-job-queue.test.ts` | 新增 7 个 workspace 隔离测试用例 |
+
+### 新增测试用例
+
+| 测试 | 验证点 |
+|------|--------|
+| dockItem: WS_OTHER job 不读 default workspace 同 id | 跨 workspace dockItem 返回 skipped |
+| dockItem: 同 workspace 读取内容并调用 model | 正确 workspace 的 target 被处理 |
+| tip: WS_OTHER job 不读 default workspace 同 id | 跨 workspace tip 返回 skipped |
+| draft: WS_OTHER job 不读 default workspace 同 id | 跨 workspace draft 返回 skipped |
+| recompute_semantic_features 跨 workspace | 不写 EmbeddingVector/SemanticFeatureSnapshot |
+| undefined workspaceId 匹配 DEFAULT_WORKSPACE_ID | 遗留数据兼容 |
+| undefined workspaceId 不匹配 WS_OTHER | 遗留数据隔离 |
+
+### 自动验证结果
+
+| 验证项 | 结果 |
+|--------|------|
+| `pnpm validate` | ✅ 0 errors · 19 warnings · 1150 tests passed |
+| `pnpm build:web` | ✅ 构建成功 |
+| `pnpm smoke:model` | ✅ **PASS** — probe/embedding/reasoning 均可用，dimension 1024，audit 3 entries |
+
+### 剩余风险
+
+1. `resolveTargetText` 只支持 tip/draft/dockItem 三种 targetType，其他类型返回 null（job skipped）
+2. `matchesWorkspace` 将 `undefined` workspaceId 归一化为 `DEFAULT_WORKSPACE_ID`，未来多 workspace 场景需确保所有记录写入时携带 workspaceId
+
+---
+
+## Phase3.3 +Round 8 devlog -- P33-RUNTIME-003 评审修复（P1/P2）
+
+**日期**: 2026-05-18
+**任务起始时间**: 00:22
+**任务结束时间**: 00:30
+**工时**: 8分钟
+
+### 任务目标
+
+修复 P33-RUNTIME-003 评审发现的 3 个 P1 + 3 个 P2 问题。
+
+### 修复内容
+
+| 问题 | 级别 | 修复 |
+|------|------|------|
+| Registry probe 后 capability 状态不同步 | P1 | 新增 `ModelProviderRegistry.syncAvailabilityFromProbe()`，`probeAndSyncStatus` 调用后同步 registry |
+| jobProcessor 传空文本给模型 | P1 | 新增 `resolveTargetText()` 从 tip/draft/dockItem 获取真实内容，无法获取则返回 `skipped` |
+| audit outputHash 是常量 | P1 | embedding 成功时 hash vector bytes，summary 成功时 hash sanitized summary |
+| ModelRuntimeStatus 写 providerId 而非 model ID | P2 | 从 provider 实例读取 `embeddingModelId`/`reasoningModelId` |
+| Chat parser 读取/传递 message.reasoning | P2 | `validateChatContentShape` 不再读取 reasoning，`sanitizeReasoningContent` 移除 rawReasoning 参数 |
+| Settings UI 被 stale registry core 状态挡住 | P2 | 以 ModelRuntimeStatus 为主，registry 只作无记录时的 fallback |
+
+### 改动文件
+
+| 文件 | 说明 |
+|------|------|
+| `apps/web/lib/modelProvider.ts` | 新增 `syncAvailabilityFromProbe()`；`validateChatContentShape` 不读取 reasoning |
+| `apps/web/lib/reasoningSanitizer.ts` | 移除 `rawReasoning` 参数，函数只接受 `rawContent` |
+| `apps/web/lib/jobProcessor.ts` | 新增 `resolveTargetText()` + `db` import；不传空文本 |
+| `apps/web/lib/localModelRuntimeService.ts` | outputHash 来自真实输出；embeddingModelId/reasoningModelId 从 provider 读取；probe 后调用 syncAvailabilityFromProbe |
+| `apps/web/app/workspace/page.tsx` | Settings 以 ModelRuntimeStatus 为主，registry 作 fallback |
+| `apps/web/tests/ollama-provider.test.ts` | 新增 registry probe sync 测试（3 个） |
+| `apps/web/tests/reasoning-sanitizer.test.ts` | 移除 rawReasoning 测试，新增函数签名验证 |
+| `apps/web/tests/local-model-runtime-service.test.ts` | 新增 outputHash 变化测试、model ID 测试、registry sync 测试 |
+| `apps/web/tests/background-job-queue.test.ts` | 创建 dockItem fixture 以支持 resolveTargetText |
+
+### 遇到的问题与解决方式
+
+1. **DockItem 类型约束**：测试中创建 dockItem 需要正确的 `SourceType`（'text'|'voice'|'import'|'chat'）和 `EntryStatus`（'pending'|'suggested'|...），不能用 'capture'/'active'
+2. **fake-indexeddb 数据残留**：不同测试用例使用唯一 userId 避免跨测试数据污染
+
+### 自动验证结果
+
+| 验证项 | 结果 |
+|--------|------|
+| `pnpm validate` | ✅ 0 errors · 1458 tests passed |
+| `pnpm build:web` | ✅ 构建成功 |
+| `pnpm smoke:model` | ✅ **PASS** — probe/embedding/reasoning 均可用，dimension 1024 |
+
+### 真实 Smoke 验证
+
+```
+=== Atlax MindDock Model Smoke Test ===
+--- Probe ---    Available: true
+--- Embedding --- Available: true, Dimension: 1024, VectorHash: f776abbb
+--- Reasoning --- Available: true, OutputHash: 80530155
+--- Result ---    Status: pass, AuditLogIds: 3 entries
+```
+
+### 剩余风险
+
+1. `resolveTargetText` 只支持 tip/draft/dockItem 三种 targetType，其他类型返回 null（job skipped）
+2. `embeddingModelId`/`reasoningModelId` 通过 `as` 类型断言从 provider 实例读取，如果 provider 不暴露这些属性则为空字符串
+
+---
+
+## Phase3.3 +Round 7 devlog -- P33-RUNTIME-003 Real Ollama-Qwen Model Wiring & Smoke Validation
+
+**日期**: 2026-05-17
+**任务起始时间**: 23:20
+**任务结束时间**: 23:45
+**工时**: 25分钟
+
+### 任务目标
+
+在现有 EmbeddedModelProvider、Capability Modes、BackgroundJobQueue、Intelligence Store 基础上，真实接入 Ollama 本地 Qwen 模型（OpenAI-compatible /v1 API），完成模型探活、embedding 调用、reasoning/summary 调用、smoke runner、provider audit trace、智能数据结构写入、provider unavailable fallback 等 E2E 链路。
+
+### 改动文件与行数
+
+**修改文件**（11个，+706/-105行）：
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `packages/domain/src/intelligence/types.ts` | +73行 | 新增 EmbeddingVector / AlgorithmAuditLog / ModelSmokeTestRun / ModelRuntimeStatus 接口，扩展 JobType |
+| `packages/domain/src/intelligence/provider.ts` | +9行 | 新增 ProbeResult 接口，EmbeddedModelProvider 新增 probe() 方法 |
+| `packages/domain/src/intelligence/ids.ts` | +16行 | 新增 4 个 ID 生成函数 |
+| `packages/domain/src/intelligence/index.ts` | +9行 | 导出新增类型和函数 |
+| `apps/web/lib/db.ts` | +102行 | v30 schema 新增 4 张表（embeddingVectors / algorithmAuditLogs / modelSmokeTestRuns / modelRuntimeStatuses） |
+| `apps/web/lib/modelProvider.ts` | +201行 | 新增 OllamaOpenAICompatibleProvider / initOllamaProviders / 默认模型常量 |
+| `apps/web/lib/intelligenceRepository.ts` | +82行 | 新增 7 个 repository 方法（upsert / get / list） |
+| `apps/web/lib/jobProcessor.ts` | +43行 | recompute_semantic_features 真实调用模型 + 3 个新 job type |
+| `apps/web/app/workspace/page.tsx` | +269/-105行 | Settings 智能能力面板从 ModelRuntimeStatus 读取状态 |
+| `apps/web/tests/model-provider.test.ts` | +4行 | 补充 failing provider 的 probe() 方法 |
+| `package.json` | +3行 | 新增 smoke:model 脚本（tsx --tsconfig） |
+
+**新建文件**（7个，共1107行）：
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| `apps/web/lib/reasoningSanitizer.ts` | 19行 | sanitizeReasoningContent 清洗函数（剥离 think 标签 + CoT 片段） |
+| `apps/web/lib/localModelRuntimeService.ts` | 307行 | 服务层：调 Provider → 写 Audit → 写 Store |
+| `apps/web/lib/modelSmokeService.ts` | 160行 | Smoke 业务编排层 |
+| `apps/web/scripts/smoke-model.ts` | 66行 | Node + fake-indexeddb smoke runner |
+| `apps/web/tests/ollama-provider.test.ts` | 283行 | 25 个测试：probe/embedding/reasoning 功能 + provider 边界 |
+| `apps/web/tests/reasoning-sanitizer.test.ts` | 79行 | 14 个测试：think 标签剥离 / CoT 片段移除 / 空值处理 |
+| `apps/web/tests/local-model-runtime-service.test.ts` | 193行 | 8 个测试：audit 不泄漏原文 / embedding metadata / runtime status |
+
+### 架构分层
+
+```
+jobProcessor.ts           ← 只调 Service，不直接操作 provider+repository
+ModelSmokeService         ← 编排层，调 Provider + 写 Repository
+LocalModelRuntimeService  ← 服务层，调 Provider + 写 Audit + 写 Store
+────────────────────────────
+OllamaOpenAICompatibleProvider ← 插头层，只做 HTTP 调用 + response normalize
+DevEmbeddedModelProvider       ← 插头层（已有）
+────────────────────────────
+intelligenceRepository.ts ← 数据层，CRUD 操作
+db.ts (Dexie)             ← 存储层
+```
+
+**Provider 是插头，不是电工队。**
+
+### 遇到的问题与解决方式
+
+1. **sanitizeReasoningContent 正则不匹配 malformed think 标签**：Qwen 模型输出的 `<think` 标签可能没有闭合的 `>`（如 `<think reasoning</think`）。原正则 `/<think[^>]*>[\s\S]*?<\/think[^>]*>/gi` 要求必须有 `>`，修改为 `/<think[\s\S]*?<\/think/gi` 放宽匹配。
+
+2. **EmbeddedModelProvider 接口新增 probe() 方法导致已有测试失败**：4 个 `model-provider.test.ts` 中的 failingProvider fixture 缺少 probe 方法，补充 `probe: async () => ({ available: false, ... })`。
+
+3. **OllamaProvider 测试中 `as Response` 类型转换失败**：TS strict 模式下不允许不完整对象直接 cast 为 Response，改为 `as unknown as Response`。
+
+4. **test 中 non-null assertion 违反 lint 规则**：`vector!.dimension` 等写法被 `@typescript-eslint/no-non-null-assertion` 禁止，改为 `if (!vector) throw new Error('unreachable')` 进行类型收窄。
+
+5. **unused import 导致 lint error**：intelligenceRepository.ts 导入了 4 个表对象但方法内使用 `db.xxx` 直接访问，移除未使用的表导入；`let query` 改为内联 `const results`。
+
+6. **tsx 无法解析 @/ 路径别名**：smoke runner 使用 `npx tsx` 执行时报 `MODULE_NOT_FOUND`，添加 `--tsconfig apps/web/tsconfig.json` 参数注册路径映射。
+
+7. **Review 发现 smoke runner 未注册 provider**：`initOllamaProviders()` 原本只允许 `NODE_ENV=development/test` 注册，`pnpm smoke:model` 在普通 CLI 环境下执行时没有注册真实 provider，导致 endpoint 可用但 smoke 误报 blocked。修复方式：smoke runner 显式传入 `allowOutsideDev: true`，同时继续保证没有 import-time 自动网络请求。
+
+8. **ModelSmokeTestRun 未关联 audit id**：原 smoke 结果 `auditLogIds` 永远为空。修复方式：LocalModelRuntimeService 在 probe / embedding / summary 写入 AlgorithmAuditLog 后返回 audit id，ModelSmokeService 聚合到 ModelSmokeTestRun。
+
+9. **Chat response shape 校验不足**：原实现只做 content 非空清洗。修复方式：新增 chat choices/message/content shape 校验，并对 JSON-like summary content 做最小 JSON object 校验，继续忽略 `message.reasoning`。
+
+### 自动验证结果
+
+| 验证项 | 结果 |
+|--------|------|
+| `pnpm lint` | ✅ 0 errors，19 warnings（均为预存在） |
+| `pnpm typecheck` (domain + web) | ✅ 通过 |
+| `pnpm test` (domain 315 + web 1139) | ✅ 1454 tests，0 failures |
+| `pnpm check:terminology` | ✅ 通过 |
+| `pnpm build:web` | ✅ 通过 |
+| `pnpm --dir apps/web test tests/ollama-provider.test.ts tests/local-model-runtime-service.test.ts` | ✅ 36 tests，0 failures |
+
+### 真实 Smoke 验证
+
+执行命令：
+```bash
+LOCAL_MODEL_PROVIDER=ollama_openai_compatible \
+LOCAL_MODEL_BASE_URL=http://localhost:11434/v1 \
+LOCAL_MODEL_API_KEY=ollama \
+EMBEDDING_MODEL_ID=qwen3-embedding:0.6b \
+REASONING_MODEL_ID=qwen3:1.7b \
+pnpm smoke:model
+```
+
+结果：**Blocked -- Ollama endpoint unavailable**（Ollama 未在本地运行）。脚本正确输出 `Blocked: Ollama endpoint unavailable` 且 exit code 非 0，**没有伪造成功**。
+
+Review 修复后复验：
+```bash
+pnpm smoke:model
+```
+
+结果：**PASS**。输出确认：
+- Probe Available: `true`
+- Embedding Available: `true`
+- Embedding Dimension: `1024`
+- Reasoning Available: `true`
+- ModelSmokeTestRun AuditLogIds: `3 entries`
+- Exit code: `0`
+
+说明：本机 `http://localhost:11434/v1` endpoint 可用，smoke runner 现已真实调用 `/v1/models`、`/v1/embeddings`、`/v1/chat/completions`。
+
+### 写入的智能数据结构
+
+| 数据结构 | Dexie 表 | 写入时机 |
+|----------|----------|----------|
+| EmbeddingVector | embeddingVectors | embedding 调用成功后，由 LocalModelRuntimeService 写入 |
+| AlgorithmAuditLog | algorithmAuditLogs | 每次 probe/embedding/reasoning 调用后，由 Service 层写入 |
+| ModelSmokeTestRun | modelSmokeTestRuns | smoke 完成后，由 ModelSmokeService 写入 |
+| ModelRuntimeStatus | modelRuntimeStatuses | probe 后，由 LocalModelRuntimeService 写入 |
+
+**已确认**：
+- 不存储 `message.reasoning`
+- 不存储原文全文
+- audit log 不记录完整 vector，仅记录 vectorHash / outputHash；EmbeddingVector 保存 vectorBlob 供后续向量能力使用
+- audit log 仅包含 inputHash / outputHash
+- ModelSmokeTestRun 记录本轮 probe / embedding / summary 对应的 3 条 auditLogIds
+- sanitizeReasoningContent 正确剥离 `...` 和 CoT 片段
+
+### 剩余风险
+
+1. **Qwen 模型输出格式变化**：sanitizer 基于观察到的模式设计，Qwen 后续版本可能输出不同格式的思考内容
+2. **SemanticFeatureSnapshot 新建默认值**：当 target 无现有 snapshot 时，service 创建默认值（source='local_model_runtime_service'），需要后续任务确认默认值合理
+3. **Settings UI 加载时序**：Settings 通过 useEffect 异步读取 IndexedDB，首次渲染可能短暂显示"检测中..."
+
+### 影响范围
+
+- 领域层：新增 4 个接口 + 1 个 ProbeResult 类型 + 4 个 ID 函数，向后兼容
+- Schema 升级：v29 → v30，新增 4 张表，无数据迁移，upgrade 为空函数
+- Provider 层：新增 OllamaOpenAICompatibleProvider，不影响现有 Dev Provider
+- JobProcessor：recompute_semantic_features 行为从"仅标记 stale"改为"真实调用模型"（仅 model_available 时）
+- Settings UI：智能能力面板从静态文本改为异步读取 ModelRuntimeStatus
+
+---
+
 ## Phase3.3 +Round 6 devlog -- P33-RUNTIME-002 Background Job Queue + Incremental Recompute
 
 **日期**: 2026-05-17

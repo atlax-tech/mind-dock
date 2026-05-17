@@ -9,6 +9,10 @@ export type {
   ReviewSnapshot,
   DailyBriefSnapshot,
   SearchIndexRecord,
+  EmbeddingVector,
+  AlgorithmAuditLog,
+  ModelSmokeTestRun,
+  ModelRuntimeStatus,
   JobType,
   JobStatus,
   BackgroundJob,
@@ -25,6 +29,10 @@ export {
   makeGrowthSignalId,
   makeMaintenanceActionId,
   makeBackgroundJobId,
+  makeEmbeddingVectorId,
+  makeAlgorithmAuditLogId,
+  makeModelSmokeTestRunId,
+  makeModelRuntimeStatusId,
 } from './ids'
 
 export type {
@@ -39,6 +47,7 @@ export type {
   EmbeddingResult,
   SummaryResult,
   ExplanationResult,
+  ProbeResult,
   EmbeddedModelProvider,
   ReasoningProvider,
   CapabilityStatus,

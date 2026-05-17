@@ -735,6 +735,93 @@ export interface PersistedBackgroundJob extends BackgroundJobRecord {
   id: string
 }
 
+export interface EmbeddingVectorRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  targetType: string
+  targetId: string
+  contentHash: string
+  providerId: string
+  modelId: string
+  modelVersion: string
+  dimension: number
+  vectorHash: string
+  vectorBlob: ArrayBuffer
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PersistedEmbeddingVector extends EmbeddingVectorRecord {
+  id: string
+}
+
+export interface AlgorithmAuditLogRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  providerId: string
+  modelId: string
+  modelVersion: string
+  capability: string
+  durationMs: number
+  success: boolean
+  fallbackUsed: boolean
+  inputHash: string
+  outputHash: string
+  errorCode: string | null
+  errorMessage: string | null
+  createdAt: string
+}
+
+export interface PersistedAlgorithmAuditLog extends AlgorithmAuditLogRecord {
+  id: string
+}
+
+export interface ModelSmokeTestRunRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  probeAvailable: boolean
+  embeddingAvailable: boolean
+  reasoningAvailable: boolean
+  embeddingDimension: number | null
+  embeddingVectorHash: string | null
+  reasoningOutputHash: string | null
+  auditLogIds: string[]
+  status: string
+  errorMessage: string | null
+  createdAt: string
+}
+
+export interface PersistedModelSmokeTestRun extends ModelSmokeTestRunRecord {
+  id: string
+}
+
+export interface ModelRuntimeStatusRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  providerId: string
+  providerName: string
+  mode: string
+  embeddingStatus: string
+  reasoningStatus: string
+  embeddingModelId: string
+  reasoningModelId: string
+  lastProbeAt: string
+  lastProbeSuccess: boolean
+  lastSuccessfulProbeAt: string | null
+  lastErrorCode: string | null
+  lastErrorMessage: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PersistedModelRuntimeStatus extends ModelRuntimeStatusRecord {
+  id: string
+}
+
 const db = new Dexie('AtlaxDB') as Dexie & {
   dockItems: EntityTable<DockItemRecord, 'id'>
   tags: EntityTable<TagRecord, 'id'>
@@ -768,6 +855,10 @@ const db = new Dexie('AtlaxDB') as Dexie & {
   dailyBriefSnapshots: EntityTable<DailyBriefSnapshotRecord, 'id'>
   searchIndexRecords: EntityTable<SearchIndexRecordRecord, 'id'>
   backgroundJobs: EntityTable<BackgroundJobRecord, 'id'>
+  embeddingVectors: EntityTable<EmbeddingVectorRecord, 'id'>
+  algorithmAuditLogs: EntityTable<AlgorithmAuditLogRecord, 'id'>
+  modelSmokeTestRuns: EntityTable<ModelSmokeTestRunRecord, 'id'>
+  modelRuntimeStatuses: EntityTable<ModelRuntimeStatusRecord, 'id'>
 }
 
 db.version(1).stores({
@@ -1298,6 +1389,13 @@ db.version(29).stores({
   backgroundJobs: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+status], [userId+workspaceId+jobType], [userId+workspaceId+targetType+targetId], [userId+workspaceId+status+priority], nextRunAt',
 }).upgrade(() => {})
 
+db.version(30).stores({
+  embeddingVectors: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], providerId, modelId, createdAt, updatedAt',
+  algorithmAuditLogs: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+capability], providerId, modelId, capability, success, createdAt',
+  modelSmokeTestRuns: 'id, userId, workspaceId, [userId+workspaceId], status, createdAt',
+  modelRuntimeStatuses: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+providerId], providerId, mode, embeddingStatus, reasoningStatus, updatedAt',
+}).upgrade(() => {})
+
 export { db }
 export const dockItemsTable = db.table('dockItems')
 export const capturesTable = dockItemsTable
@@ -1333,3 +1431,7 @@ export const reviewSnapshotsTable = db.table('reviewSnapshots')
 export const dailyBriefSnapshotsTable = db.table('dailyBriefSnapshots')
 export const searchIndexRecordsTable = db.table('searchIndexRecords')
 export const backgroundJobsTable = db.table('backgroundJobs')
+export const embeddingVectorsTable = db.table('embeddingVectors')
+export const algorithmAuditLogsTable = db.table('algorithmAuditLogs')
+export const modelSmokeTestRunsTable = db.table('modelSmokeTestRuns')
+export const modelRuntimeStatusesTable = db.table('modelRuntimeStatuses')

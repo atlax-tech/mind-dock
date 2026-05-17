@@ -32,6 +32,9 @@ import { emit } from '@/lib/events';
 import { isRecommendationPending, isRecommendationResolved, isSupportedCandidateType, describeRecommendationAction, describeRecommendationReason, describeApplyPreview, formatConfidenceLevel, STATUS_LABELS, CANDIDATE_TYPE_LABELS } from '@/lib/recommendation-i18n';
 import { getLocalHealthReport, type LocalHealthReport } from '@/lib/localHealthReport'
 import { getCapabilityStatus } from '@/lib/modelProvider'
+import { getModelRuntimeStatus } from '@/lib/intelligenceRepository'
+import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
+import type { ModelRuntimeStatus } from '@atlax/domain'
 import {
   Home,
   Brain,
@@ -2806,121 +2809,179 @@ const ReviewView = ({ onNavigateToMind, onNavigateToSuggestion }: { onNavigateTo
 
 // 6. 设置视图 (Settings View)
 // 此处为Mock功能，等待后端接入 — 金库路径、同步状态均为Mock数据
-const SettingsView = () => (
-  <div className="max-w-[600px] mx-auto animate-in fade-in duration-500">
-    <div className="mb-6 mt-2">
-      <h1 className="text-3xl font-semibold mb-2 text-white tracking-tight">系统设置</h1>
-      <p className="text-[#899298] text-sm">本地模式 · 数据仅存储在当前设备</p>
-    </div>
+const SettingsView = () => {
+  const [runtimeStatus, setRuntimeStatus] = useState<ModelRuntimeStatus | null>(null)
+  const [statusLoading, setStatusLoading] = useState(true)
 
-    <div className="space-y-4">
-      <GlassPanel className="p-6">
-        <h2 className="text-base font-medium text-white mb-4 border-b border-white/10 pb-3 flex items-center gap-2">
-          <HardDrive className="w-4 h-4 text-[#86d7ff]" /> 本地存储库 (Local Vault)
-        </h2>
+  useEffect(() => {
+    const user = getCurrentUser()
+    if (!user) {
+      setStatusLoading(false)
+      return
+    }
+    getModelRuntimeStatus(user.id, 'ollama-openai-compatible', DEFAULT_WORKSPACE_ID)
+      .then((result) => {
+        setRuntimeStatus(result)
+      })
+      .catch(() => {
+        setRuntimeStatus(null)
+      })
+      .finally(() => {
+        setStatusLoading(false)
+      })
+  }, [])
 
-        <div className="space-y-5">
-          <div>
-            <label className="text-xs text-[#899298] block mb-1.5">存储模式</label>
-            <p className="text-[9px] text-[#899298] mt-0.5">当前数据保存在浏览器本地 IndexedDB</p>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                readOnly
-                value="Browser Local Storage Mode"
-                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-[#e0e3e6] focus:outline-none focus:border-[#86d7ff]/50"
-              />
-              <button disabled className="px-3 py-1.5 bg-white/5 text-[#899298] rounded-lg text-xs cursor-not-allowed opacity-50" title="Desktop App 后开放真实本地金库路径">更改位置</button>
-            </div>
-            <p className="text-[9px] text-[#899298]/60 mt-1.5">Desktop 打包后再开放真实本地金库路径</p>
-          </div>
-          <div className="flex items-center justify-between pt-1">
+  const capStatus = getCapabilityStatus()
+
+  let modeLabel: string
+  let modeDesc: string
+  let modeColor: string
+  let dotColor: string
+  let embLabel: string
+  let reasLabel: string
+  let embProviderId: string | null = null
+  let reasProviderId: string | null = null
+
+  if (runtimeStatus) {
+    embProviderId = runtimeStatus.providerId || null
+    reasProviderId = runtimeStatus.providerId || null
+    if (runtimeStatus.mode === 'model_available') {
+      modeLabel = 'Ollama 可用'
+      modeDesc = 'Embedding 可用 · Reasoning 可用'
+      modeColor = 'text-[#9cf4d4]'
+      dotColor = 'bg-[#9cf4d4]'
+    } else if (runtimeStatus.mode === 'degraded') {
+      modeLabel = 'Ollama 部分可用'
+      const embSt = runtimeStatus.embeddingStatus === 'available' ? '可用' : runtimeStatus.embeddingStatus === 'error' ? '错误' : '不可用'
+      const reasSt = runtimeStatus.reasoningStatus === 'available' ? '可用' : runtimeStatus.reasoningStatus === 'error' ? '错误' : '不可用'
+      modeDesc = `Embedding ${embSt} · Reasoning ${reasSt}`
+      modeColor = 'text-amber-400'
+      dotColor = 'bg-amber-400'
+    } else if (runtimeStatus.mode === 'unavailable') {
+      modeLabel = 'Ollama 不可用'
+      modeDesc = '端点未连接'
+      modeColor = 'text-[#ffb4ab]'
+      dotColor = 'bg-[#ffb4ab]'
+    } else {
+      modeLabel = '核心模式'
+      modeDesc = '仅本地规则引擎可用'
+      modeColor = 'text-[#899298]'
+      dotColor = 'bg-[#899298]'
+    }
+    embLabel = runtimeStatus.embeddingStatus === 'available' ? '可用' : runtimeStatus.embeddingStatus === 'error' ? '错误' : '不可用'
+    reasLabel = runtimeStatus.reasoningStatus === 'available' ? '可用' : runtimeStatus.reasoningStatus === 'error' ? '错误' : '不可用'
+  } else {
+    embProviderId = capStatus.embeddingProviderId
+    reasProviderId = capStatus.reasoningProviderId
+    if (capStatus.mode === 'model_available') {
+      const isDev = capStatus.embeddingProviderId === 'dev' || capStatus.reasoningProviderId === 'dev'
+      modeLabel = isDev ? '开发模式' : '模型可用'
+      modeDesc = isDev ? 'Mock Provider 可用（仅供开发/测试，不代表真实模型能力）' : 'Provider 已就绪'
+      modeColor = isDev ? 'text-amber-400' : 'text-[#9cf4d4]'
+      dotColor = isDev ? 'bg-amber-400' : 'bg-[#9cf4d4]'
+    } else if (capStatus.mode === 'core') {
+      modeLabel = '核心模式'
+      modeDesc = '仅本地规则引擎可用'
+      modeColor = 'text-[#899298]'
+      dotColor = 'bg-[#899298]'
+    } else {
+      modeLabel = '降级模式'
+      modeDesc = '模型不可用，系统以基础能力运行'
+      modeColor = 'text-[#ffb4ab]'
+      dotColor = 'bg-[#ffb4ab]'
+    }
+    embLabel = capStatus.embeddingAvailability === 'available' ? '可用' : capStatus.embeddingAvailability === 'error' ? '错误' : '不可用'
+    reasLabel = capStatus.reasoningAvailability === 'available' ? '可用' : capStatus.reasoningAvailability === 'error' ? '错误' : '不可用'
+  }
+
+  return (
+    <div className="max-w-[600px] mx-auto animate-in fade-in duration-500">
+      <div className="mb-6 mt-2">
+        <h1 className="text-3xl font-semibold mb-2 text-white tracking-tight">系统设置</h1>
+        <p className="text-[#899298] text-sm">本地模式 · 数据仅存储在当前设备</p>
+      </div>
+
+      <div className="space-y-4">
+        <GlassPanel className="p-6">
+          <h2 className="text-base font-medium text-white mb-4 border-b border-white/10 pb-3 flex items-center gap-2">
+            <HardDrive className="w-4 h-4 text-[#86d7ff]" /> 本地存储库 (Local Vault)
+          </h2>
+
+          <div className="space-y-5">
             <div>
-              <p className="text-white text-xs font-medium">离线优先模式</p>
-              <p className="text-[#899298] text-[10px] mt-0.5">始终启用（本地模式）· 所有数据保存在本地设备上</p>
+              <label className="text-xs text-[#899298] block mb-1.5">存储模式</label>
+              <p className="text-[9px] text-[#899298] mt-0.5">当前数据保存在浏览器本地 IndexedDB</p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value="Browser Local Storage Mode"
+                  className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-[#e0e3e6] focus:outline-none focus:border-[#86d7ff]/50"
+                />
+                <button disabled className="px-3 py-1.5 bg-white/5 text-[#899298] rounded-lg text-xs cursor-not-allowed opacity-50" title="Desktop App 后开放真实本地金库路径">更改位置</button>
+              </div>
+              <p className="text-[9px] text-[#899298]/60 mt-1.5">Desktop 打包后再开放真实本地金库路径</p>
             </div>
-            <div className="w-8 h-5 bg-[#86d7ff] rounded-full relative opacity-70 cursor-not-allowed shadow-[0_0_10px_rgba(134,215,255,0.3)]">
-              <div className="absolute top-0.5 right-0.5 w-4 h-4 bg-[#0b0f11] rounded-full"></div>
+            <div className="flex items-center justify-between pt-1">
+              <div>
+                <p className="text-white text-xs font-medium">离线优先模式</p>
+                <p className="text-[#899298] text-[10px] mt-0.5">始终启用（本地模式）· 所有数据保存在本地设备上</p>
+              </div>
+              <div className="w-8 h-5 bg-[#86d7ff] rounded-full relative opacity-70 cursor-not-allowed shadow-[0_0_10px_rgba(134,215,255,0.3)]">
+                <div className="absolute top-0.5 right-0.5 w-4 h-4 bg-[#0b0f11] rounded-full"></div>
+              </div>
             </div>
           </div>
-        </div>
-      </GlassPanel>
+        </GlassPanel>
 
-      <GlassPanel className="p-6">
-        <h2 className="text-base font-medium text-white mb-4 border-b border-white/10 pb-3 flex items-center gap-2">
-          <Brain className="w-4 h-4 text-[#c8a0f0]" /> 智能能力 (Intelligence)
-        </h2>
-        {(() => {
-          try {
-            const status = getCapabilityStatus();
-            const modeLabel = status.mode === 'core'
-              ? '核心模式'
-              : status.mode === 'model_available'
-                ? (status.embeddingProviderId === 'dev' || status.reasoningProviderId === 'dev' ? '开发模式' : '模型可用')
-                : '降级模式';
-            const modeDesc = status.mode === 'core'
-              ? '仅本地规则引擎可用'
-              : status.mode === 'model_available'
-                ? (status.embeddingProviderId === 'dev' || status.reasoningProviderId === 'dev' ? 'Mock Provider 可用（仅供开发/测试，不代表真实模型能力）' : 'Provider 已就绪')
-                : '模型不可用，系统以基础能力运行';
-            const modeColor = status.mode === 'core'
-              ? 'text-[#899298]'
-              : status.mode === 'model_available'
-                ? (status.embeddingProviderId === 'dev' || status.reasoningProviderId === 'dev' ? 'text-amber-400' : 'text-[#9cf4d4]')
-                : 'text-[#ffb4ab]';
-            const dotColor = status.mode === 'core'
-              ? 'bg-[#899298]'
-              : status.mode === 'model_available'
-                ? (status.embeddingProviderId === 'dev' || status.reasoningProviderId === 'dev' ? 'bg-amber-400' : 'bg-[#9cf4d4]')
-                : 'bg-[#ffb4ab]';
-            return (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <div className={`w-2 h-2 rounded-full ${dotColor}`} />
-                      <p className={`text-xs font-medium ${modeColor}`}>{modeLabel}</p>
-                    </div>
-                    <p className="text-[#899298] text-[10px] mt-1 ml-4">{modeDesc}</p>
+        <GlassPanel className="p-6">
+          <h2 className="text-base font-medium text-white mb-4 border-b border-white/10 pb-3 flex items-center gap-2">
+            <Brain className="w-4 h-4 text-[#c8a0f0]" /> 智能能力 (Intelligence)
+          </h2>
+          {statusLoading ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-[#899298] animate-pulse" />
+                <p className="text-xs font-medium text-[#899298]">检测中...</p>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full ${dotColor}`} />
+                    <p className={`text-xs font-medium ${modeColor}`}>{modeLabel}</p>
                   </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3 pt-1">
-                  <div className="bg-white/5 rounded-lg p-3">
-                    <p className="text-[9px] text-[#899298] font-semibold tracking-wider uppercase mb-1">Embedding</p>
-                    <p className="text-xs text-white">{status.embeddingAvailability === 'available' ? '可用' : status.embeddingAvailability === 'error' ? '错误' : '不可用'}</p>
-                    {status.embeddingProviderId && <p className="text-[9px] text-[#899298] mt-0.5">{status.embeddingProviderId}</p>}
-                  </div>
-                  <div className="bg-white/5 rounded-lg p-3">
-                    <p className="text-[9px] text-[#899298] font-semibold tracking-wider uppercase mb-1">Reasoning</p>
-                    <p className="text-xs text-white">{status.reasoningAvailability === 'available' ? '可用' : status.reasoningAvailability === 'error' ? '错误' : '不可用'}</p>
-                    {status.reasoningProviderId && <p className="text-[9px] text-[#899298] mt-0.5">{status.reasoningProviderId}</p>}
-                  </div>
+                  <p className="text-[#899298] text-[10px] mt-1 ml-4">{modeDesc}</p>
                 </div>
               </div>
-            );
-          } catch {
-            return (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-[#899298]" />
-                  <p className="text-xs font-medium text-[#899298]">核心模式</p>
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                <div className="bg-white/5 rounded-lg p-3">
+                  <p className="text-[9px] text-[#899298] font-semibold tracking-wider uppercase mb-1">Embedding</p>
+                  <p className="text-xs text-white">{embLabel}</p>
+                  {embProviderId && <p className="text-[9px] text-[#899298] mt-0.5">{embProviderId}</p>}
                 </div>
-                <p className="text-[#899298] text-[10px] ml-4">仅本地规则引擎可用</p>
+                <div className="bg-white/5 rounded-lg p-3">
+                  <p className="text-[9px] text-[#899298] font-semibold tracking-wider uppercase mb-1">Reasoning</p>
+                  <p className="text-xs text-white">{reasLabel}</p>
+                  {reasProviderId && <p className="text-[9px] text-[#899298] mt-0.5">{reasProviderId}</p>}
+                </div>
               </div>
-            );
-          }
-        })()}
-      </GlassPanel>
+            </div>
+          )}
+        </GlassPanel>
 
-      <GlassPanel className="p-6">
-        <h2 className="text-base font-medium text-white mb-4 border-b border-white/10 pb-3 flex items-center gap-2">
-          <Cloud className="w-4 h-4 text-[#899298]" /> 云端同步
-        </h2>
-        <p className="text-xs text-[#899298] leading-relaxed">云端存储不属于当前路线。Atlax 当前仅支持本地 IndexedDB 存储，所有数据保存在您的设备上。</p>
-      </GlassPanel>
+        <GlassPanel className="p-6">
+          <h2 className="text-base font-medium text-white mb-4 border-b border-white/10 pb-3 flex items-center gap-2">
+            <Cloud className="w-4 h-4 text-[#899298]" /> 云端同步
+          </h2>
+          <p className="text-xs text-[#899298] leading-relaxed">云端存储不属于当前路线。Atlax 当前仅支持本地 IndexedDB 存储，所有数据保存在您的设备上。</p>
+        </GlassPanel>
+      </div>
     </div>
-  </div>
-);
+  )
+}
 
 // 7. 每日简报视图 (Daily Briefing View)
 // 真实数据接入：使用 useDailyBrief hook 聚合本地数据

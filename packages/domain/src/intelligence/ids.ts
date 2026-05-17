@@ -37,3 +37,19 @@ export function makeMaintenanceActionId(userId: string, workspaceId: string, act
 export function makeBackgroundJobId(userId: string, workspaceId: string, jobType: string, targetType: string, targetId: string, contentHash: string): string {
   return `${userId}_job_${jobType}_${workspaceId}_${targetType}_${targetId}_${contentHash}`
 }
+
+export function makeEmbeddingVectorId(userId: string, workspaceId: string, targetType: string, targetId: string): string {
+  return `${userId}_ev_${workspaceId}_${targetType}_${targetId}`
+}
+
+export function makeAlgorithmAuditLogId(userId: string, workspaceId: string, capability: string, timestamp: number): string {
+  return `${userId}_aal_${workspaceId}_${capability}_${timestamp}`
+}
+
+export function makeModelSmokeTestRunId(userId: string, workspaceId: string, timestamp: number): string {
+  return `${userId}_mstr_${workspaceId}_${timestamp}`
+}
+
+export function makeModelRuntimeStatusId(userId: string, workspaceId: string, providerId: string): string {
+  return `${userId}_mrs_${workspaceId}_${providerId}`
+}

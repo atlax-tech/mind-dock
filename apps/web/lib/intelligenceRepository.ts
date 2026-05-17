@@ -10,6 +10,10 @@ import type {
   ReviewSnapshot,
   DailyBriefSnapshot,
   SearchIndexRecord,
+  EmbeddingVector,
+  AlgorithmAuditLog,
+  ModelSmokeTestRun,
+  ModelRuntimeStatus,
 } from '@atlax/domain'
 import {
   makeLocalTextFeatureSnapshotId,
@@ -18,6 +22,10 @@ import {
   makePreferenceMemoryId,
   makeReviewSnapshotId,
   makeDailyBriefSnapshotId,
+  makeEmbeddingVectorId,
+  makeAlgorithmAuditLogId,
+  makeModelSmokeTestRunId,
+  makeModelRuntimeStatusId,
 } from '@atlax/domain'
 
 function collisionSafeSuffix(): string {
@@ -420,4 +428,78 @@ export async function getSearchIndexViewModel(
   const workspaceId = options?.workspaceId ?? DEFAULT_WORKSPACE_ID
   const results = await searchIndexRecords(userId, query, workspaceId)
   return { query, results, total: results.length }
+}
+
+export async function upsertEmbeddingVector(
+  record: Omit<EmbeddingVector, 'id'>,
+  workspaceId: string = DEFAULT_WORKSPACE_ID,
+): Promise<void> {
+  const id = makeEmbeddingVectorId(record.userId, workspaceId, record.targetType, record.targetId)
+  await db.embeddingVectors.put({ ...record, id, workspaceId })
+}
+
+export async function getEmbeddingVectorByTarget(
+  userId: string,
+  targetType: string,
+  targetId: string,
+  workspaceId: string = DEFAULT_WORKSPACE_ID,
+): Promise<EmbeddingVector | null> {
+  const results = await db.embeddingVectors
+    .where('[userId+workspaceId+targetType+targetId]')
+    .equals([userId, workspaceId, targetType, targetId])
+    .toArray()
+  return (results[0] as unknown as EmbeddingVector) ?? null
+}
+
+export async function upsertAlgorithmAuditLog(
+  record: Omit<AlgorithmAuditLog, 'id'>,
+  workspaceId: string = DEFAULT_WORKSPACE_ID,
+): Promise<string> {
+  const id = makeAlgorithmAuditLogId(record.userId, workspaceId, record.capability, Date.now())
+  await db.algorithmAuditLogs.put({ ...record, id, workspaceId })
+  return id
+}
+
+export async function listAuditLogs(
+  userId: string,
+  capability?: string,
+  workspaceId: string = DEFAULT_WORKSPACE_ID,
+): Promise<AlgorithmAuditLog[]> {
+  const results = await db.algorithmAuditLogs
+    .where('[userId+workspaceId]')
+    .equals([userId, workspaceId])
+    .toArray()
+  if (capability) {
+    return results.filter(r => r.capability === capability) as unknown as AlgorithmAuditLog[]
+  }
+  return results as unknown as AlgorithmAuditLog[]
+}
+
+export async function upsertModelSmokeTestRun(
+  record: Omit<ModelSmokeTestRun, 'id'>,
+  workspaceId: string = DEFAULT_WORKSPACE_ID,
+): Promise<string> {
+  const id = makeModelSmokeTestRunId(record.userId, workspaceId, Date.now())
+  await db.modelSmokeTestRuns.put({ ...record, id, workspaceId })
+  return id
+}
+
+export async function upsertModelRuntimeStatus(
+  record: Omit<ModelRuntimeStatus, 'id'>,
+  workspaceId: string = DEFAULT_WORKSPACE_ID,
+): Promise<void> {
+  const id = makeModelRuntimeStatusId(record.userId, workspaceId, record.providerId)
+  await db.modelRuntimeStatuses.put({ ...record, id, workspaceId })
+}
+
+export async function getModelRuntimeStatus(
+  userId: string,
+  providerId: string,
+  workspaceId: string = DEFAULT_WORKSPACE_ID,
+): Promise<ModelRuntimeStatus | null> {
+  const results = await db.modelRuntimeStatuses
+    .where('[userId+workspaceId+providerId]')
+    .equals([userId, workspaceId, providerId])
+    .toArray()
+  return (results[0] as unknown as ModelRuntimeStatus) ?? null
 }

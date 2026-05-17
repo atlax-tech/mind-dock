@@ -147,7 +147,78 @@ export interface SearchIndexRecord extends IntelligenceAuditFields {
   expiredAt: string | null
 }
 
-export type JobType = 'recompute_local_features' | 'recompute_semantic_features' | 'refresh_recommendations'
+export interface EmbeddingVector {
+  id: string
+  userId: string
+  workspaceId: string
+  targetType: string
+  targetId: string
+  contentHash: string
+  providerId: string
+  modelId: string
+  modelVersion: string
+  dimension: number
+  vectorHash: string
+  vectorBlob: ArrayBuffer
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AlgorithmAuditLog {
+  id: string
+  userId: string
+  workspaceId: string
+  providerId: string
+  modelId: string
+  modelVersion: string
+  capability: string
+  durationMs: number
+  success: boolean
+  fallbackUsed: boolean
+  inputHash: string
+  outputHash: string
+  errorCode: string | null
+  errorMessage: string | null
+  createdAt: string
+}
+
+export interface ModelSmokeTestRun {
+  id: string
+  userId: string
+  workspaceId: string
+  probeAvailable: boolean
+  embeddingAvailable: boolean
+  reasoningAvailable: boolean
+  embeddingDimension: number | null
+  embeddingVectorHash: string | null
+  reasoningOutputHash: string | null
+  auditLogIds: string[]
+  status: 'pass' | 'fail' | 'blocked'
+  errorMessage: string | null
+  createdAt: string
+}
+
+export interface ModelRuntimeStatus {
+  id: string
+  userId: string
+  workspaceId: string
+  providerId: string
+  providerName: string
+  mode: 'core' | 'model_available' | 'degraded' | 'unavailable'
+  embeddingStatus: 'available' | 'unavailable' | 'error'
+  reasoningStatus: 'available' | 'unavailable' | 'error'
+  embeddingModelId: string
+  reasoningModelId: string
+  lastProbeAt: string
+  lastProbeSuccess: boolean
+  lastSuccessfulProbeAt: string | null
+  lastErrorCode: string | null
+  lastErrorMessage: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type JobType = 'recompute_local_features' | 'recompute_semantic_features' | 'refresh_recommendations' | 'embedding_generate' | 'summary_generate' | 'model_smoke_test'
 export type JobStatus = 'pending' | 'running' | 'complete' | 'failed' | 'skipped' | 'degraded' | 'pending_model'
 
 export interface BackgroundJob {
