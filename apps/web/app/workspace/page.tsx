@@ -2930,9 +2930,12 @@ const SettingsView = ({ onToast }: { onToast: (msg: string) => void }) => {
     }
 
     const capStatusNow = getCapabilityStatus()
-    if (!capStatusNow.embeddingProviderId && !capStatusNow.reasoningProviderId) {
-      onToast('未检测到本地模型 Provider，请确认 Ollama 服务已启动并刷新页面')
-      return
+    const embIsDev = capStatusNow.embeddingProviderId === 'dev' || (capStatusNow.embeddingProviderId ?? '').startsWith('mock')
+    const reasIsDev = capStatusNow.reasoningProviderId === 'dev' || (capStatusNow.reasoningProviderId ?? '').startsWith('mock')
+    const hasRealProvider = (capStatusNow.embeddingProviderId && !embIsDev) || (capStatusNow.reasoningProviderId && !reasIsDev)
+
+    if (!hasRealProvider) {
+      initOllamaProviders()
     }
 
     setProbeLoading(true)

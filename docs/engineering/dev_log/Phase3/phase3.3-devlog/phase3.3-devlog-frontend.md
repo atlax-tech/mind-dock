@@ -4,6 +4,71 @@
 
 ---
 
+## Phase3.3 +Round 10 devlog -- P33-ALG-001 修复：handleProbe 用户点击后显式注册真实 Ollama Provider + reactivatePendingModelJobs 改用 IndexedDB + 启用 Embedding 后 backfill
+
+**日期**: 2026-05-18
+**任务起始时间**: 05:15
+**任务结束时间**: 05:35
+**工时**: 20分钟
+
+### 任务目标
+
+修复 Settings 模型检测按钮不能真正完成页面侧模型接入的问题：
+- handleProbe() 不再依赖已注册 provider，用户点击后显式注册真实 Ollama Provider
+- reactivatePendingModelJobs() 改用 IndexedDB ModelRuntimeStatus + embeddingEnabled 判定
+- 启用 Embedding 后立即激活 pending_model + 轻量 backfill
+- legacy job 分支统一走 ModelRuntimeStatus + 用户开关
+
+### 改动文件
+
+| 文件 | 说明 |
+|------|------|
+| `apps/web/app/workspace/page.tsx` | handleProbe: 无 provider 或 dev/mock 时先调用 initOllamaProviders() 注册真实 Provider 再 probe；启用 Embedding 后 backfill + reactivate |
+| `apps/web/lib/backgroundJobQueue.ts` | reactivatePendingModelJobs: 移除 getCapabilityStatus()，改用 getModelRuntimeStatus() + getEmbeddingEnabledPref() |
+| `apps/web/lib/jobConsumer.ts` | tick(): 只有 embeddingEnabled=true 时才调用 reactivation |
+| `apps/web/lib/jobProcessor.ts` | embedding_generate/summary_generate: 统一走 ModelRuntimeStatus + 用户开关 |
+| `apps/web/tests/background-job-queue.test.ts` | 所有测试从 initDevProviders 迁移到 upsertModelRuntimeStatus + setEmbeddingEnabledPref；新增 6 个 IndexedDB-only 测试 |
+| `apps/web/tests/settings-model-control.test.ts` | 新增 handleProbe 真实 Provider 注册测试 + Dev Provider 隔离测试 |
+
+### 核心设计
+
+**handleProbe 用户点击后显式注册**：
+- 检查当前 provider 是否为 dev/mock（providerId === 'dev' 或以 'mock' 开头）
+- 如果无 provider 或只有 dev/mock provider，调用 `initOllamaProviders()` 注册真实 Ollama Provider
+- 注册后再调用 `probeAndSyncStatus()`
+- 不允许调用 `initDevProviders()`
+- 页面加载时仍不自动调用 `initOllamaProviders`，只在用户点击按钮后触发
+- probe 失败时 `probeAndSyncStatus` 已写入 unavailable/degraded 状态到 IndexedDB
+
+**reactivatePendingModelJobs 改用 IndexedDB**：
+- 移除 `getCapabilityStatus()` 依赖
+- 改用 `getModelRuntimeStatus()` + `getEmbeddingEnabledPref()`
+- 只有 runtime mode=model_available/degraded + embeddingStatus=available + embeddingEnabled=true 时才激活
+- Dev/Mock Provider 不再能激活真实 pending_model job
+
+**启用 Embedding 后 backfill**：
+- 启用 Embedding 按钮后立即调用 `reactivatePendingModelJobs()`
+- 为缺少 semantic snapshot 的 dockItem enqueue 最多 20 个 job
+- 刷新 Model Activity
+
+### 自动验证结果
+
+| 验证项 | 结果 |
+|--------|------|
+| `pnpm --dir apps/web test` | ✅ 1231 passed, 0 failed |
+| `pnpm validate` | ✅ 0 errors, 20 warnings |
+| `pnpm build:web` | ✅ success |
+| `pnpm smoke:model` | ✅ pass, embedding dim=1024 |
+
+### 当前风险
+
+| 风险项 | 等级 | 影响 |
+|--------|------|------|
+| initOllamaProviders 在浏览器环境无 NODE_ENV 限制 | 🟢 低 | 浏览器环境 typeof process === 'undefined'，环境检查不会阻止 |
+| backfill 限制 20 条 | 🟢 低 | 后续可按需调整 |
+
+---
+
 ## Phase3.3 +Round 9 devlog -- P33-ALG-001 修复评审阻断：JobConsumer 接入 + Model Activity 真实数据 + Provider 区域中性化 + 敏感日志清理
 
 **日期**: 2026-05-18

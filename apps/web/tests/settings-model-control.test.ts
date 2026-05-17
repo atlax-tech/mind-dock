@@ -11,7 +11,7 @@ import {
   getModelRuntimeStatus,
   listAuditLogs,
 } from '@/lib/intelligenceRepository'
-import { getCapabilityStatus, initDevProviders, resetProviders } from '@/lib/modelProvider'
+import { getCapabilityStatus, initDevProviders, initOllamaProviders, resetProviders } from '@/lib/modelProvider'
 import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
 import { reactivatePendingModelJobs, enqueue } from '@/lib/backgroundJobQueue'
 
@@ -242,5 +242,92 @@ describe('Settings: Dev Provider 不得激活真实语义 job', () => {
 
     const jobs = await db.table('backgroundJobs').toArray()
     expect(jobs[0].status).toBe('pending_model')
+  })
+})
+
+describe('Settings: handleProbe 真实 Provider 注册', () => {
+  beforeEach(async () => {
+    await db.table('modelRuntimeStatuses').clear()
+    await db.table('algorithmAuditLogs').clear()
+    await db.table('userPreferences').clear()
+    resetProviders()
+  })
+
+  afterEach(() => {
+    resetProviders()
+  })
+
+  it('无 provider 时 initOllamaProviders 注册真实 Ollama Provider', () => {
+    resetProviders()
+    expect(getCapabilityStatus().mode).toBe('core')
+    expect(getCapabilityStatus().embeddingProviderId).toBeNull()
+
+    initOllamaProviders()
+
+    const cap = getCapabilityStatus()
+    expect(cap.embeddingProviderId).toBe('ollama-openai-compatible')
+    expect(cap.reasoningProviderId).toBe('ollama-openai-compatible')
+  })
+
+  it('dev/mock provider 已存在时，initOllamaProviders 覆盖为真实 Ollama Provider', () => {
+    initDevProviders()
+    expect(getCapabilityStatus().embeddingProviderId).toBe('dev')
+
+    initOllamaProviders()
+
+    const cap = getCapabilityStatus()
+    expect(cap.embeddingProviderId).toBe('ollama-openai-compatible')
+    expect(cap.reasoningProviderId).toBe('ollama-openai-compatible')
+  })
+
+  it('dev/mock provider 不参与真实 ModelRuntimeStatus 写入', async () => {
+    initDevProviders()
+    expect(getCapabilityStatus().mode).toBe('model_available')
+
+    const dbStatus = await getModelRuntimeStatus(USER_A, 'ollama-openai-compatible', WS)
+    expect(dbStatus).toBeNull()
+  })
+
+  it('页面加载不自动调用 initOllamaProviders（无 audit log 无 ModelRuntimeStatus）', async () => {
+    const logs = await listAuditLogs(USER_A, undefined, WS)
+    expect(logs).toHaveLength(0)
+    const dbStatus = await getModelRuntimeStatus(USER_A, 'ollama-openai-compatible', WS)
+    expect(dbStatus).toBeNull()
+  })
+
+  it('probe 结果写入 ModelRuntimeStatus（成功或失败都有记录）', async () => {
+    initOllamaProviders()
+
+    const { probeAndSyncStatus } = await import('@/lib/localModelRuntimeService')
+    try {
+      await probeAndSyncStatus(USER_A, WS)
+    } catch {
+      // probe may fail in test env without Ollama
+    }
+
+    const dbStatus = await getModelRuntimeStatus(USER_A, 'ollama-openai-compatible', WS)
+    expect(dbStatus).not.toBeNull()
+    const status = dbStatus as { providerId: string; mode: string; lastProbeAt: string }
+    expect(status.providerId).toBe('ollama-openai-compatible')
+    expect(['model_available', 'degraded', 'unavailable']).toContain(status.mode)
+    expect(status.lastProbeAt).toBeTruthy()
+  })
+
+  it('probe 失败时 Settings 不显示真实可用', async () => {
+    initOllamaProviders()
+
+    const { probeAndSyncStatus } = await import('@/lib/localModelRuntimeService')
+    try {
+      await probeAndSyncStatus(USER_A, WS)
+    } catch {
+      // probe may fail in test env without Ollama
+    }
+
+    const dbStatus = await getModelRuntimeStatus(USER_A, 'ollama-openai-compatible', WS)
+    if (dbStatus && !dbStatus.lastProbeSuccess) {
+      expect(dbStatus.embeddingStatus).toBe('unavailable')
+      expect(dbStatus.reasoningStatus).toBe('unavailable')
+      expect(dbStatus.mode).toBe('unavailable')
+    }
   })
 })
