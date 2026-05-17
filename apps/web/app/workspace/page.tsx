@@ -31,6 +31,7 @@ import type { StoredDraft } from '@/lib/repository'
 import { emit } from '@/lib/events';
 import { isRecommendationPending, isRecommendationResolved, isSupportedCandidateType, describeRecommendationAction, describeRecommendationReason, describeApplyPreview, formatConfidenceLevel, STATUS_LABELS, CANDIDATE_TYPE_LABELS } from '@/lib/recommendation-i18n';
 import { getLocalHealthReport, type LocalHealthReport } from '@/lib/localHealthReport'
+import { getCapabilityStatus } from '@/lib/modelProvider'
 import {
   Home,
   Brain,
@@ -2843,6 +2844,72 @@ const SettingsView = () => (
             </div>
           </div>
         </div>
+      </GlassPanel>
+
+      <GlassPanel className="p-6">
+        <h2 className="text-base font-medium text-white mb-4 border-b border-white/10 pb-3 flex items-center gap-2">
+          <Brain className="w-4 h-4 text-[#c8a0f0]" /> 智能能力 (Intelligence)
+        </h2>
+        {(() => {
+          try {
+            const status = getCapabilityStatus();
+            const modeLabel = status.mode === 'core'
+              ? '核心模式'
+              : status.mode === 'model_available'
+                ? (status.embeddingProviderId === 'dev' || status.reasoningProviderId === 'dev' ? '开发模式' : '模型可用')
+                : '降级模式';
+            const modeDesc = status.mode === 'core'
+              ? '仅本地规则引擎可用'
+              : status.mode === 'model_available'
+                ? (status.embeddingProviderId === 'dev' || status.reasoningProviderId === 'dev' ? 'Mock Provider 可用（仅供开发/测试，不代表真实模型能力）' : 'Provider 已就绪')
+                : '模型不可用，系统以基础能力运行';
+            const modeColor = status.mode === 'core'
+              ? 'text-[#899298]'
+              : status.mode === 'model_available'
+                ? (status.embeddingProviderId === 'dev' || status.reasoningProviderId === 'dev' ? 'text-amber-400' : 'text-[#9cf4d4]')
+                : 'text-[#ffb4ab]';
+            const dotColor = status.mode === 'core'
+              ? 'bg-[#899298]'
+              : status.mode === 'model_available'
+                ? (status.embeddingProviderId === 'dev' || status.reasoningProviderId === 'dev' ? 'bg-amber-400' : 'bg-[#9cf4d4]')
+                : 'bg-[#ffb4ab]';
+            return (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2 h-2 rounded-full ${dotColor}`} />
+                      <p className={`text-xs font-medium ${modeColor}`}>{modeLabel}</p>
+                    </div>
+                    <p className="text-[#899298] text-[10px] mt-1 ml-4">{modeDesc}</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3 pt-1">
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <p className="text-[9px] text-[#899298] font-semibold tracking-wider uppercase mb-1">Embedding</p>
+                    <p className="text-xs text-white">{status.embeddingAvailability === 'available' ? '可用' : status.embeddingAvailability === 'error' ? '错误' : '不可用'}</p>
+                    {status.embeddingProviderId && <p className="text-[9px] text-[#899298] mt-0.5">{status.embeddingProviderId}</p>}
+                  </div>
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <p className="text-[9px] text-[#899298] font-semibold tracking-wider uppercase mb-1">Reasoning</p>
+                    <p className="text-xs text-white">{status.reasoningAvailability === 'available' ? '可用' : status.reasoningAvailability === 'error' ? '错误' : '不可用'}</p>
+                    {status.reasoningProviderId && <p className="text-[9px] text-[#899298] mt-0.5">{status.reasoningProviderId}</p>}
+                  </div>
+                </div>
+              </div>
+            );
+          } catch {
+            return (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-[#899298]" />
+                  <p className="text-xs font-medium text-[#899298]">核心模式</p>
+                </div>
+                <p className="text-[#899298] text-[10px] ml-4">仅本地规则引擎可用</p>
+              </div>
+            );
+          }
+        })()}
       </GlassPanel>
 
       <GlassPanel className="p-6">

@@ -4,6 +4,66 @@
 
 ---
 
+## Phase3.3 +Round 5 devlog -- P33-RUNTIME-001 Embedded Model Provider & Capability Modes
+
+**日期**: 2026-05-17
+**任务起始时间**: 07:40
+**任务结束时间**: 08:00
+**工时**: 20分钟
+
+### 任务目标
+
+建立 Phase 3.3 的模型运行层基础，让嵌入式模型能力以 Provider 形式进入系统：
+1. 定义 EmbeddedModelProvider / ReasoningProvider 接口和 EmbeddingResult / SummaryResult / ExplanationResult 返回类型
+2. 定义 CapabilityMode（core / model_available / degraded）和 ModelAvailability（available / unavailable / initializing / error）
+3. 实现 PrivacyFirewall 最小实现（validateProviderOutput + assertNoBusinessAccess）
+4. 实现 DevEmbeddedModelProvider / DevReasoningProvider 确定性 Mock Provider
+5. 实现 ModelProviderRegistry（含安全调用方法 generateEmbedding / generateSummary / generateExplanation）
+6. 实现 getCapabilityStatus() 全局函数和 initDevProviders() 环境边界控制
+7. Settings UI 最小接入"智能能力"面板
+8. 确保所有失败可降级，Core Mode 下系统可运行
+
+### 改动文件及行数
+
+| 文件 | 改动说明 | 约行数 |
+|------|----------|--------|
+| `packages/domain/src/intelligence/provider.ts` | 新增 Provider 接口、Result 类型、CapabilityMode、ModelAvailability、CapabilityStatus | +56 |
+| `packages/domain/src/intelligence/privacy.ts` | 新增 PrivacyFirewall 接口和 createPrivacyFirewall 工厂函数 | +58 |
+| `packages/domain/src/intelligence/index.ts` | 新增 provider 和 privacy 子模块导出 | +18 |
+| `apps/web/lib/modelProvider.ts` | 新增 DevEmbeddedModelProvider、DevReasoningProvider、ModelProviderRegistry、全局函数 | +264 |
+| `apps/web/app/workspace/page.tsx` | SettingsView 新增"智能能力 (Intelligence)"面板 | +50 |
+| `apps/web/tests/model-provider.test.ts` | 新增 21 项测试（Core Mode / Dev Provider / Registry Safe Methods / Fallback / PrivacyFirewall / 环境边界） | +277 |
+
+### 遇到的问题及解决方式
+
+1. **unused parameter lint 错误**：Dev Provider 的 `options` / `context` 参数未使用触发 `@typescript-eslint/no-unused-vars`。解决方案：重命名为 `_options` / `_context` 前缀。
+2. **non-null assertion lint 错误**：测试中 `result.data!` / `result.topics!` 触发 `@typescript-eslint/no-non-null-assertion`。解决方案：改用 `as Float32Array` / `as string[]` 类型断言。
+3. **process.env.NODE_ENV 只读**：测试中直接赋值 `process.env.NODE_ENV = 'production'` 触发 TS2540。解决方案：改用 vitest 的 `vi.stubEnv('NODE_ENV', 'production')` + `vi.unstubAllEnvs()`。
+4. **PrivacyFirewall unused imports**：privacy.ts 导入了 EmbeddingResult/SummaryResult/ExplanationResult 但未使用。解决方案：移除未使用的类型导入。
+
+### 自动验证结果
+
+- `pnpm validate`：✅ 通过（0 errors, 16 warnings, 1050 tests passed）
+- `pnpm build:web`：✅ 通过（Compiled successfully, 所有页面正常生成）
+
+### 手工验证步骤
+
+1. 启动开发服务器，确认 Dock / Mind / Editor / Review / Search 基础链路不崩
+2. 打开 Settings 页面，确认"智能能力 (Intelligence)"面板展示"核心模式 · 仅本地规则引擎可用"
+3. 在浏览器 Console 中执行 `initDevProviders()`，刷新 Settings 页面，确认展示"开发模式 · Mock Provider 可用"
+4. 确认 Core Mode 下所有基础页面正常运行
+
+### 当前风险及影响范围
+
+| 风险项 | 等级 | 影响 |
+|--------|------|------|
+| Dev Provider embedding 为伪向量 | 🟡 中 | simpleHash + Math.sin 生成的 Float32Array 不具备语义相似性，仅用于链路验证，不可用于真实相似度计算 |
+| PrivacyFirewall 为运行时检查 | 🟡 中 | assertNoBusinessAccess 通过属性名检查，无法防止 Provider 通过闭包/间接引用访问业务库 |
+| Registry 单例无并发保护 | 🟢 低 | 当前为单线程 Web 环境，无并发风险；Web Worker 场景需另行处理 |
+| initDevProviders 环境检查依赖 process.env | 🟢 低 | 浏览器环境 process.env 由构建工具注入，Vite/Next.js 均支持 |
+
+---
+
 ## Phase3.3 +Round 4 devlog -- P33-INT-STORE-001 Intelligence Store 数据层 + Repository Selector
 
 **日期**: 2026-05-17

@@ -22,3 +22,23 @@ export {
   makeGrowthSignalId,
   makeMaintenanceActionId,
 } from './ids'
+
+export type {
+  CapabilityMode,
+  ModelAvailability,
+  EmbeddingResult,
+  SummaryResult,
+  ExplanationResult,
+  EmbeddedModelProvider,
+  ReasoningProvider,
+  CapabilityStatus,
+} from './provider'
+
+export type {
+  ValidationResult,
+  PrivacyFirewall,
+} from './privacy'
+
+export {
+  createPrivacyFirewall,
+} from './privacy'
