@@ -8,7 +8,7 @@ import {
   resetProviders,
 } from '@/lib/modelProvider'
 import { createPrivacyFirewall } from '@atlax/domain'
-import type { EmbeddedModelProvider, ModelAvailability } from '@atlax/domain'
+import type { EmbeddedModelProvider, ReasoningProvider, ModelAvailability } from '@atlax/domain'
 
 describe('Model Provider System', () => {
   beforeEach(() => {
@@ -187,13 +187,92 @@ describe('Model Provider System', () => {
       const status = registry.getCapabilityStatus()
       expect(status.embeddingAvailability).toBe('error')
     })
+
+    it('returns degraded when embedding available but reasoning error', async () => {
+      const registry = new ModelProviderRegistry()
+      registry.registerEmbeddingProvider(new DevEmbeddedModelProvider())
+      const failingReasoning: ReasoningProvider = {
+        providerId: 'failing',
+        providerName: 'Failing Reasoning',
+        availability: 'available' as ModelAvailability,
+        generateExplanation: async () => { throw new Error('crash') },
+      }
+      registry.registerReasoningProvider(failingReasoning)
+
+      await registry.generateExplanation('test')
+      const status = registry.getCapabilityStatus()
+      expect(status.embeddingAvailability).toBe('available')
+      expect(status.reasoningAvailability).toBe('error')
+      expect(status.mode).toBe('degraded')
+    })
+
+    it('returns degraded when reasoning available but embedding error', async () => {
+      const registry = new ModelProviderRegistry()
+      const failingEmbedding: EmbeddedModelProvider = {
+        providerId: 'failing',
+        providerName: 'Failing Embedding',
+        availability: 'available' as ModelAvailability,
+        generateEmbedding: async () => { throw new Error('crash') },
+        generateSummary: async () => { throw new Error('crash') },
+      }
+      registry.registerEmbeddingProvider(failingEmbedding)
+      registry.registerReasoningProvider(new DevReasoningProvider())
+
+      await registry.generateEmbedding('test')
+      const status = registry.getCapabilityStatus()
+      expect(status.embeddingAvailability).toBe('error')
+      expect(status.reasoningAvailability).toBe('available')
+      expect(status.mode).toBe('degraded')
+    })
   })
 
   describe('PrivacyFirewall', () => {
-    it('validates allowed result types', () => {
+    it('validates allowed embedding result', () => {
       const firewall = createPrivacyFirewall()
-      const validResult = { success: true, modelProvider: 'test', modelName: 'test', modelVersion: '1.0' }
-      expect(firewall.validateProviderOutput(validResult).valid).toBe(true)
+      const validEmbedding = { success: true, data: new Float32Array(128), dim: 128, modelProvider: 'test', modelName: 'test', modelVersion: '1.0' }
+      expect(firewall.validateProviderOutput(validEmbedding).valid).toBe(true)
+    })
+
+    it('validates allowed summary result', () => {
+      const firewall = createPrivacyFirewall()
+      const validSummary = { success: true, summary: 'test summary', modelProvider: 'test', modelName: 'test', modelVersion: '1.0' }
+      expect(firewall.validateProviderOutput(validSummary).valid).toBe(true)
+    })
+
+    it('validates allowed explanation result', () => {
+      const firewall = createPrivacyFirewall()
+      const validExplanation = { success: true, explanation: 'test explanation', modelProvider: 'test', modelName: 'test', modelVersion: '1.0' }
+      expect(firewall.validateProviderOutput(validExplanation).valid).toBe(true)
+    })
+
+    it('validates allowed error result', () => {
+      const firewall = createPrivacyFirewall()
+      const validError = { success: false, modelProvider: 'test', modelName: 'test', modelVersion: '1.0', error: 'something failed' }
+      expect(firewall.validateProviderOutput(validError).valid).toBe(true)
+    })
+
+    it('validates allowed error result without error field', () => {
+      const firewall = createPrivacyFirewall()
+      const validError = { success: false, modelProvider: 'test', modelName: 'test', modelVersion: '1.0' }
+      expect(firewall.validateProviderOutput(validError).valid).toBe(true)
+    })
+
+    it('rejects result missing modelName', () => {
+      const firewall = createPrivacyFirewall()
+      const incomplete = { success: true, modelProvider: 'test', modelVersion: '1.0', summary: 'test' }
+      expect(firewall.validateProviderOutput(incomplete).valid).toBe(false)
+    })
+
+    it('rejects result missing modelVersion', () => {
+      const firewall = createPrivacyFirewall()
+      const incomplete = { success: true, modelProvider: 'test', modelName: 'test', summary: 'test' }
+      expect(firewall.validateProviderOutput(incomplete).valid).toBe(false)
+    })
+
+    it('rejects success result with no valid payload', () => {
+      const firewall = createPrivacyFirewall()
+      const noPayload = { success: true, modelProvider: 'test', modelName: 'test', modelVersion: '1.0' }
+      expect(firewall.validateProviderOutput(noPayload).valid).toBe(false)
     })
 
     it('rejects non-allowed result types', () => {
@@ -211,8 +290,8 @@ describe('Model Provider System', () => {
         providerName: 'Evil',
         availability: 'available' as ModelAvailability,
         db: {},
-        generateEmbedding: async () => ({ success: true, modelProvider: 'evil', modelName: 'evil', modelVersion: '1.0' }),
-        generateSummary: async () => ({ success: true, modelProvider: 'evil', modelName: 'evil', modelVersion: '1.0' }),
+        generateEmbedding: async () => ({ success: true, data: new Float32Array(128), dim: 128, modelProvider: 'evil', modelName: 'evil', modelVersion: '1.0' }),
+        generateSummary: async () => ({ success: true, summary: 'evil', modelProvider: 'evil', modelName: 'evil', modelVersion: '1.0' }),
       }
       expect(() => firewall.assertNoBusinessAccess(maliciousProvider)).toThrow(/Privacy violation/)
     })

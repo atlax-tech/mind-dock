@@ -32,7 +32,17 @@ function hasBusinessAccessProperty(obj: unknown): string | null {
 function isAllowedResultType(result: unknown): boolean {
   if (result === null || result === undefined || typeof result !== 'object') return false
   const obj = result as Record<string, unknown>
-  return typeof obj.success === 'boolean' && typeof obj.modelProvider === 'string'
+  if (typeof obj.success !== 'boolean') return false
+  if (typeof obj.modelProvider !== 'string') return false
+  if (typeof obj.modelName !== 'string') return false
+  if (typeof obj.modelVersion !== 'string') return false
+  if (!obj.success) {
+    return typeof obj.error === 'string' || obj.error === undefined
+  }
+  if (obj.data instanceof Float32Array && typeof obj.dim === 'number') return true
+  if (typeof obj.summary === 'string') return true
+  if (typeof obj.explanation === 'string') return true
+  return false
 }
 
 export function createPrivacyFirewall(): PrivacyFirewall {

@@ -213,10 +213,10 @@ export class ModelProviderRegistry {
     const embeddingProviderId = this.embeddingProvider?.providerId ?? null
     const reasoningProviderId = this.reasoningProvider?.providerId ?? null
     let mode: CapabilityMode = 'core'
-    if (this._embeddingAvailability === 'available' || this._reasoningAvailability === 'available') {
-      mode = 'model_available'
-    } else if (this._embeddingAvailability === 'error' || this._reasoningAvailability === 'error') {
+    if (this._embeddingAvailability === 'error' || this._reasoningAvailability === 'error') {
       mode = 'degraded'
+    } else if (this._embeddingAvailability === 'available' || this._reasoningAvailability === 'available') {
+      mode = 'model_available'
     }
     return {
       mode,
@@ -264,7 +264,6 @@ export function resetProviders(): void {
 }
 
 if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
-  initDevProviders()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const w = window as any
   w.initDevProviders = initDevProviders
