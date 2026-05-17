@@ -4,6 +4,92 @@
 
 ---
 
+## Phase3.3 +Round 10 devlog -- P33-RUNTIME-003 QA 返修（reasoning sanitizer 标签清洗不完整）
+
+**日期**: 2026-05-18
+**任务起始时间**: 01:10
+**任务结束时间**: 01:20
+**工时**: 10分钟
+
+### 任务目标
+
+修复 P33-RUNTIME-003 QA 返修发现的 reasoning sanitizer 标签清洗不完整问题：标准 `<think >...</think >` 标签清洗后留下闭合标签的 `>` 残留，导致 reasoning-only 内容可能被当作有效 summary 写入。
+
+### 问题根因
+
+原正则 `/<think[\s\S]*?<\/think/gi` 只匹配到 `</think` 但不消费其后的 `>`，导致标准/带属性/多行标签清洗后留下 `>` 残留。
+
+### 修复内容
+
+| 问题 | 修复 |
+|------|------|
+| 正则不消费 `</think` 后的 `>` | 改为 `/<think[\s\S]*?<\/think\s*>?/gi`，`\s*>?` 可选消费 `>` |
+| 标准 `<think >reasoning</think >` 留下 `>` 残留 | 修复后完整消费 `</think >`，无残留 |
+| 剥离后为空未返回 null | 原有逻辑已正确处理（`content.length === 0 ? null : content`） |
+| 缺少标准标签测试 | 新增 6 个标准标签测试 + 1 个 `>` 残留断言测试 |
+
+### 改动文件
+
+| 文件 | 说明 | 行数 |
+|------|------|------|
+| `apps/web/lib/reasoningSanitizer.ts` | 正则从 `/<think[\s\S]*?<\/think/gi` 改为 `/<think[\s\S]*?<\/think\s*>?/gi` | +1/-1 |
+| `apps/web/tests/reasoning-sanitizer.test.ts` | 拆分原有测试为标准/畸形两组，新增 7 个 QA 测试用例 | +37/-6 |
+
+### 新增测试用例
+
+| 测试 | 验证点 |
+|------|--------|
+| strips standard think tags with proper closing | 标准 `<think >...</think >` 清洗无残留 |
+| strips think tags with attributes and proper closing | 带属性标签 `<think thinking="deep" >...</think >` |
+| strips multiline think tags with proper closing | 多行标签 `<think >\n...\n</think >` |
+| returns null when content is empty after sanitization (standard) | `<think >reasoning</think >` 返回 null |
+| QA: standard think tag with real output after | `<think >reasoning</think >Real output` === `Real output` |
+| QA: standard think tag with no output returns null | `<think >reasoning</think >` === null |
+| QA: standard think tag with JSON after | `<think >reasoning</think >\n{"summary":"ok"}` === `{"summary":"ok"}` |
+| QA: think tag with attributes and proper closing | `<think attr="x">reasoning</think >Final` === `Final` |
+| QA: multiline think tag with proper closing | `<think >\nline1\nline2\n</think >\nResult` === `Result` |
+| QA: no ">" residue after stripping standard think tags | 断言结果不含 `>` |
+
+### modelProvider 行为复验
+
+| 检查项 | 结果 |
+|--------|------|
+| `generateSummary` 不读取 `choices[0].message.reasoning` | ✅ `validateChatContentShape` 只提取 `content` |
+| `generateExplanation` 不读取 `choices[0].message.reasoning` | ✅ 同上 |
+| sanitize 后为空返回 `success:false` | ✅ 第 444-446/488-490 行 |
+| 不写入 reasoning 内容到业务库/audit/devlog | ✅ audit 只存 outputHash |
+
+### 自动验证结果
+
+| 验证项 | 结果 |
+|--------|------|
+| `pnpm --dir apps/web test tests/reasoning-sanitizer.test.ts` | ✅ 24 tests passed |
+| `pnpm --dir apps/web test tests/ollama-provider.test.ts tests/local-model-runtime-service.test.ts` | ✅ 40 tests passed |
+| `pnpm validate` | ✅ 0 errors · 19 warnings · 1475 tests passed |
+| `pnpm build:web` | ✅ 构建成功 |
+| `pnpm smoke:model` | ✅ PASS — probe/embedding/reasoning 均可用，dimension 1024，audit 3 entries |
+
+### 手工验证步骤
+
+1. 启动开发服务器，确认基础页面不崩
+2. 在 Console 中执行 `initDevProviders()`，确认 Settings 智能能力面板正常
+3. 确认标准 `<think >` 标签输出不会留下 `>` 残留
+
+### 当前风险
+
+| 风险项 | 等级 | 影响 |
+|--------|------|------|
+| 嵌套 `<think >` 标签 | 🟢 低 | 非贪婪匹配只剥离第一层，但 LLM 输出中嵌套 think 标签极罕见 |
+| `\s*>?` 可能消费非标签的 `>` | 🟢 极低 | 仅在 `</think` 紧跟空白+`>` 时触发，正常内容不会出现此模式 |
+
+### 影响范围
+
+- `reasoningSanitizer.ts`：正则微调，向后兼容（malformed 标签仍可匹配）
+- `reasoning-sanitizer.test.ts`：新增测试，不影响已有测试
+- `modelProvider.ts`：无改动，行为复验通过
+
+---
+
 ## Phase3.3 +Round 9 devlog -- P33-RUNTIME-003 评审修复（workspace 隔离）
 
 **日期**: 2026-05-18

@@ -1,7 +1,7 @@
 export function sanitizeReasoningContent(rawContent: string): string | null {
   let content = rawContent
 
-  content = content.replace(/<think[\s\S]*?<\/think/gi, '')
+  content = content.replace(/<think[\s\S]*?<\/think\s*>?/gi, '')
 
   content = content.replace(/\.{3,}/g, '')
 

@@ -7,17 +7,32 @@ describe('sanitizeReasoningContent', () => {
     expect(result).toBe('Hello world')
   })
 
-  it('strips think tags', () => {
+  it('strips standard think tags with proper closing', () => {
+    const result = sanitizeReasoningContent('<think >reasoning</think >Real output')
+    expect(result).toBe('Real output')
+  })
+
+  it('strips think tags with attributes and proper closing', () => {
+    const result = sanitizeReasoningContent('<think thinking="deep" >another reasoning</think >Real output')
+    expect(result).toBe('Real output')
+  })
+
+  it('strips multiline think tags with proper closing', () => {
+    const result = sanitizeReasoningContent('<think >\nline1\nline2\n</think >\nResult')
+    expect(result).toBe('Result')
+  })
+
+  it('strips malformed think tags without closing angle bracket', () => {
     const result = sanitizeReasoningContent('<think some reasoning here </think The actual content')
     expect(result).toBe('The actual content')
   })
 
-  it('strips think tags with attributes', () => {
+  it('strips malformed think tags with attributes', () => {
     const result = sanitizeReasoningContent('<think thinking="deep" another reasoning </think Real output')
     expect(result).toBe('Real output')
   })
 
-  it('strips multiline think tags', () => {
+  it('strips malformed multiline think tags', () => {
     const result = sanitizeReasoningContent('<think\nline1\nline2\n</think\nResult')
     expect(result).toBe('Result')
   })
@@ -41,8 +56,13 @@ describe('sanitizeReasoningContent', () => {
     expect(result).toContain('Conclusion: Upward')
   })
 
-  it('returns null when content is empty after sanitization', () => {
+  it('returns null when content is empty after sanitization (malformed)', () => {
     const result = sanitizeReasoningContent('<think only reasoning </think ')
+    expect(result).toBeNull()
+  })
+
+  it('returns null when content is empty after sanitization (standard)', () => {
+    const result = sanitizeReasoningContent('<think >reasoning</think >')
     expect(result).toBeNull()
   })
 
@@ -74,5 +94,36 @@ describe('sanitizeReasoningContent', () => {
 
   it('does not accept rawReasoning parameter - function only takes content', () => {
     expect(sanitizeReasoningContent.length).toBe(1)
+  })
+
+  it('QA: standard think tag with real output after', () => {
+    const result = sanitizeReasoningContent('<think >reasoning</think >Real output')
+    expect(result).toBe('Real output')
+  })
+
+  it('QA: standard think tag with no output returns null', () => {
+    const result = sanitizeReasoningContent('<think >reasoning</think >')
+    expect(result).toBeNull()
+  })
+
+  it('QA: standard think tag with JSON after', () => {
+    const result = sanitizeReasoningContent('<think >reasoning</think >\n{"summary":"ok"}')
+    expect(result).toBe('{"summary":"ok"}')
+  })
+
+  it('QA: think tag with attributes and proper closing', () => {
+    const result = sanitizeReasoningContent('<think attr="x">reasoning</think >Final')
+    expect(result).toBe('Final')
+  })
+
+  it('QA: multiline think tag with proper closing', () => {
+    const result = sanitizeReasoningContent('<think >\nline1\nline2\n</think >\nResult')
+    expect(result).toBe('Result')
+  })
+
+  it('QA: no ">" residue after stripping standard think tags', () => {
+    const result = sanitizeReasoningContent('<think >reasoning</think >output')
+    expect(result).not.toContain('>')
+    expect(result).toBe('output')
   })
 })
