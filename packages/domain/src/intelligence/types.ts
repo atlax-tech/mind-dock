@@ -146,3 +146,25 @@ export interface SearchIndexRecord extends IntelligenceAuditFields {
   staleKey: 0 | 1
   expiredAt: string | null
 }
+
+export type JobType = 'recompute_local_features' | 'recompute_semantic_features' | 'refresh_recommendations'
+export type JobStatus = 'pending' | 'running' | 'complete' | 'failed' | 'skipped' | 'degraded' | 'pending_model'
+
+export interface BackgroundJob {
+  id: string
+  userId: string
+  workspaceId: string
+  jobType: JobType
+  targetType: string
+  targetId: string
+  status: JobStatus
+  contentHash: string
+  priority: number
+  attempts: number
+  maxAttempts: number
+  lastError: string | null
+  createdAt: string
+  updatedAt: string
+  nextRunAt: string | null
+  completedAt: string | null
+}

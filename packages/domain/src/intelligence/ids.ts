@@ -33,3 +33,7 @@ export function makeGrowthSignalId(userId: string, workspaceId: string, signalTy
 export function makeMaintenanceActionId(userId: string, workspaceId: string, actionType: string, targetType: string, targetId: string, timestamp: number): string {
   return `${userId}_ma_${workspaceId}_${actionType}_${targetType}_${targetId}_${timestamp}`
 }
+
+export function makeBackgroundJobId(userId: string, workspaceId: string, jobType: string, targetType: string, targetId: string, contentHash: string): string {
+  return `${userId}_job_${jobType}_${workspaceId}_${targetType}_${targetId}_${contentHash}`
+}

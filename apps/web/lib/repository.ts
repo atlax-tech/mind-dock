@@ -169,6 +169,8 @@ import {
   type DockViewSettingsRecord,
   type PersistedDockViewSettings,
 } from './db'
+import { onContentChanged } from './contentChangeService'
+import { computeContentHash } from './contentHash'
 
 export type DockItem = DomainDockItem
 export type { PersistedEntry as StoredEntry }
@@ -2255,7 +2257,22 @@ export async function createDraft(
 ): Promise<PersistedEditorDraft | null> {
   const id = await addDraftRecord(userId, title, content, sourceEntryId, sourceType, tags, project, collectionId, contentFields)
   const saved = await editorDraftsTable.get(id)
-  return toPersistedEditorDraft(saved)
+  const draft = toPersistedEditorDraft(saved)
+  if (draft) {
+    const text = contentFields?.plainText ?? contentFields?.markdown ?? content
+    if (text) {
+      onContentChanged(userId, {
+        sourceType: 'draft',
+        sourceId: String(draft.id),
+        userId,
+        workspaceId: DEFAULT_WORKSPACE_ID,
+        contentHash: computeContentHash(text),
+        changeType: 'created',
+        occurredAt: new Date().toISOString(),
+      }).catch(() => {})
+    }
+  }
+  return draft
 }
 
 export async function listDrafts(userId: string): Promise<PersistedEditorDraft[]> {
@@ -2321,7 +2338,27 @@ export async function updateDraft(
   if (updates.project !== undefined) patch.project = updates.project
   if (updates.collectionId !== undefined) patch.collectionId = updates.collectionId
   await editorDraftsTable.update(draftId, patch)
-  return toPersistedEditorDraft(await editorDraftsTable.get(draftId))
+  const updated = toPersistedEditorDraft(await editorDraftsTable.get(draftId))
+  if (updated && (
+    updates.plainText !== undefined ||
+    updates.markdown !== undefined ||
+    updates.content !== undefined ||
+    updates.contentJson !== undefined
+  )) {
+    const text = updates.plainText ?? updates.markdown ?? updates.content
+    if (text) {
+      onContentChanged(userId, {
+        sourceType: 'draft',
+        sourceId: String(draftId),
+        userId,
+        workspaceId: DEFAULT_WORKSPACE_ID,
+        contentHash: computeContentHash(text),
+        changeType: 'updated',
+        occurredAt: new Date().toISOString(),
+      }).catch(() => {})
+    }
+  }
+  return updated
 }
 
 export type PublishMode = 'update_original' | 'as_new'
@@ -2455,10 +2492,31 @@ export async function publishDraftToDocument(
     })
   }
 
+  notifyDocumentContentChanged(userId, entry, isCreatingNew ? 'created' : 'updated')
+
   return {
     draft: toPersistedEditorDraft(await editorDraftsTable.get(draftId)),
     entry,
   }
+}
+
+function notifyDocumentContentChanged(
+  userId: string,
+  entry: PersistedEntry | null,
+  changeType: 'created' | 'updated',
+): void {
+  if (!entry) return
+  const text = entry.plainText ?? entry.markdown ?? entry.content
+  if (!text) return
+  onContentChanged(userId, {
+    sourceType: 'document',
+    sourceId: String(entry.id),
+    userId,
+    workspaceId: DEFAULT_WORKSPACE_ID,
+    contentHash: computeContentHash(text),
+    changeType,
+    occurredAt: new Date().toISOString(),
+  }).catch(() => {})
 }
 
 export type DiscardMode = 'abandon_changes' | 'delete_all'

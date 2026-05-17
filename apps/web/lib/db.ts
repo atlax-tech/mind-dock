@@ -712,6 +712,29 @@ export interface PersistedSearchIndexRecord extends SearchIndexRecordRecord {
   id: string
 }
 
+export interface BackgroundJobRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  jobType: string
+  targetType: string
+  targetId: string
+  status: string
+  contentHash: string
+  priority: number
+  attempts: number
+  maxAttempts: number
+  lastError: string | null
+  createdAt: string
+  updatedAt: string
+  nextRunAt: string | null
+  completedAt: string | null
+}
+
+export interface PersistedBackgroundJob extends BackgroundJobRecord {
+  id: string
+}
+
 const db = new Dexie('AtlaxDB') as Dexie & {
   dockItems: EntityTable<DockItemRecord, 'id'>
   tags: EntityTable<TagRecord, 'id'>
@@ -744,6 +767,7 @@ const db = new Dexie('AtlaxDB') as Dexie & {
   reviewSnapshots: EntityTable<ReviewSnapshotRecord, 'id'>
   dailyBriefSnapshots: EntityTable<DailyBriefSnapshotRecord, 'id'>
   searchIndexRecords: EntityTable<SearchIndexRecordRecord, 'id'>
+  backgroundJobs: EntityTable<BackgroundJobRecord, 'id'>
 }
 
 db.version(1).stores({
@@ -1258,7 +1282,7 @@ db.version(28).stores({
   reviewSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+scope+reviewDate]',
   dailyBriefSnapshots: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+briefDate]',
   searchIndexRecords: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+targetType+targetId], [userId+workspaceId+targetType+targetId+contentHash], [userId+workspaceId+staleKey], [userId+workspaceId+expiredAt]',
-}).upgrade(tx => {
+  }).upgrade(tx => {
   const tables = ['localTextFeatureSnapshots', 'semanticFeatureSnapshots', 'searchIndexRecords']
   return Promise.all(tables.map(tableName => {
     const table = tx.table(tableName)
@@ -1269,6 +1293,10 @@ db.version(28).stores({
     })
   }))
 })
+
+db.version(29).stores({
+  backgroundJobs: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+status], [userId+workspaceId+jobType], [userId+workspaceId+targetType+targetId], [userId+workspaceId+status+priority], nextRunAt',
+}).upgrade(() => {})
 
 export { db }
 export const dockItemsTable = db.table('dockItems')
@@ -1304,3 +1332,4 @@ export const maintenanceActionsTable = db.table('maintenanceActions')
 export const reviewSnapshotsTable = db.table('reviewSnapshots')
 export const dailyBriefSnapshotsTable = db.table('dailyBriefSnapshots')
 export const searchIndexRecordsTable = db.table('searchIndexRecords')
+export const backgroundJobsTable = db.table('backgroundJobs')

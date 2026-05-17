@@ -9,6 +9,9 @@ export type {
   ReviewSnapshot,
   DailyBriefSnapshot,
   SearchIndexRecord,
+  JobType,
+  JobStatus,
+  BackgroundJob,
 } from './types'
 
 export {
@@ -21,7 +24,14 @@ export {
   makeHealthSignalId,
   makeGrowthSignalId,
   makeMaintenanceActionId,
+  makeBackgroundJobId,
 } from './ids'
+
+export type {
+  ContentSourceType,
+  ContentChangeType,
+  ContentChangedEvent,
+} from './events'
 
 export type {
   CapabilityMode,

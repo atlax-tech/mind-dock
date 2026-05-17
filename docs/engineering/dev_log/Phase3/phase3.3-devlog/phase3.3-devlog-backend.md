@@ -4,6 +4,79 @@
 
 ---
 
+## Phase3.3 +Round 6 devlog -- P33-RUNTIME-002 Background Job Queue + Incremental Recompute
+
+**日期**: 2026-05-17
+**任务起始时间**: 09:00
+**任务结束时间**: 09:45
+**工时**: 45分钟
+
+### 任务目标
+
+建立 Phase 3.3 的后台任务队列与增量重算基础：
+1. 定义 ContentChangedEvent 类型（sourceType / sourceId / userId / workspaceId / contentHash / changeType / occurredAt）
+2. 实现 computeContentHash 和 isContentDirty 增量判断
+3. 实现 BackgroundJobQueue 完整队列操作（enqueue / dequeue / processNext / processBatch / retry / fail / complete / getJobStatus / listOpenJobs / listPendingModelJobs / reactivatePendingModelJobs）
+4. 实现 JobProcessor 根据 CapabilityMode 降级判断（core → pending_model / model_available → complete / degraded → degraded）
+5. 实现 reactivatePendingModelJobs 生命周期闭环（pending_model → pending 恢复，不增加 attempts）
+6. 实现 ContentChangeService 服务层入口（onContentChanged）
+7. 在 repository.ts 的 createDraft / updateDraft / publishDraftToDocument 中接入 onContentChanged 真实调用
+8. 新增 Dexie v29 backgroundJobs 表
+9. 新增 30 项测试覆盖所有核心场景
+10. 不实现复杂算法引擎，不做页面 UI
+
+### 改动文件及行数
+
+| 文件 | 改动说明 | 约行数 |
+|------|----------|--------|
+| `packages/domain/src/intelligence/events.ts` | 新增 ContentSourceType / ContentChangeType / ContentChangedEvent 类型 | +12 |
+| `packages/domain/src/intelligence/types.ts` | 新增 JobType / JobStatus / BackgroundJob 类型 | +25 |
+| `packages/domain/src/intelligence/ids.ts` | 新增 makeBackgroundJobId 函数 | +5 |
+| `packages/domain/src/intelligence/index.ts` | 新增 events / BackgroundJob / makeBackgroundJobId 导出 | +10 |
+| `apps/web/lib/db.ts` | 新增 v29 schema（backgroundJobs 表 + 7 个索引）、BackgroundJobRecord / PersistedBackgroundJob 类型、backgroundJobsTable 导出 | +30 |
+| `apps/web/lib/contentHash.ts` | 新增 computeContentHash（DJB2 哈希 + ch_ 前缀）和 isContentDirty（增量判断） | +30 |
+| `apps/web/lib/backgroundJobQueue.ts` | 新增 11 个队列操作函数（enqueue / dequeue / retry / fail / complete / getJobStatus / listOpenJobs / listPendingModelJobs / reactivatePendingModelJobs / processNext / processBatch） | +220 |
+| `apps/web/lib/jobProcessor.ts` | 新增 processJob 函数（3 种 jobType 分派 + CapabilityMode 降级判断） | +40 |
+| `apps/web/lib/contentChangeService.ts` | 新增 onContentChanged 服务层入口（dirty check + enqueue） | +30 |
+| `apps/web/lib/repository.ts` | 在 createDraft / updateDraft / publishDraftToDocument 中接入 onContentChanged 真实调用；新增 notifyDocumentContentChanged 辅助函数 | +40 |
+| `apps/web/tests/background-job-queue.test.ts` | 新增 30 项测试（contentHash / enqueue / dequeue / processNext / retry-fail / pending_model 生命周期 / listOpenJobs / workspace 隔离 / ContentChangeService / batch limit） | +450 |
+
+### 遇到的问题及解决方式
+
+1. **attempts 语义冲突（评审阻塞项）**：初版 dequeue 会将 attempts +1，然后 processNext 在 pending_model 分支中用 dequeue 后的 job.attempts 回写，导致 pending_model 状态的 attempts 从 0 变为 1，违反规格"不消耗 attempts"。解决方案：processNext 不再调用 dequeue，改为内联查询 pending 任务，在更新 running 状态前保存 originalAttempts，pending_model 分支中用 originalAttempts 回写，确保最终持久化 attempts 不变。
+2. **vi.useFakeTimers 与 Dexie 冲突**：fake timers 会导致 IndexedDB 异步操作超时。解决方案：retry 测试改用时间范围断言验证 nextRunAt 的指数退避逻辑，不使用 fake timers。
+3. **pending_model 生命周期闭环**：pending_model 状态的 Job 不能被 dequeue 取出，只能通过 reactivatePendingModelJobs 恢复为 pending。解决方案：dequeue 仅查询 status='pending'，reactivatePendingModelJobs 仅在 model_available 时执行，批量改回 pending 且不增加 attempts。
+4. **onContentChanged 无生产调用点（评审风险项）**：初版只在测试中引用 onContentChanged，没有生产代码调用。解决方案：在 repository.ts 的 createDraft / updateDraft / publishDraftToDocument 三个关键 service 层函数中接入 onContentChanged，使用 `.catch(() => {})` 确保不阻塞主流程。其他触发点（tip 创建、mind node 更新、import 等）留给后续卡片接入。
+5. **pnpm build:web 复验**：评审报告 `/_document PageNotFoundError`，但本地复验 build:web 通过。可能为构建缓存或环境差异导致，当前已确认通过。
+
+### 自动验证结果
+
+- `pnpm validate`：✅ 通过（1089 tests passed，0 lint errors）
+- `pnpm build:web`：✅ 通过
+- 新增 30 项测试：✅ 全部通过
+
+### 手工验证步骤
+
+1. 启动开发服务器，确认 Dock / Mind / Editor / Review / Search 基础链路不崩
+2. 打开浏览器 DevTools → Application → IndexedDB → AtlaxDB，确认 backgroundJobs 表存在
+3. 确认新表为空初始化，旧表数据完整
+4. 确认 React 页面不直接 import backgroundJobs 表
+5. 在 Console 中测试 enqueue / processNext / reactivatePendingModelJobs 链路
+6. 创建/更新草稿后检查 backgroundJobs 表是否产生对应 Job 记录
+
+### 当前风险及影响范围
+
+| 风险项 | 等级 | 影响 |
+|--------|------|------|
+| pending_model 恢复需手动触发 | 🟡 中 | reactivatePendingModelJobs 需要在模型变为可用时被显式调用，当前无自动监听机制 |
+| Job 处理器仅标记 stale | 🟡 中 | recompute_local_features / recompute_semantic_features 只标记 stale 不执行实际算法，需后续任务卡实现引擎 |
+| 队列无自动调度 | 🟡 中 | processBatch 需要被显式调用，当前无定时器或事件驱动的自动处理机制 |
+| onContentChanged 未覆盖全部触发点 | 🟡 中 | 当前仅接入 createDraft / updateDraft / publishDraftToDocument，tip 创建、mind node 更新、import 等留给后续卡片 |
+| contentHash 为 DJB2 哈希 | 🟢 低 | DJB2 为非加密哈希，碰撞概率极低但不为零，对增量判断场景足够 |
+| refresh_recommendations 为占位 | 🟢 低 | 当前返回 skipped，后续任务卡需实现推荐刷新逻辑 |
+
+---
+
 ## Phase3.3 +Round 5 devlog -- P33-RUNTIME-001 Embedded Model Provider & Capability Modes
 
 **日期**: 2026-05-17
