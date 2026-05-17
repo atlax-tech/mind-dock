@@ -16,8 +16,11 @@ import {
 } from '@/lib/backgroundJobQueue'
 import { onContentChanged } from '@/lib/contentChangeService'
 import { resetProviders, initDevProviders, getCapabilityStatus } from '@/lib/modelProvider'
-import { upsertLocalTextFeatureSnapshot, getEmbeddingVectorByTarget } from '@/lib/intelligenceRepository'
+import { upsertLocalTextFeatureSnapshot, upsertSemanticFeatureSnapshot, upsertModelRuntimeStatus, getEmbeddingVectorByTarget, setEmbeddingEnabledPref, setReasoningEnabledPref } from '@/lib/intelligenceRepository'
 import * as localModelRuntimeService from '@/lib/localModelRuntimeService'
+import { processJob } from '@/lib/jobProcessor'
+import { localTextFeatureEngine } from '@/lib/localTextFeatureEngine'
+import { semanticFeatureEngine } from '@/lib/semanticFeatureEngine'
 
 const USER_A = 'user_test_a'
 const WS_DEFAULT = DEFAULT_WORKSPACE_ID
@@ -27,6 +30,11 @@ async function cleanAll() {
   await db.table('backgroundJobs').clear()
   await db.table('localTextFeatureSnapshots').clear()
   await db.table('semanticFeatureSnapshots').clear()
+  await db.table('userPreferences').clear()
+  await db.table('modelRuntimeStatuses').clear()
+  await db.table('dockItems').clear()
+  await db.table('embeddingVectors').clear()
+  await db.table('algorithmAuditLogs').clear()
 }
 
 function nowISO() {
@@ -160,10 +168,33 @@ describe('dequeue', () => {
 })
 
 describe('processNext / processBatch', () => {
-  afterEach(cleanAll)
+  afterEach(async () => {
+    await cleanAll()
+    await db.table('dockItems').clear()
+    await db.table('modelRuntimeStatuses').clear()
+    await db.table('userPreferences').clear()
+    vi.restoreAllMocks()
+    resetProviders()
+  })
 
   it('processNext processes recompute_local_features and marks complete', async () => {
-    await enqueue(USER_A, 'recompute_local_features', 'dockItem', '1', 'ch_abc')
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'test content for local features',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+    await enqueue(USER_A, 'recompute_local_features', 'dockItem', String(dockItemId), 'ch_abc')
     const result = await processNext(USER_A)
     expect(result).not.toBeNull()
     expect((result as { job: { status: string } }).job.status).toBe('complete')
@@ -172,9 +203,29 @@ describe('processNext / processBatch', () => {
   })
 
   it('processBatch respects limit', async () => {
-    await enqueue(USER_A, 'recompute_local_features', 'dockItem', '1', 'ch_abc1')
-    await enqueue(USER_A, 'recompute_local_features', 'dockItem', '2', 'ch_abc2')
-    await enqueue(USER_A, 'recompute_local_features', 'dockItem', '3', 'ch_abc3')
+    const dockItemIds: number[] = []
+    for (let i = 0; i < 3; i++) {
+      const id = await db.dockItems.add({
+        userId: USER_A,
+        workspaceId: WS_DEFAULT,
+        rawText: `test content ${i}`,
+        topic: null,
+        sourceType: 'text',
+        status: 'pending',
+        suggestions: [],
+        userTags: [],
+        selectedActions: [],
+        selectedProject: null,
+        sourceId: null,
+        parentId: null,
+        processedAt: null,
+        createdAt: new Date(),
+      })
+      dockItemIds.push(id as number)
+    }
+    await enqueue(USER_A, 'recompute_local_features', 'dockItem', String(dockItemIds[0]), 'ch_abc1')
+    await enqueue(USER_A, 'recompute_local_features', 'dockItem', String(dockItemIds[1]), 'ch_abc2')
+    await enqueue(USER_A, 'recompute_local_features', 'dockItem', String(dockItemIds[2]), 'ch_abc3')
     const results = await processBatch(USER_A, { limit: 2 })
     expect(results).toHaveLength(2)
     expect(results.every(r => r.job.status === 'complete')).toBe(true)
@@ -183,6 +234,201 @@ describe('processNext / processBatch', () => {
   it('processBatch returns empty array when no jobs', async () => {
     const results = await processBatch(USER_A)
     expect(results).toEqual([])
+  })
+
+  it('processJob returns failed when job payload missing contentHash, no full-scan fallback', async () => {
+    const job = await enqueue(USER_A, 'recompute_local_features', 'dockItem', '1', 'ch_abc')
+    await db.table('backgroundJobs').update(job.id, { contentHash: null as unknown as string })
+    const updatedJob = await db.table('backgroundJobs').get(job.id as string)
+    if (!updatedJob) throw new Error('job not found')
+    const result = await processJob(updatedJob)
+    expect(result.status).toBe('failed')
+  })
+
+  it('processJob returns skipped when contentHash unchanged for recompute_semantic_features', async () => {
+    initDevProviders()
+    expect(getCapabilityStatus().mode).toBe('model_available')
+
+    await setEmbeddingEnabledPref(USER_A, true, WS_DEFAULT)
+    await setReasoningEnabledPref(USER_A, true, WS_DEFAULT)
+
+    const contentHash = 'ch_skip_semantic'
+
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'test content for semantic skip',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+
+    await upsertModelRuntimeStatus({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      providerId: 'ollama-openai-compatible',
+      providerName: 'ollama-openai-compatible',
+      mode: 'model_available',
+      embeddingStatus: 'available',
+      reasoningStatus: 'available',
+      embeddingModelId: 'qwen3-embedding:0.6b',
+      reasoningModelId: 'qwen3:1.7b',
+      lastProbeAt: nowISO(),
+      lastProbeSuccess: true,
+      lastSuccessfulProbeAt: nowISO(),
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+    }, WS_DEFAULT)
+
+    await upsertSemanticFeatureSnapshot({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      targetType: 'dockItem',
+      targetId: String(dockItemId),
+      contentHash,
+      modelProvider: 'ollama-openai-compatible',
+      modelName: 'qwen3-embedding:0.6b',
+      modelVersion: '1.0',
+      embeddingDim: 1024,
+      embeddingRef: 'ev://dockItem/' + dockItemId,
+      semanticSummary: 'test summary',
+      intent: 'general',
+      topics: [],
+      source: 'SemanticFeatureEngine',
+      reason: 'test',
+      evidence: 'none',
+      confidence: 0.8,
+      safetyLevel: 'safe',
+      stale: false,
+      staleKey: 0 as const,
+      expiredAt: null,
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+    }, WS_DEFAULT)
+
+    const job = await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), contentHash)
+    const result = await processJob(job)
+    expect(result.status).toBe('skipped')
+  })
+
+  it('recompute_local_features calls localTextFeatureEngine.computeFeatures', async () => {
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'test content for local features',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+
+    const contentHash = 'ch_local_engine'
+    const spy = vi.spyOn(localTextFeatureEngine, 'computeFeatures').mockResolvedValue({
+      id: '1',
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      targetType: 'dockItem',
+      targetId: String(dockItemId),
+      contentHash,
+      language: 'en',
+      keywords: ['test'],
+      entities: [],
+      compactText: '',
+      lengthMetrics: { charCount: 10 },
+      structureHints: [],
+      source: 'local',
+      reason: 'test',
+      evidence: 'none',
+      confidence: 0.7,
+      safetyLevel: 'low',
+      stale: false,
+      staleKey: 0 as const,
+      expiredAt: null,
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+    })
+
+    const job = await enqueue(USER_A, 'recompute_local_features', 'dockItem', String(dockItemId), contentHash)
+    const result = await processJob(job)
+    expect(result.status).toBe('complete')
+    expect(spy).toHaveBeenCalled()
+  })
+
+  it('recompute_semantic_features calls semanticFeatureEngine.computeFeatures', async () => {
+    initDevProviders()
+    expect(getCapabilityStatus().mode).toBe('model_available')
+
+    await setEmbeddingEnabledPref(USER_A, true, WS_DEFAULT)
+    await setReasoningEnabledPref(USER_A, true, WS_DEFAULT)
+
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'test content for semantic features',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+
+    const contentHash = 'ch_semantic_engine'
+    const spy = vi.spyOn(semanticFeatureEngine, 'computeFeatures').mockResolvedValue({
+      status: 'complete',
+      snapshot: {
+        id: 'snap_1',
+        userId: USER_A,
+        workspaceId: WS_DEFAULT,
+        targetType: 'dockItem',
+        targetId: String(dockItemId),
+        contentHash,
+        modelProvider: 'ollama-openai-compatible',
+        modelName: 'qwen3-embedding:0.6b',
+        modelVersion: '1.0',
+        embeddingDim: 1024,
+        embeddingRef: 'ev://dockItem/' + dockItemId,
+        semanticSummary: 'test summary',
+        intent: 'general',
+        topics: [],
+        source: 'SemanticFeatureEngine',
+        reason: 'test',
+        evidence: 'none',
+        confidence: 0.8,
+        safetyLevel: 'safe',
+        stale: false,
+        staleKey: 0 as const,
+        expiredAt: null,
+        createdAt: nowISO(),
+        updatedAt: nowISO(),
+      },
+    })
+
+    const job = await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), contentHash)
+    await processJob(job)
+    expect(spy).toHaveBeenCalled()
   })
 })
 
@@ -223,7 +469,23 @@ describe('pending_model lifecycle', () => {
   it('Core Mode semantic job enters pending_model, attempts NOT increased', async () => {
     resetProviders()
     expect(getCapabilityStatus().mode).toBe('core')
-    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', '1', 'ch_abc')
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'test content for pending model',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), 'ch_abc')
     const result = await processNext(USER_A)
     expect(result).not.toBeNull()
     expect((result as { job: { status: string } }).job.status).toBe('pending_model')
@@ -233,7 +495,23 @@ describe('pending_model lifecycle', () => {
 
   it('Core Mode pending_model not processed by processBatch', async () => {
     resetProviders()
-    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', '1', 'ch_abc')
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'test content for pending model batch',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), 'ch_abc')
     await processNext(USER_A)
     const results = await processBatch(USER_A)
     expect(results).toEqual([])
@@ -241,7 +519,23 @@ describe('pending_model lifecycle', () => {
 
   it('reactivatePendingModelJobs restores pending_model to pending when model available', async () => {
     resetProviders()
-    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', '1', 'ch_abc')
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'test content for reactivation',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), 'ch_abc')
     await processNext(USER_A)
     initDevProviders()
     expect(getCapabilityStatus().mode).toBe('model_available')
@@ -253,7 +547,7 @@ describe('pending_model lifecycle', () => {
 
   it('Restored semantic job can be processed to complete', async () => {
     resetProviders()
-    await db.dockItems.add({
+    const dockItemId = await db.dockItems.add({
       userId: USER_A,
       workspaceId: DEFAULT_WORKSPACE_ID,
       rawText: 'Test dock item content for semantic processing',
@@ -269,10 +563,29 @@ describe('pending_model lifecycle', () => {
       processedAt: null,
       createdAt: new Date(),
     })
-    const dockItemId = 1
     await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), 'ch_abc')
     await processNext(USER_A)
     initDevProviders()
+    await setEmbeddingEnabledPref(USER_A, true, WS_DEFAULT)
+    await setReasoningEnabledPref(USER_A, true, WS_DEFAULT)
+    await upsertModelRuntimeStatus({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      providerId: 'ollama-openai-compatible',
+      providerName: 'ollama-openai-compatible',
+      mode: 'model_available',
+      embeddingStatus: 'available',
+      reasoningStatus: 'available',
+      embeddingModelId: 'qwen3-embedding:0.6b',
+      reasoningModelId: 'qwen3:1.7b',
+      lastProbeAt: nowISO(),
+      lastProbeSuccess: true,
+      lastSuccessfulProbeAt: nowISO(),
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+    }, WS_DEFAULT)
     await reactivatePendingModelJobs(USER_A)
     const result = await processNext(USER_A)
     expect(result).not.toBeNull()
@@ -282,7 +595,23 @@ describe('pending_model lifecycle', () => {
 
   it('reactivatePendingModelJobs does NOT increase attempts', async () => {
     resetProviders()
-    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', '1', 'ch_abc')
+    const dockItemId = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'test content for attempts check',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemId), 'ch_abc')
     await processNext(USER_A)
     const beforeJob = await db.table('backgroundJobs').toArray()
     const attemptsBefore = beforeJob[0].attempts
@@ -294,11 +623,47 @@ describe('pending_model lifecycle', () => {
 
   it('reactivatePendingModelJobs workspace isolation', async () => {
     resetProviders()
-    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', '1', 'ch_abc', { workspaceId: WS_DEFAULT })
-    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', '2', 'ch_def', { workspaceId: WS_OTHER })
+    const dockItemIdDefault = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_DEFAULT,
+      rawText: 'test content ws default',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+    const dockItemIdOther = await db.dockItems.add({
+      userId: USER_A,
+      workspaceId: WS_OTHER,
+      rawText: 'test content ws other',
+      topic: null,
+      sourceType: 'text',
+      status: 'pending',
+      suggestions: [],
+      userTags: [],
+      selectedActions: [],
+      selectedProject: null,
+      sourceId: null,
+      parentId: null,
+      processedAt: null,
+      createdAt: new Date(),
+    })
+    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemIdDefault), 'ch_abc', { workspaceId: WS_DEFAULT })
+    await enqueue(USER_A, 'recompute_semantic_features', 'dockItem', String(dockItemIdOther), 'ch_def', { workspaceId: WS_OTHER })
     await processNext(USER_A, { workspaceId: WS_DEFAULT })
     await processNext(USER_A, { workspaceId: WS_OTHER })
     initDevProviders()
+    await setEmbeddingEnabledPref(USER_A, true, WS_DEFAULT)
+    await setReasoningEnabledPref(USER_A, true, WS_DEFAULT)
+    await setEmbeddingEnabledPref(USER_A, true, WS_OTHER)
+    await setReasoningEnabledPref(USER_A, true, WS_OTHER)
     const reactivatedDefault = await reactivatePendingModelJobs(USER_A, { workspaceId: WS_DEFAULT })
     const reactivatedOther = await reactivatePendingModelJobs(USER_A, { workspaceId: WS_OTHER })
     expect(reactivatedDefault).toHaveLength(1)

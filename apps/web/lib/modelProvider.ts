@@ -83,10 +83,12 @@ export class DevEmbeddedModelProvider implements EmbeddedModelProvider {
   readonly availability = 'available' as ModelAvailability
 
   async probe(): Promise<ProbeResult> {
+    console.warn('[Dev:MOCK] probe() ← 返回硬编码结果 (非真实模型!)')
     return { available: true, embeddingAvailable: true, reasoningAvailable: false }
   }
 
   async generateEmbedding(text: string, _options?: Record<string, unknown>): Promise<EmbeddingResult> {
+    console.warn('[Dev:MOCK] generateEmbedding() ← 使用确定性伪向量 (非真实模型!)')
     try {
       const data = generateDeterministicEmbedding(text, 128)
       return {
@@ -109,6 +111,7 @@ export class DevEmbeddedModelProvider implements EmbeddedModelProvider {
   }
 
   async generateSummary(text: string, _options?: Record<string, unknown>): Promise<SummaryResult> {
+    console.warn('[Dev:MOCK] generateSummary() ← 返回截断伪摘要 (非真实模型!)')
     try {
       const summary = text.length > 80 ? text.slice(0, 80) + '...' : text + ' [dev-summary]'
       return {
@@ -136,6 +139,7 @@ export class DevReasoningProvider implements ReasoningProvider {
   readonly availability = 'available' as ModelAvailability
 
   async generateExplanation(text: string, _context?: string, _options?: Record<string, unknown>): Promise<ExplanationResult> {
+    console.warn('[Dev:MOCK] generateExplanation() ← 词频伪造解释 (非真实模型!)')
     try {
       const words = text.split(/\s+/)
       const seen = new Set<string>()
@@ -314,6 +318,7 @@ export function initDevProviders(): void {
   if (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'development' && process.env?.NODE_ENV !== 'test') {
     return
   }
+  console.warn('[Dev:MOCK] initDevProviders() ⚠️ 注册 Mock Provider! 所有模型调用将返回伪数据!')
   modelProviderRegistry.registerEmbeddingProvider(new DevEmbeddedModelProvider())
   modelProviderRegistry.registerReasoningProvider(new DevReasoningProvider())
 }
@@ -359,6 +364,7 @@ export class OllamaOpenAICompatibleProvider implements EmbeddedModelProvider, Re
   }
 
   async probe(): Promise<ProbeResult> {
+    console.log('[Ollama:REAL] probe() → 正在探测本地模型端点...', { baseUrl: this.baseUrl, embeddingModelId: this.embeddingModelId, reasoningModelId: this.reasoningModelId })
     try {
       const response = await fetch(`${this.baseUrl}/models`, {
         method: 'GET',
@@ -366,6 +372,7 @@ export class OllamaOpenAICompatibleProvider implements EmbeddedModelProvider, Re
         signal: AbortSignal.timeout(10000),
       })
       if (!response.ok) {
+        console.warn('[Ollama:REAL] probe() ← 端点返回 HTTP', response.status)
         this._availability = 'error'
         return { available: false, embeddingAvailable: false, reasoningAvailable: false, error: `HTTP ${response.status}` }
       }
@@ -375,14 +382,17 @@ export class OllamaOpenAICompatibleProvider implements EmbeddedModelProvider, Re
       const reasoningAvailable = modelIds.includes(this.reasoningModelId)
       const available = embeddingAvailable || reasoningAvailable
       this._availability = available ? 'available' : 'unavailable'
+      console.log('[Ollama:REAL] probe() ← 模型列表:', modelIds, { embeddingAvailable, reasoningAvailable, available })
       return { available, embeddingAvailable, reasoningAvailable, models: modelIds }
     } catch (err) {
+      console.error('[Ollama:REAL] probe() ← 连接失败:', err instanceof Error ? err.message : String(err))
       this._availability = 'unavailable'
       return { available: false, embeddingAvailable: false, reasoningAvailable: false, error: err instanceof Error ? err.message : String(err) }
     }
   }
 
   async generateEmbedding(text: string, _options?: Record<string, unknown>): Promise<EmbeddingResult> {
+    console.log('[Ollama:REAL] generateEmbedding() → 正在调用 Embedding API...', { textLen: text.length, model: this.embeddingModelId })
     try {
       const response = await fetch(`${this.baseUrl}/embeddings`, {
         method: 'POST',
@@ -394,15 +404,18 @@ export class OllamaOpenAICompatibleProvider implements EmbeddedModelProvider, Re
         signal: AbortSignal.timeout(30000),
       })
       if (!response.ok) {
+        console.warn('[Ollama:REAL] generateEmbedding() ← HTTP', response.status)
         return { success: false, modelProvider: this.providerId, modelName: this.embeddingModelId, modelVersion: 'unknown', error: `HTTP ${response.status}` }
       }
       const json = await response.json()
       const embeddingArray = json.data?.[0]?.embedding
       if (!Array.isArray(embeddingArray)) {
+        console.warn('[Ollama:REAL] generateEmbedding() ← 响应中无 embedding')
         return { success: false, modelProvider: this.providerId, modelName: this.embeddingModelId, modelVersion: 'unknown', error: 'No embedding in response' }
       }
       const data = new Float32Array(embeddingArray)
       const dim = data.length
+      console.log('[Ollama:REAL] generateEmbedding() ← 成功获取向量, dim:', dim)
       return {
         success: true,
         data,
@@ -412,11 +425,13 @@ export class OllamaOpenAICompatibleProvider implements EmbeddedModelProvider, Re
         modelVersion: json.model || 'unknown',
       }
     } catch (err) {
+      console.error('[Ollama:REAL] generateEmbedding() ← 失败:', err instanceof Error ? err.message : String(err))
       return { success: false, modelProvider: this.providerId, modelName: this.embeddingModelId, modelVersion: 'unknown', error: err instanceof Error ? err.message : String(err) }
     }
   }
 
   async generateSummary(text: string, _options?: Record<string, unknown>): Promise<SummaryResult> {
+    console.log('[Ollama:REAL] generateSummary() → 正在调用 Reasoning API...', { textLen: text.length, model: this.reasoningModelId })
     try {
       const response = await fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
@@ -433,21 +448,26 @@ export class OllamaOpenAICompatibleProvider implements EmbeddedModelProvider, Re
         signal: AbortSignal.timeout(60000),
       })
       if (!response.ok) {
+        console.warn('[Ollama:REAL] generateSummary() ← HTTP', response.status)
         return { success: false, modelProvider: this.providerId, modelName: this.reasoningModelId, modelVersion: 'unknown', error: `HTTP ${response.status}` }
       }
       const json = await response.json()
       const contentShape = validateChatContentShape(json)
       if (!contentShape.valid) {
+        console.warn('[Ollama:REAL] generateSummary() ← 响应格式异常:', contentShape.error)
         return { success: false, modelProvider: this.providerId, modelName: this.reasoningModelId, modelVersion: 'unknown', error: contentShape.error }
       }
       const sanitized = sanitizeReasoningContent(contentShape.content)
       if (!sanitized) {
+        console.warn('[Ollama:REAL] generateSummary() ← 清理后内容为空')
         return { success: false, modelProvider: this.providerId, modelName: this.reasoningModelId, modelVersion: 'unknown', error: 'sanitized_content_empty' }
       }
       const summaryShape = validateSummaryContent(sanitized)
       if (!summaryShape.valid) {
+        console.warn('[Ollama:REAL] generateSummary() ← 摘要验证失败:', summaryShape.error)
         return { success: false, modelProvider: this.providerId, modelName: this.reasoningModelId, modelVersion: 'unknown', error: summaryShape.error }
       }
+      console.log('[Ollama:REAL] generateSummary() ← 成功, len:', sanitized.length)
       return {
         success: true,
         summary: sanitized,
@@ -456,11 +476,13 @@ export class OllamaOpenAICompatibleProvider implements EmbeddedModelProvider, Re
         modelVersion: json.model || 'unknown',
       }
     } catch (err) {
+      console.error('[Ollama:REAL] generateSummary() ← 失败:', err instanceof Error ? err.message : String(err))
       return { success: false, modelProvider: this.providerId, modelName: this.reasoningModelId, modelVersion: 'unknown', error: err instanceof Error ? err.message : String(err) }
     }
   }
 
   async generateExplanation(text: string, _context?: string, _options?: Record<string, unknown>): Promise<ExplanationResult> {
+    console.log('[Ollama:REAL] generateExplanation() → 正在调用 Reasoning API...', { textLen: text.length, model: this.reasoningModelId })
     try {
       const response = await fetch(`${this.baseUrl}/chat/completions`, {
         method: 'POST',
@@ -477,17 +499,21 @@ export class OllamaOpenAICompatibleProvider implements EmbeddedModelProvider, Re
         signal: AbortSignal.timeout(60000),
       })
       if (!response.ok) {
+        console.warn('[Ollama:REAL] generateExplanation() ← HTTP', response.status)
         return { success: false, modelProvider: this.providerId, modelName: this.reasoningModelId, modelVersion: 'unknown', error: `HTTP ${response.status}` }
       }
       const json = await response.json()
       const contentShape = validateChatContentShape(json)
       if (!contentShape.valid) {
+        console.warn('[Ollama:REAL] generateExplanation() ← 响应格式异常:', contentShape.error)
         return { success: false, modelProvider: this.providerId, modelName: this.reasoningModelId, modelVersion: 'unknown', error: contentShape.error }
       }
       const sanitized = sanitizeReasoningContent(contentShape.content)
       if (!sanitized) {
+        console.warn('[Ollama:REAL] generateExplanation() ← 清理后内容为空')
         return { success: false, modelProvider: this.providerId, modelName: this.reasoningModelId, modelVersion: 'unknown', error: 'sanitized_content_empty' }
       }
+      console.log('[Ollama:REAL] generateExplanation() ← 成功, len:', sanitized.length)
       return {
         success: true,
         explanation: sanitized.slice(0, 500),
@@ -498,6 +524,7 @@ export class OllamaOpenAICompatibleProvider implements EmbeddedModelProvider, Re
         modelVersion: json.model || 'unknown',
       }
     } catch (err) {
+      console.error('[Ollama:REAL] generateExplanation() ← 失败:', err instanceof Error ? err.message : String(err))
       return { success: false, modelProvider: this.providerId, modelName: this.reasoningModelId, modelVersion: 'unknown', error: err instanceof Error ? err.message : String(err) }
     }
   }
@@ -523,6 +550,50 @@ export function initOllamaProviders(
   )
   modelProviderRegistry.registerEmbeddingProvider(provider)
   modelProviderRegistry.registerReasoningProvider(provider)
+  console.log('[Ollama:REAL] initOllamaProviders() ✅ 已注册真实 Ollama Provider', {
+    providerId: provider.providerId,
+    providerName: provider.providerName,
+    baseUrl: options?.baseUrl || DEFAULT_LOCAL_MODEL_BASE_URL,
+    embeddingModelId: options?.embeddingModelId || DEFAULT_EMBEDDING_MODEL_ID,
+    reasoningModelId: options?.reasoningModelId || DEFAULT_REASONING_MODEL_ID,
+  })
+}
+
+if (typeof window !== 'undefined') {
+  const w = window as any
+  w.__verifyProviders = () => {
+    const cap = getCapabilityStatus()
+    console.group('🔍 Provider 验证 (Provider Verification)')
+    console.log('Embedding Provider ID:', cap.embeddingProviderId || '(无)')
+    console.log('Reasoning Provider ID:', cap.reasoningProviderId || '(无)')
+    console.log('Embedding 可用性:', cap.embeddingAvailability)
+    console.log('Reasoning 可用性:', cap.reasoningAvailability)
+    console.log('运行模式:', cap.mode)
+    const embProvider = modelProviderRegistry.getEmbeddingProvider()
+    if (embProvider) {
+      console.log('当前 Embedding Provider 名称:', embProvider.providerName)
+      if (embProvider.providerId === 'dev' || embProvider.providerId.startsWith('mock')) {
+        console.warn('⚠️ 警告: 当前使用 Mock/Dev Provider，所有模型输出均为伪数据!')
+      } else {
+        console.log('✅ 当前使用真实 Provider:', embProvider.providerId)
+      }
+    } else {
+      console.warn('⚠️ 未注册任何 Embedding Provider!')
+    }
+    const reasProvider = modelProviderRegistry.getReasoningProvider()
+    if (reasProvider) {
+      console.log('当前 Reasoning Provider 名称:', reasProvider.providerName)
+      if (reasProvider.providerId === 'dev' || reasProvider.providerId.startsWith('mock')) {
+        console.warn('⚠️ 警告: 当前使用 Mock/Dev Provider，所有模型输出均为伪数据!')
+      } else {
+        console.log('✅ 当前使用真实 Provider:', reasProvider.providerId)
+      }
+    } else {
+      console.warn('⚠️ 未注册任何 Reasoning Provider!')
+    }
+    console.groupEnd()
+    return { cap, embProvider, reasProvider }
+  }
 }
 
 if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {

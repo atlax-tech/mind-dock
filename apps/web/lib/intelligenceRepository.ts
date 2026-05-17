@@ -503,3 +503,62 @@ export async function getModelRuntimeStatus(
     .toArray()
   return (results[0] as unknown as ModelRuntimeStatus) ?? null
 }
+
+export async function getUserPreference(
+  userId: string,
+  key: string,
+  workspaceId: string = DEFAULT_WORKSPACE_ID,
+): Promise<string | null> {
+  const id = `${userId}_pref_${workspaceId}_${key}`
+  const record = await db.userPreferences.get(id)
+  return record?.value ?? null
+}
+
+export async function setUserPreference(
+  userId: string,
+  key: string,
+  value: string,
+  workspaceId: string = DEFAULT_WORKSPACE_ID,
+): Promise<void> {
+  const id = `${userId}_pref_${workspaceId}_${key}`
+  await db.userPreferences.put({
+    id,
+    userId,
+    workspaceId,
+    key,
+    value,
+    updatedAt: new Date().toISOString(),
+  })
+}
+
+export async function getEmbeddingEnabledPref(
+  userId: string,
+  workspaceId: string = DEFAULT_WORKSPACE_ID,
+): Promise<boolean> {
+  const val = await getUserPreference(userId, 'embeddingEnabled', workspaceId)
+  return val === 'true'
+}
+
+export async function getReasoningEnabledPref(
+  userId: string,
+  workspaceId: string = DEFAULT_WORKSPACE_ID,
+): Promise<boolean> {
+  const val = await getUserPreference(userId, 'reasoningEnabled', workspaceId)
+  return val === 'true'
+}
+
+export async function setEmbeddingEnabledPref(
+  userId: string,
+  enabled: boolean,
+  workspaceId: string = DEFAULT_WORKSPACE_ID,
+): Promise<void> {
+  await setUserPreference(userId, 'embeddingEnabled', String(enabled), workspaceId)
+}
+
+export async function setReasoningEnabledPref(
+  userId: string,
+  enabled: boolean,
+  workspaceId: string = DEFAULT_WORKSPACE_ID,
+): Promise<void> {
+  await setUserPreference(userId, 'reasoningEnabled', String(enabled), workspaceId)
+}

@@ -7,7 +7,10 @@ export async function onContentChanged(
   userId: string,
   event: ContentChangedEvent,
 ): Promise<{ enqueued: boolean; reason?: string; jobs?: BackgroundJobRecord[] }> {
+  console.log(`[ContentChange] 内容变更 → sourceType: ${event.sourceType}, sourceId: ${event.sourceId}, changeType: ${event.changeType}`)
+
   if (event.changeType === 'deleted') {
+    console.log('[ContentChange] ← 内容已删除, 跳过')
     return { enqueued: false, reason: 'content_deleted' }
   }
 
@@ -20,6 +23,7 @@ export async function onContentChanged(
   )
 
   if (!dirty) {
+    console.log('[ContentChange] ← 内容未变更, 跳过')
     return { enqueued: false, reason: 'content_unchanged' }
   }
 
@@ -41,5 +45,6 @@ export async function onContentChanged(
     { workspaceId: event.workspaceId },
   )
 
+  console.log(`[ContentChange] ← 已入列 2 个作业 (local: ${localJob.id}, semantic: ${semanticJob.id})`)
   return { enqueued: true, jobs: [localJob, semanticJob] }
 }

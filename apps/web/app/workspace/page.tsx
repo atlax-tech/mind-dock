@@ -31,10 +31,13 @@ import type { StoredDraft } from '@/lib/repository'
 import { emit } from '@/lib/events';
 import { isRecommendationPending, isRecommendationResolved, isSupportedCandidateType, describeRecommendationAction, describeRecommendationReason, describeApplyPreview, formatConfidenceLevel, STATUS_LABELS, CANDIDATE_TYPE_LABELS } from '@/lib/recommendation-i18n';
 import { getLocalHealthReport, type LocalHealthReport } from '@/lib/localHealthReport'
-import { getCapabilityStatus } from '@/lib/modelProvider'
-import { getModelRuntimeStatus } from '@/lib/intelligenceRepository'
+import { getCapabilityStatus, initOllamaProviders } from '@/lib/modelProvider'
+import { getModelRuntimeStatus, listAuditLogs, getEmbeddingEnabledPref, getReasoningEnabledPref, setEmbeddingEnabledPref, setReasoningEnabledPref } from '@/lib/intelligenceRepository'
 import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
-import type { ModelRuntimeStatus } from '@atlax/domain'
+import type { ModelRuntimeStatus, SemanticFeatureSnapshot } from '@atlax/domain'
+import { probeAndSyncStatus } from '@/lib/localModelRuntimeService'
+import { startJobConsumer, stopJobConsumer } from '@/lib/jobConsumer'
+import { db } from '@/lib/db'
 import {
   Home,
   Brain,
@@ -2808,10 +2811,73 @@ const ReviewView = ({ onNavigateToMind, onNavigateToSuggestion }: { onNavigateTo
 };
 
 // 6. 设置视图 (Settings View)
-// 此处为Mock功能，等待后端接入 — 金库路径、同步状态均为Mock数据
-const SettingsView = () => {
+// 6. 设置视图 (Settings View) — 模型检测/启用已接入真实 Ollama Provider，JobConsumer 自动消费后台 Job
+const SettingsView = ({ onToast }: { onToast: (msg: string) => void }) => {
   const [runtimeStatus, setRuntimeStatus] = useState<ModelRuntimeStatus | null>(null)
   const [statusLoading, setStatusLoading] = useState(true)
+  const [embeddingEnabled, setEmbeddingEnabled] = useState(false)
+  const [reasoningEnabled, setReasoningEnabled] = useState(false)
+  const [probeLoading, setProbeLoading] = useState(false)
+  const [recentSemanticSnapshot, setRecentSemanticSnapshot] = useState<SemanticFeatureSnapshot | null>(null)
+  const [auditLogCount, setAuditLogCount] = useState(0)
+  const [recentVectorHash, setRecentVectorHash] = useState<string | null>(null)
+  const [recentOutputHash, setRecentOutputHash] = useState<string | null>(null)
+  const [semanticSnapshotCount, setSemanticSnapshotCount] = useState(0)
+  const [lastSemanticJobStatus, setLastSemanticJobStatus] = useState<string | null>(null)
+  const [lastSemanticJobAt, setLastSemanticJobAt] = useState<string | null>(null)
+
+  const refreshModelActivity = useCallback((userId: string) => {
+    db.semanticFeatureSnapshots
+      .where('[userId+workspaceId]')
+      .equals([userId, DEFAULT_WORKSPACE_ID])
+      .count()
+      .then((count) => {
+        setSemanticSnapshotCount(count)
+      })
+      .catch(() => {})
+
+    db.semanticFeatureSnapshots
+      .where('[userId+workspaceId]')
+      .equals([userId, DEFAULT_WORKSPACE_ID])
+      .toArray()
+      .then((snapshots) => {
+        if (snapshots.length > 0) {
+          snapshots.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          setRecentSemanticSnapshot(snapshots[0] as unknown as SemanticFeatureSnapshot)
+        } else {
+          setRecentSemanticSnapshot(null)
+        }
+      })
+      .catch(() => {})
+
+    db.table('backgroundJobs')
+      .where('[userId+workspaceId+status]')
+      .equals([userId, DEFAULT_WORKSPACE_ID, 'complete'])
+      .toArray()
+      .then((jobs) => {
+        const semanticJobs = jobs.filter(j => j.jobType === 'recompute_semantic_features')
+        if (semanticJobs.length > 0) {
+          semanticJobs.sort((a, b) => (b.completedAt ?? b.updatedAt).localeCompare(a.completedAt ?? a.updatedAt))
+          const latest = semanticJobs[0]
+          setLastSemanticJobStatus(latest.status)
+          setLastSemanticJobAt(latest.completedAt ?? latest.updatedAt)
+        } else {
+          setLastSemanticJobStatus(null)
+          setLastSemanticJobAt(null)
+        }
+      })
+      .catch(() => {})
+
+    listAuditLogs(userId, undefined, DEFAULT_WORKSPACE_ID)
+      .then((logs) => {
+        setAuditLogCount(logs.length)
+        const recentEmbeddingLog = [...logs].reverse().find(l => l.capability === 'embedding' && l.success)
+        const recentSummaryLog = [...logs].reverse().find(l => l.capability === 'summary' && l.success)
+        if (recentEmbeddingLog) setRecentVectorHash(recentEmbeddingLog.outputHash)
+        if (recentSummaryLog) setRecentOutputHash(recentSummaryLog.outputHash)
+      })
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     const user = getCurrentUser()
@@ -2829,9 +2895,73 @@ const SettingsView = () => {
       .finally(() => {
         setStatusLoading(false)
       })
-  }, [])
+
+    Promise.all([
+      getEmbeddingEnabledPref(user.id, DEFAULT_WORKSPACE_ID),
+      getReasoningEnabledPref(user.id, DEFAULT_WORKSPACE_ID),
+    ]).then(([embEnabled, reasEnabled]) => {
+      setEmbeddingEnabled(embEnabled)
+      setReasoningEnabled(reasEnabled)
+    }).catch(() => {})
+
+    refreshModelActivity(user.id)
+
+    startJobConsumer(user.id, { workspaceId: DEFAULT_WORKSPACE_ID })
+
+    const activityRefreshInterval = setInterval(() => {
+      refreshModelActivity(user.id)
+    }, 5000)
+
+    return () => {
+      stopJobConsumer()
+      clearInterval(activityRefreshInterval)
+    }
+  }, [refreshModelActivity])
 
   const capStatus = getCapabilityStatus()
+
+  const handleProbe = async () => {
+    const user = getCurrentUser()
+    if (!user) {
+      onToast('无法获取用户信息，请刷新页面后重试')
+      return
+    }
+
+    const capStatusNow = getCapabilityStatus()
+    if (!capStatusNow.embeddingProviderId && !capStatusNow.reasoningProviderId) {
+      onToast('未检测到本地模型 Provider，请确认 Ollama 服务已启动并刷新页面')
+      return
+    }
+
+    setProbeLoading(true)
+    try {
+      const probeResult = await probeAndSyncStatus(user.id, DEFAULT_WORKSPACE_ID)
+      const result = await getModelRuntimeStatus(user.id, 'ollama-openai-compatible', DEFAULT_WORKSPACE_ID)
+      setRuntimeStatus(result)
+      refreshModelActivity(user.id)
+
+      if (probeResult.available) {
+        if (probeResult.embeddingAvailable && probeResult.reasoningAvailable) {
+          onToast('模型检测成功：Embedding 和 Reasoning 均可用')
+        } else if (probeResult.embeddingAvailable) {
+          onToast('模型检测部分成功：仅 Embedding 可用，Reasoning 不可用')
+        } else if (probeResult.reasoningAvailable) {
+          onToast('模型检测部分成功：仅 Reasoning 可用，Embedding 不可用')
+        } else {
+          onToast('模型检测完成，但未发现可用模型')
+        }
+      } else {
+        const errDetail = probeResult.error ? ` (${probeResult.error})` : ''
+        onToast(`模型检测失败：无法连接到本地 Ollama 服务${errDetail}`)
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      onToast(`模型检测异常：${msg || '未知错误'}`)
+      console.error('[probe] handleProbe error:', err)
+    } finally {
+      setProbeLoading(false)
+    }
+  }
 
   let modeLabel: string
   let modeDesc: string
@@ -2873,25 +3003,45 @@ const SettingsView = () => {
   } else {
     embProviderId = capStatus.embeddingProviderId
     reasProviderId = capStatus.reasoningProviderId
-    if (capStatus.mode === 'model_available') {
-      const isDev = capStatus.embeddingProviderId === 'dev' || capStatus.reasoningProviderId === 'dev'
-      modeLabel = isDev ? '开发模式' : '模型可用'
-      modeDesc = isDev ? 'Mock Provider 可用（仅供开发/测试，不代表真实模型能力）' : 'Provider 已就绪'
-      modeColor = isDev ? 'text-amber-400' : 'text-[#9cf4d4]'
-      dotColor = isDev ? 'bg-amber-400' : 'bg-[#9cf4d4]'
-    } else if (capStatus.mode === 'core') {
-      modeLabel = '核心模式'
-      modeDesc = '仅本地规则引擎可用'
-      modeColor = 'text-[#899298]'
-      dotColor = 'bg-[#899298]'
-    } else {
-      modeLabel = '降级模式'
-      modeDesc = '模型不可用，系统以基础能力运行'
-      modeColor = 'text-[#ffb4ab]'
-      dotColor = 'bg-[#ffb4ab]'
-    }
-    embLabel = capStatus.embeddingAvailability === 'available' ? '可用' : capStatus.embeddingAvailability === 'error' ? '错误' : '不可用'
-    reasLabel = capStatus.reasoningAvailability === 'available' ? '可用' : capStatus.reasoningAvailability === 'error' ? '错误' : '不可用'
+    modeLabel = '未检测'
+    modeDesc = '请运行本地模型检测'
+    modeColor = 'text-[#899298]'
+    dotColor = 'bg-[#899298]'
+    embLabel = '未检测'
+    reasLabel = '未检测'
+  }
+
+  const isDevOrMock = !runtimeStatus && (
+    capStatus.embeddingProviderId === 'dev' ||
+    (capStatus.embeddingProviderId?.startsWith('mock') ?? false) ||
+    capStatus.reasoningProviderId === 'dev' ||
+    (capStatus.reasoningProviderId?.startsWith('mock') ?? false)
+  )
+
+  const resolveEmbeddingStatusLabel = () => {
+    if (!runtimeStatus) return '未检测'
+    if (embeddingEnabled) return '已启用'
+    if (runtimeStatus.embeddingStatus === 'available') return '已禁用'
+    return '不可用'
+  }
+  const resolveEmbeddingStatusColor = () => {
+    if (!runtimeStatus) return 'text-[#899298]'
+    if (embeddingEnabled) return 'text-[#9cf4d4]'
+    if (runtimeStatus.embeddingStatus === 'available') return 'text-[#ffb4ab]'
+    return 'text-[#ffb4ab]'
+  }
+
+  const resolveReasoningStatusLabel = () => {
+    if (!runtimeStatus) return '未安装'
+    if (reasoningEnabled) return '已启用'
+    if (runtimeStatus.reasoningStatus === 'available') return '已禁用'
+    return '不可用'
+  }
+  const resolveReasoningStatusColor = () => {
+    if (!runtimeStatus) return 'text-[#899298]'
+    if (reasoningEnabled) return 'text-[#9cf4d4]'
+    if (runtimeStatus.reasoningStatus === 'available') return 'text-[#ffb4ab]'
+    return 'text-[#ffb4ab]'
   }
 
   return (
@@ -2968,8 +3118,219 @@ const SettingsView = () => {
                   {reasProviderId && <p className="text-[9px] text-[#899298] mt-0.5">{reasProviderId}</p>}
                 </div>
               </div>
+
+              {isDevOrMock && (
+                <div className="bg-[#ffb4ab]/10 rounded-lg p-3 border border-[#ffb4ab]/20">
+                  <p className="text-[9px] text-[#ffb4ab] font-semibold tracking-wider uppercase mb-1">⚠ 开发 Mock 链路激活</p>
+                  <p className="text-xs text-[#ffb4ab]">当前使用 Mock Provider，所有模型输出均为伪数据</p>
+                  <p className="text-[9px] text-[#899298] mt-1">
+                    Embedding: {capStatus.embeddingProviderId || '—'}
+                    {capStatus.embeddingProviderId === 'dev' ? ' (Dev Mock)' : (capStatus.embeddingProviderId?.startsWith('mock') ? ' (Mock)' : '')}
+                  </p>
+                  <p className="text-[9px] text-[#899298] mt-0.5">
+                    Reasoning: {capStatus.reasoningProviderId || '—'}
+                    {capStatus.reasoningProviderId === 'dev' ? ' (Dev Mock)' : (capStatus.reasoningProviderId?.startsWith('mock') ? ' (Mock)' : '')}
+                  </p>
+                </div>
+              )}
+
+              {!isDevOrMock && (capStatus.embeddingProviderId || capStatus.reasoningProviderId) && (
+                <div className="bg-white/5 rounded-lg p-3 border border-white/10">
+                  <p className="text-[9px] text-[#899298] font-semibold tracking-wider uppercase mb-1">📋 已注册 Provider</p>
+                  <p className="text-[9px] text-[#899298]">
+                    当前 Embedding Provider: <span className="text-[#e0e3e6]">{capStatus.embeddingProviderId || '—'}</span>
+                  </p>
+                  <p className="text-[9px] text-[#899298] mt-0.5">
+                    当前 Reasoning Provider: <span className="text-[#e0e3e6]">{capStatus.reasoningProviderId || '—'}</span>
+                  </p>
+                  <p className="text-[9px] text-amber-400/80 mt-1">
+                    ⚠ 注册信息仅表示 Provider 已加载，不代表模型已检测/可用。请点击下方检测按钮验证。
+                  </p>
+                </div>
+              )}
+
+              {!isDevOrMock && !capStatus.embeddingProviderId && !capStatus.reasoningProviderId && (
+                <div className="bg-amber-400/5 rounded-lg p-3 border border-amber-400/10">
+                  <p className="text-[9px] text-amber-400 font-semibold tracking-wider uppercase mb-1">⚠ 未注册 Provider</p>
+                  <p className="text-xs text-[#899298]">未检测到任何模型 Provider，请确认 Ollama 服务已启动</p>
+                  <p className="text-[9px] text-[#899298] mt-1">端点: http://localhost:11434</p>
+                </div>
+              )}
+
+              <div className="border-t border-white/5 pt-3">
+                <p className="text-[9px] text-[#899298] font-semibold tracking-wider uppercase mb-2">语义核心 (Semantic Core)</p>
+                <p className="text-xs text-[#e0e3e6] mb-1">qwen3-embedding:0.6b</p>
+                <p className={`text-xs mb-3 ${resolveEmbeddingStatusColor()}`}>{resolveEmbeddingStatusLabel()}</p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={handleProbe}
+                    disabled={probeLoading}
+                    className="px-2 py-1 text-[10px] rounded-md bg-white/5 border border-white/10 text-[#899298] hover:bg-white/10 hover:text-white transition-all duration-200"
+                  >
+                    {probeLoading ? '检测中...' : '检测本地 Embedding 模型'}
+                  </button>
+                  <button
+                    disabled={!runtimeStatus || runtimeStatus.embeddingStatus !== 'available' || embeddingEnabled}
+                    onClick={async () => {
+                      const user = getCurrentUser()
+                      if (!user) return
+                      await setEmbeddingEnabledPref(user.id, true, DEFAULT_WORKSPACE_ID)
+                      setEmbeddingEnabled(true)
+                    }}
+                    className={`px-2 py-1 text-[10px] rounded-md border transition-all duration-200 ${runtimeStatus?.embeddingStatus === 'available' && !embeddingEnabled ? 'bg-[#86d7ff]/10 border-[#86d7ff]/30 text-[#86d7ff] hover:bg-[#86d7ff]/20' : 'bg-white/5 border-white/10 text-[#899298] opacity-40 cursor-not-allowed'}`}
+                  >
+                    启用语义 Embedding
+                  </button>
+                  {embeddingEnabled && (
+                    <button
+                      onClick={async () => {
+                        const user = getCurrentUser()
+                        if (!user) return
+                        await setEmbeddingEnabledPref(user.id, false, DEFAULT_WORKSPACE_ID)
+                        setEmbeddingEnabled(false)
+                      }}
+                      className="px-2 py-1 text-[10px] rounded-md bg-white/5 border border-[#ffb4ab]/30 text-[#ffb4ab] hover:bg-[#ffb4ab]/10 transition-all duration-200"
+                    >
+                      停用语义 Embedding
+                    </button>
+                  )}
+                </div>
+                {!embeddingEnabled && runtimeStatus?.embeddingStatus === 'available' && (
+                  <p className="text-[9px] text-[#899298] mt-2">已停用，但历史语义数据仍保留</p>
+                )}
+              </div>
+
+              <div className="border-t border-white/5 pt-3">
+                <p className="text-[9px] text-[#899298] font-semibold tracking-wider uppercase mb-2">Reasoning 增强包 (Smart Pack)</p>
+                <p className="text-xs text-[#e0e3e6] mb-1">qwen3:1.7b</p>
+                <p className={`text-xs mb-3 ${resolveReasoningStatusColor()}`}>{resolveReasoningStatusLabel()}</p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={handleProbe}
+                    disabled={probeLoading}
+                    className="px-2 py-1 text-[10px] rounded-md bg-white/5 border border-white/10 text-[#899298] hover:bg-white/10 hover:text-white transition-all duration-200"
+                  >
+                    {probeLoading ? '检测中...' : '检测本地 Reasoning 模型'}
+                  </button>
+                  <button
+                    disabled
+                    className="px-2 py-1 text-[10px] rounded-md bg-white/5 border border-white/10 text-[#899298] opacity-40 cursor-not-allowed"
+                  >
+                    下载增强包 — Phase 4
+                  </button>
+                  <button
+                    disabled={!runtimeStatus || runtimeStatus.reasoningStatus !== 'available' || reasoningEnabled}
+                    onClick={async () => {
+                      const user = getCurrentUser()
+                      if (!user) return
+                      await setReasoningEnabledPref(user.id, true, DEFAULT_WORKSPACE_ID)
+                      setReasoningEnabled(true)
+                    }}
+                    className={`px-2 py-1 text-[10px] rounded-md border transition-all duration-200 ${runtimeStatus?.reasoningStatus === 'available' && !reasoningEnabled ? 'bg-[#86d7ff]/10 border-[#86d7ff]/30 text-[#86d7ff] hover:bg-[#86d7ff]/20' : 'bg-white/5 border-white/10 text-[#899298] opacity-40 cursor-not-allowed'}`}
+                  >
+                    启用 Reasoning 增强
+                  </button>
+                  {reasoningEnabled && (
+                    <button
+                      onClick={async () => {
+                        const user = getCurrentUser()
+                        if (!user) return
+                        await setReasoningEnabledPref(user.id, false, DEFAULT_WORKSPACE_ID)
+                        setReasoningEnabled(false)
+                      }}
+                      className="px-2 py-1 text-[10px] rounded-md bg-white/5 border border-[#ffb4ab]/30 text-[#ffb4ab] hover:bg-[#ffb4ab]/10 transition-all duration-200"
+                    >
+                      停用 Reasoning 增强
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
           )}
+        </GlassPanel>
+
+        <GlassPanel className="p-6">
+          <div className="flex items-center justify-between mb-4 border-b border-white/10 pb-3">
+            <h2 className="text-base font-medium text-white flex items-center gap-2">
+              <Activity className="w-4 h-4 text-[#86d7ff]" /> 模型活动 (Model Activity)
+            </h2>
+            <button
+              onClick={handleProbe}
+              disabled={probeLoading}
+              className="px-2 py-1 text-[10px] rounded-md bg-white/5 border border-white/10 text-[#899298] hover:bg-white/10 hover:text-white transition-all duration-200"
+            >
+              {probeLoading ? '正在检测...' : '刷新真实模型状态'}
+            </button>
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[#899298]">端点状态</span>
+              <span className="text-xs text-white">
+                {!runtimeStatus ? 'unprobed' : runtimeStatus.mode === 'model_available' ? 'connected' : runtimeStatus.mode === 'degraded' ? 'degraded' : 'disconnected'}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[#899298]">Embedding 模型 ID</span>
+              <span className="text-xs text-[#e0e3e6] max-w-[200px] truncate">{runtimeStatus?.embeddingModelId || '—'}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[#899298]">Reasoning 模型 ID</span>
+              <span className="text-xs text-[#e0e3e6] max-w-[200px] truncate">{runtimeStatus?.reasoningModelId || '—'}</span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[#899298]">最近探针</span>
+              <span className="text-xs text-[#e0e3e6]">
+                {runtimeStatus?.lastProbeAt ? formatRelativeTime(new Date(runtimeStatus.lastProbeAt)) : '—'}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[#899298]">最近成功探针</span>
+              <span className="text-xs text-[#e0e3e6]">
+                {runtimeStatus?.lastSuccessfulProbeAt ? formatRelativeTime(new Date(runtimeStatus.lastSuccessfulProbeAt)) : '—'}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[#899298]">最近语义 Job 状态</span>
+              <span className="text-xs text-[#e0e3e6]">
+                {lastSemanticJobStatus ?? '—'}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[#899298]">最近语义 Job 完成时间</span>
+              <span className="text-xs text-[#e0e3e6]">
+                {lastSemanticJobAt ? formatRelativeTime(new Date(lastSemanticJobAt)) : '—'}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[#899298]">Embedding 维度</span>
+              <span className="text-xs text-[#e0e3e6]">{recentSemanticSnapshot?.embeddingDim || '—'}</span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[#899298]">最近 vectorHash</span>
+              <span className="text-xs text-[#e0e3e6] max-w-[180px] truncate font-mono">{recentVectorHash || '—'}</span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[#899298]">最近 summaryHash / outputHash</span>
+              <span className="text-xs text-[#e0e3e6] max-w-[180px] truncate font-mono">{recentOutputHash || '—'}</span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[#899298]">Audit 日志数</span>
+              <span className="text-xs text-[#e0e3e6]">{auditLogCount}</span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[#899298]">Semantic 快照数</span>
+              <span className="text-xs text-[#e0e3e6]">{semanticSnapshotCount} 条</span>
+            </div>
+          </div>
         </GlassPanel>
 
         <GlassPanel className="p-6">
@@ -3280,6 +3641,12 @@ export default function WorkspacePage() {
     if (resolvedUser) {
       setUserId(resolvedUser.id)
     }
+
+    try {
+      initOllamaProviders({ allowOutsideDev: true })
+    } catch (err) {
+      console.error('[WorkspacePage] initOllamaProviders failed:', err)
+    }
   }, [])
 
   const effectiveUserId = userId || ''
@@ -3449,7 +3816,7 @@ export default function WorkspacePage() {
           {activeTab === 'dock' && <DockView userId={userId} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} onToast={showToast} onFocusMindNode={(nodeId: string) => { setPendingMindFocusNodeId(nodeId); setActiveTab('mind'); }} initialHealthFilter={pendingDockFilter} />}
           {activeTab === 'editor' && <DraftEditorView userId={userId} showSourcePacket={showSourcePacket} showInspector={showInspector} onToggleSourcePacket={() => setShowSourcePacket(v => !v)} onToggleInspector={() => setShowInspector(v => !v)} onToast={showToast} initialDraftId={pendingOpenDraftId} initialEntryId={pendingOpenEntryId} onInitialDraftConsumed={() => setPendingOpenDraftId(null)} onInitialEntryConsumed={() => setPendingOpenEntryId(null)} onActiveDraftMetaChange={setActiveEditorMeta} />}
           {activeTab === 'review' && <ReviewView onNavigateToMind={() => setActiveTab('mind')} onNavigateToSuggestion={(target) => { setActiveTab(target.tab as any); if (target.filter) { setPendingDockFilter(target.filter); } }} />}
-          {activeTab === 'settings' && <SettingsView />}
+          {activeTab === 'settings' && <SettingsView onToast={showToast} />}
         </main>
       </div>
 

@@ -39,10 +39,12 @@ export async function runSmokeTest(
   userId: string,
   workspaceId: string,
 ): Promise<SmokeTestResult> {
+  console.log('[SmokeTest] 开始冒烟测试...')
   const probeResult: ProbeResult & { auditLogId?: string } = await probeAndSyncStatus(userId, workspaceId)
   const auditLogIds: string[] = probeResult.auditLogId ? [probeResult.auditLogId] : []
 
   if (!probeResult.available) {
+    console.warn('[SmokeTest] ← blocked: Ollama 端点不可用')
     const blockedResult: SmokeTestResult = {
       status: 'blocked',
       probeAvailable: false,
@@ -78,6 +80,7 @@ export async function runSmokeTest(
   let reasoningSuccess = false
 
   if (probeResult.embeddingAvailable) {
+    console.log('[SmokeTest] 执行 Embedding 冒烟...')
     try {
       const embResult = await generateEmbeddingForTarget(
         userId,
@@ -93,12 +96,15 @@ export async function runSmokeTest(
         embeddingSuccess = true
       }
       auditLogIds.push(embResult.auditLogId)
-    } catch {
+      console.log(`[SmokeTest] Embedding 冒烟 ← ${embResult.success ? '成功' : '失败'}`)
+    } catch (err) {
       embeddingSuccess = false
+      console.error('[SmokeTest] Embedding 冒烟 ← 异常:', err instanceof Error ? err.message : String(err))
     }
   }
 
   if (probeResult.reasoningAvailable) {
+    console.log('[SmokeTest] 执行 Summary 冒烟...')
     try {
       const sumResult = await generateSummaryForTarget(
         userId,
@@ -113,8 +119,10 @@ export async function runSmokeTest(
         reasoningSuccess = true
       }
       auditLogIds.push(sumResult.auditLogId)
-    } catch {
+      console.log(`[SmokeTest] Summary 冒烟 ← ${sumResult.success ? '成功' : '失败'}`)
+    } catch (err) {
       reasoningSuccess = false
+      console.error('[SmokeTest] Summary 冒烟 ← 异常:', err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -126,6 +134,8 @@ export async function runSmokeTest(
   } else {
     status = 'blocked'
   }
+
+  console.log(`[SmokeTest] 最终结果: ${status}`)
 
   const errorMessage: string | null = status === 'blocked'
     ? 'No capabilities available'

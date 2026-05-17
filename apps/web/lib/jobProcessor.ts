@@ -2,9 +2,10 @@ import type { JobStatus } from '@atlax/domain'
 import type { BackgroundJobRecord } from '@/lib/db'
 import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
 import { getCapabilityStatus } from '@/lib/modelProvider'
-import { markLocalTextFeatureSnapshotStale, markSemanticFeatureSnapshotStale } from '@/lib/intelligenceRepository'
 import { generateEmbeddingForTarget, generateSummaryForTarget } from '@/lib/localModelRuntimeService'
 import { runSmokeTest } from '@/lib/modelSmokeService'
+import { localTextFeatureEngine } from '@/lib/localTextFeatureEngine'
+import { semanticFeatureEngine } from '@/lib/semanticFeatureEngine'
 import { db } from './db'
 
 function matchesWorkspace(recordWorkspaceId: string | undefined, jobWorkspaceId: string): boolean {
@@ -36,79 +37,119 @@ async function resolveTargetText(
 }
 
 export async function processJob(job: BackgroundJobRecord): Promise<{ status: JobStatus }> {
+  console.log(`[JobProcessor] 开始处理作业 → type: ${job.jobType}, target: ${job.targetType}/${job.targetId}`)
   switch (job.jobType) {
-    case 'recompute_local_features':
-      await markLocalTextFeatureSnapshotStale(job.userId, job.targetType, job.targetId, job.workspaceId)
-      return { status: 'complete' }
-
-    case 'recompute_semantic_features':
-      try {
-        const capability = getCapabilityStatus()
-        if (capability.mode === 'model_available') {
-          const text = await resolveTargetText(job.userId, job.workspaceId, job.targetType, job.targetId)
-          if (!text) return { status: 'skipped' }
-          const [embeddingResult, summaryResult] = await Promise.allSettled([
-            generateEmbeddingForTarget(job.userId, job.workspaceId, job.targetType, job.targetId, text, job.contentHash),
-            generateSummaryForTarget(job.userId, job.workspaceId, job.targetType, job.targetId, text, job.contentHash),
-          ])
-          const embeddingOk = embeddingResult.status === 'fulfilled' && embeddingResult.value.success
-          const summaryOk = summaryResult.status === 'fulfilled' && summaryResult.value.success
-          if (!embeddingOk && !summaryOk) return { status: 'failed' }
-          return { status: 'complete' }
-        }
-        if (capability.mode === 'core') {
-          return { status: 'pending_model' }
-        }
-        if (capability.mode === 'degraded') {
-          await markSemanticFeatureSnapshotStale(job.userId, job.targetType, job.targetId, job.workspaceId)
-          return { status: 'degraded' }
-        }
-        return { status: 'pending_model' }
-      } catch {
+    case 'recompute_local_features': {
+      if (!job.targetId || !job.workspaceId || !job.contentHash) {
+        console.warn('[JobProcessor] recompute_local_features ← 参数不完整')
         return { status: 'failed' }
       }
+      try {
+        const text = await resolveTargetText(job.userId, job.workspaceId, job.targetType, job.targetId)
+        if (!text) { console.log('[JobProcessor] recompute_local_features ← 无文本内容, skipped'); return { status: 'skipped' } }
+        await localTextFeatureEngine.computeFeatures({
+          targetType: job.targetType,
+          targetId: job.targetId,
+          userId: job.userId,
+          workspaceId: job.workspaceId,
+          contentHash: job.contentHash,
+          text,
+        })
+        console.log('[JobProcessor] recompute_local_features ← 完成')
+        return { status: 'complete' }
+      } catch (err) {
+        console.error('[JobProcessor] recompute_local_features ← 失败:', err instanceof Error ? err.message : String(err))
+        return { status: 'failed' }
+      }
+    }
+
+    case 'recompute_semantic_features': {
+      if (!job.targetId || !job.workspaceId || !job.contentHash) {
+        console.warn('[JobProcessor] recompute_semantic_features ← 参数不完整')
+        return { status: 'failed' }
+      }
+      try {
+        const text = await resolveTargetText(job.userId, job.workspaceId, job.targetType, job.targetId)
+        if (!text) { console.log('[JobProcessor] recompute_semantic_features ← 无文本内容, skipped'); return { status: 'skipped' } }
+        const result = await semanticFeatureEngine.computeFeatures({
+          targetType: job.targetType,
+          targetId: job.targetId,
+          userId: job.userId,
+          workspaceId: job.workspaceId,
+          contentHash: job.contentHash,
+          text,
+        })
+        const statusMap: Record<string, JobStatus> = {
+          complete: 'complete',
+          partial: 'complete',
+          semantic_core_only: 'complete',
+          skipped: 'skipped',
+          disabled: 'skipped',
+          reasoning_disabled: 'complete',
+          pending_model: 'pending_model',
+          unprobed: 'pending_model',
+          degraded: 'degraded',
+          failed: 'failed',
+        }
+        const finalStatus = statusMap[result.status] ?? 'failed'
+        console.log(`[JobProcessor] recompute_semantic_features ← status: ${result.status} → ${finalStatus}`)
+        return { status: finalStatus }
+      } catch (err) {
+        console.error('[JobProcessor] recompute_semantic_features ← 失败:', err instanceof Error ? err.message : String(err))
+        return { status: 'failed' }
+      }
+    }
 
     case 'embedding_generate': {
       const capability = getCapabilityStatus()
-      if (capability.mode === 'core') return { status: 'pending_model' }
-      if (capability.mode === 'degraded') return { status: 'degraded' }
+      if (capability.mode === 'core') { console.log('[JobProcessor] embedding_generate ← mode=core, pending_model'); return { status: 'pending_model' } }
+      if (capability.mode === 'degraded') { console.log('[JobProcessor] embedding_generate ← mode=degraded'); return { status: 'degraded' } }
       try {
         const text = await resolveTargetText(job.userId, job.workspaceId, job.targetType, job.targetId)
-        if (!text) return { status: 'skipped' }
+        if (!text) { console.log('[JobProcessor] embedding_generate ← 无文本内容, skipped'); return { status: 'skipped' } }
         const result = await generateEmbeddingForTarget(job.userId, job.workspaceId, job.targetType, job.targetId, text, job.contentHash)
+        console.log(`[JobProcessor] embedding_generate ← ${result.success ? '成功' : '失败'}, dim: ${result.dim ?? 'N/A'}`)
         return result.success ? { status: 'complete' } : { status: 'failed' }
-      } catch {
+      } catch (err) {
+        console.error('[JobProcessor] embedding_generate ← 异常:', err instanceof Error ? err.message : String(err))
         return { status: 'failed' }
       }
     }
 
     case 'summary_generate': {
       const capability = getCapabilityStatus()
-      if (capability.mode === 'core') return { status: 'pending_model' }
-      if (capability.mode === 'degraded') return { status: 'degraded' }
+      if (capability.mode === 'core') { console.log('[JobProcessor] summary_generate ← mode=core, pending_model'); return { status: 'pending_model' } }
+      if (capability.mode === 'degraded') { console.log('[JobProcessor] summary_generate ← mode=degraded'); return { status: 'degraded' } }
       try {
         const text = await resolveTargetText(job.userId, job.workspaceId, job.targetType, job.targetId)
-        if (!text) return { status: 'skipped' }
+        if (!text) { console.log('[JobProcessor] summary_generate ← 无文本内容, skipped'); return { status: 'skipped' } }
         const result = await generateSummaryForTarget(job.userId, job.workspaceId, job.targetType, job.targetId, text, job.contentHash)
+        console.log(`[JobProcessor] summary_generate ← ${result.success ? '成功' : '失败'}`)
         return result.success ? { status: 'complete' } : { status: 'failed' }
-      } catch {
+      } catch (err) {
+        console.error('[JobProcessor] summary_generate ← 异常:', err instanceof Error ? err.message : String(err))
         return { status: 'failed' }
       }
     }
 
     case 'model_smoke_test': {
+      console.log('[JobProcessor] model_smoke_test → 开始冒烟测试...')
       try {
         const result = await runSmokeTest(job.userId, job.workspaceId)
+        console.log(`[JobProcessor] model_smoke_test ← status: ${result.status}`)
         return result.status === 'pass' ? { status: 'complete' } : { status: 'failed' }
-      } catch {
+      } catch (err) {
+        console.error('[JobProcessor] model_smoke_test ← 异常:', err instanceof Error ? err.message : String(err))
         return { status: 'failed' }
       }
     }
 
     case 'refresh_recommendations':
+      console.log('[JobProcessor] refresh_recommendations ← skipped (未实现)')
       return { status: 'skipped' }
 
     default:
+      console.warn(`[JobProcessor] 未知作业类型: ${job.jobType}`)
       return { status: 'failed' }
   }
 }

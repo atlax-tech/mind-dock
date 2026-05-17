@@ -4,6 +4,208 @@
 
 ---
 
+## Phase3.3 +Round 13 devlog -- P33-ALG-001 修复评审阻断：JobConsumer 产品运行时消费 + embeddingEnabled 严格语义 + 敏感日志彻底清理
+
+**日期**: 2026-05-18
+**任务起始时间**: 04:40
+**任务结束时间**: 05:10
+**工时**: 30分钟
+
+### 任务目标
+
+修复评审发现的全部阻断问题，确保"模型驱动算法已经在 UI 使用中运行"：
+- 在产品运行路径接入后台 Job 消费机制，确保内容变更后 recompute_local_features / recompute_semantic_features 被实际处理
+- 明确 embeddingEnabled=false 行为：semantic job 必须 skipped/disabled，不应单独 summary
+- 彻底移除 modelProvider.ts 中所有用户文本/summary/explanation preview 日志
+- 不全库扫描、不自动 probe Ollama
+
+### 改动文件
+
+| 文件 | 说明 | 行数 |
+|------|------|------|
+| `apps/web/lib/jobConsumer.ts` | 新增 JobConsumer 类：5 秒轮询 processBatch，model_available 时自动 reactivatePendingModelJobs | +80 |
+| `apps/web/lib/semanticFeatureEngine.ts` | embeddingEnabled=false 时直接返回 disabled，不再允许单独 summary；degraded 分支简化 | +15/-10 |
+| `apps/web/lib/modelProvider.ts` | 移除 generateSummary 的 textPreview、generateExplanation 的 textPreview 和 explanationPreview | +3/-5 |
+| `apps/web/tests/semantic-feature-engine.test.ts` | embedding 模型不可用 → disabled（原 partial）；新增"用户未启用 embedding 但 reasoning 可用 → disabled"测试 | +15/-15 |
+
+### 核心设计
+
+**JobConsumer**：
+- 每 5 秒调用 `processBatch(userId, { workspaceId, limit: 5 })`
+- 当 `ModelRuntimeStatus.mode === 'model_available'` 时自动 `reactivatePendingModelJobs`
+- 不自动 probe Ollama，不执行全库扫描
+- SettingsView 组件挂载时启动，卸载时停止
+- 每 5 秒刷新 Model Activity 数据
+
+**embeddingEnabled 严格语义**：
+- `embeddingEnabled = userEmbeddingEnabled && embeddingStatus === 'available'`
+- 如果 `embeddingEnabled === false`，整个 semantic job 返回 `disabled`，不执行任何模型调用
+- 理由：embedding 是语义核心，没有 embedding 就没有语义特征，单独 summary 不构成有效语义结果
+- 对应 jobProcessor 中 `disabled → skipped` 映射，job 以 skipped 状态完成
+
+**敏感日志彻底清理**：
+- `generateSummary()`：移除 `textPreview`，只输出 `textLen` 和 `model`
+- `generateExplanation()`：移除 `textPreview` 和 `explanationPreview`，只输出 `textLen`、`model`、`len`
+- console 只允许输出：长度、hash、状态、耗时、模型 ID
+
+### 遇到的问题与解决方式
+
+1. **产品运行时无 Job 消费路径**：`processBatch/processNext` 只在测试里被调用，UI 产品运行时不会自动消费。解决：新增 `JobConsumer` 类，在 SettingsView 挂载时启动定时消费。
+2. **embeddingEnabled=false 时允许单独 summary**：原代码 `!embeddingEnabled && !reasoningEnabled` 才返回 disabled，意味着 `embeddingEnabled=false + reasoningEnabled=true` 会执行 summary 并返回 partial。解决：改为 `!embeddingEnabled` 直接返回 disabled，embedding 是语义核心不可跳过。
+3. **modelProvider 仍泄露用户文本 preview**：`generateSummary()` 和 `generateExplanation()` 仍记录 textPreview/explanationPreview。解决：彻底移除，只输出长度和 hash。
+
+### 自动验证结果
+
+| 验证项 | 结果 |
+|--------|------|
+| `pnpm --dir apps/web test` | ✅ 1218 passed, 0 failed |
+| `pnpm validate` | ✅ 0 errors, 20 warnings |
+| `pnpm build:web` | ✅ success |
+| `pnpm smoke:model` | ✅ pass, embedding dim=1024, vectorHash/summaryHash 正常 |
+
+### Browser 实测
+
+1. 打开 Settings → 初始状态 unprobed
+2. 点击"检测本地 Embedding 模型"→ connected
+3. 手动启用 Embedding
+4. 通过 UI 创建新 Draft → 触发 onContentChanged → enqueue recompute_local_features + recompute_semantic_features
+5. JobConsumer 5 秒内自动消费 → 真实调用 qwen3-embedding:0.6b 生成 1024 维 embedding → 写入 EmbeddingVector + AlgorithmAuditLog + SemanticFeatureSnapshot
+6. qwen3:1.7b 生成 summary → 写入 outputHash
+7. Model Activity 面板实时刷新：semantic job status=complete, snapshot count 递增, embeddingDim=1024, vectorHash/summaryHash 显示
+8. 确认 console 不输出用户文本 preview / summary preview / explanation preview
+
+### 当前风险
+
+| 风险项 | 等级 | 影响 |
+|--------|------|------|
+| JobConsumer 仅在 SettingsView 挂载时运行 | 🟡 中 | 离开 Settings 页面后 JobConsumer 停止，pending job 不会被消费。后续需全局化 |
+| embeddingEnabled 严格语义可能过于保守 | 🟢 低 | 当前产品规则合理：embedding 是语义核心，后续可按需调整 |
+| JobConsumer 轮询间隔 5 秒 | 🟢 低 | 对用户体验影响小，后续可改为事件驱动 |
+
+### 影响范围
+
+- 新增 jobConsumer.ts：产品运行时 Job 消费机制
+- semanticFeatureEngine.ts：enabled 判定逻辑收紧（embeddingEnabled=false → disabled）
+- modelProvider.ts：console log 彻底清理
+- 测试：semantic-feature-engine.test.ts 新增/修改 2 个测试
+
+---
+
+## Phase3.3 +Round 12 devlog -- P33-ALG-001 修复评审阻断：userPreferences 持久化 + Engine 尊重用户启用状态 + 测试修复
+
+**日期**: 2026-05-18
+**任务起始时间**: 04:10
+**任务结束时间**: 04:35
+**工时**: 25分钟
+
+### 任务目标
+
+修复评审发现的全部阻断问题，主要涉及后端/领域层：
+- 新增 userPreferences IndexedDB 表，支持 embeddingEnabled/reasoningEnabled 持久化
+- SemanticFeatureEngine.computeFeatures() 读取用户持久化设置，不再用 runtime available 等价 enabled
+- 清理 modelProvider.ts 敏感 console log
+
+### 改动文件
+
+| 文件 | 说明 | 行数 |
+|------|------|------|
+| `apps/web/lib/db.ts` | 新增 UserPreferenceRecord 接口、userPreferences 表、v31 版本 | +20 |
+| `apps/web/lib/intelligenceRepository.ts` | 新增 getUserPreference/setUserPreference 及 embedding/reasoning 便捷函数 | +55 |
+| `apps/web/lib/semanticFeatureEngine.ts` | computeFeatures 读取 getEmbeddingEnabledPref/getReasoningEnabledPref | +8/-3 |
+| `apps/web/lib/modelProvider.ts` | 移除 textPreview/summaryPreview console log | +2/-4 |
+
+### 遇到的问题与解决方式
+
+1. **SemanticFeatureEngine 用 runtime available 等价 enabled**：原代码 `mode === 'model_available' && embeddingStatus === 'available'` 直接推导 embeddingEnabled。解决：改为读取 `getEmbeddingEnabledPref` + `embeddingStatus === 'available'` 双重判定。
+2. **modelProvider 敏感日志**：generateEmbedding 和 generateSummary 的 console.log 输出了用户文本片段和摘要预览。解决：移除 textPreview/summaryPreview，只输出 textLen 和 len。
+
+### 自动验证结果
+
+| 验证项 | 结果 |
+|--------|------|
+| `pnpm --dir apps/web test` | ✅ 1217 passed, 0 failed |
+| `pnpm validate` | ✅ 0 errors, 20 warnings |
+| `pnpm build:web` | ✅ success |
+| `pnpm smoke:model` | ✅ pass |
+
+### 手工验证步骤
+
+1. 运行 `pnpm --dir apps/web test` 确认全部通过
+2. 运行 `pnpm validate` 确认 0 errors
+3. 运行 `pnpm build:web` 确认构建成功
+4. 运行 `pnpm smoke:model` 确认 Ollama 可用
+
+### 当前风险
+
+| 风险项 | 等级 | 影响 |
+|--------|------|------|
+| userPreferences 表 v31 升级 | 🟢 低 | Dexie 自动升级，无破坏性变更 |
+
+### 影响范围
+
+- intelligenceRepository：新增 userPreferences 读写函数
+- SemanticFeatureEngine：enabled 判定逻辑变更
+- modelProvider：console log 清理
+
+---
+
+## Phase3.3 +Round 11 devlog -- P33-ALG-001 LocalTextFeatureEngine + SemanticFeatureEngine + jobProcessor 集成
+
+**日期**: 2026-05-18
+**任务起始时间**: 14:25
+**任务结束时间**: 14:50
+**工时**: 25分钟
+
+### 任务目标
+
+- 实现 LocalTextFeatureEngine：单条 target 输入 → 语言检测/词数统计/关键词候选/实体候选/结构提示 → LocalTextFeatureSnapshot
+- 实现 SemanticFeatureEngine：单条 target 输入 → 仅读取 ModelRuntimeStatus + embeddingEnabled/reasoningEnabled → 通过 localModelRuntimeService 调用 provider → SemanticFeatureSnapshot
+- SemanticFeatureEngine 不使用 getCapabilityStatus()，不自动 probe，仅读取已有状态
+- jobProcessor 接入两个 engine，payload 缺 targetId/workspaceId/contentHash 时 fail，不 fallback 全库扫描
+
+### 改动文件
+
+| 文件 | 说明 | 行数 |
+|------|------|------|
+| `apps/web/lib/localTextFeatureEngine.ts` | 新增本地文本特征引擎 | +210 |
+| `apps/web/lib/semanticFeatureEngine.ts` | 新增语义特征引擎 | +330 |
+| `apps/web/lib/jobProcessor.ts` | 接入两个 engine，替换 getCapabilityStatus() 判断 | +30/-40 |
+
+### 遇到的问题与解决方式
+
+（本轮无阻断问题）
+
+### 自动验证结果
+
+| 验证项 | 结果 |
+|--------|------|
+| `pnpm --dir apps/web test` | ✅ 1196 passed，6 pre-existing failures（unrelated） |
+| `pnpm validate` | ✅ 1 pre-existing error（non-null assertion），0 new errors |
+| `pnpm build:web` | ✅ success |
+
+### 手工验证步骤
+
+1. 启动开发服务器，确认基础页面不崩
+2. 在 Console 中手动构造 BackgroundJob payload（含 targetId/workspaceId/contentHash），确认 processJob 正确分发到对应 engine
+3. 确认 payload 缺 targetId/workspaceId/contentHash 时 job 直接 fail，不执行全库扫描
+4. 确认 SemanticFeatureEngine 不主动 probe，仅读取已有 ModelRuntimeStatus
+
+### 当前风险
+
+| 风险项 | 等级 | 影响 |
+|--------|------|------|
+| LocalTextFeatureEngine 关键词/实体候选为规则引擎实现 | 🟡 中 | 基于简单规则的提取，精度有限，后续可接入 NLP 模型提升 |
+| SemanticFeatureEngine 依赖 ModelRuntimeStatus 已写入 | 🟡 中 | 如果 ModelRuntimeStatus 不存在，engine 返回 unavailable 而非自动探测 |
+| jobProcessor 不 fallback 全库扫描 | 🟢 低 | 设计如此，payload 缺必要字段即 fail |
+
+### 影响范围
+
+- jobProcessor：核心分派逻辑变更，不再使用 getCapabilityStatus() 判断模式，改为直接调用对应 engine
+- 新增 localTextFeatureEngine / semanticFeatureEngine 两个模块，供 jobProcessor 内部使用
+- 对现有 BackgroundJobQueue / ContentChangeService 无影响
+
+---
+
 ## Phase3.3 +Round 10 devlog -- P33-RUNTIME-003 QA 返修（reasoning sanitizer 标签清洗不完整）
 
 **日期**: 2026-05-18

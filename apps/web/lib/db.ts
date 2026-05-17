@@ -822,6 +822,19 @@ export interface PersistedModelRuntimeStatus extends ModelRuntimeStatusRecord {
   id: string
 }
 
+export interface UserPreferenceRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  key: string
+  value: string
+  updatedAt: string
+}
+
+export interface PersistedUserPreference extends UserPreferenceRecord {
+  id: string
+}
+
 const db = new Dexie('AtlaxDB') as Dexie & {
   dockItems: EntityTable<DockItemRecord, 'id'>
   tags: EntityTable<TagRecord, 'id'>
@@ -859,6 +872,7 @@ const db = new Dexie('AtlaxDB') as Dexie & {
   algorithmAuditLogs: EntityTable<AlgorithmAuditLogRecord, 'id'>
   modelSmokeTestRuns: EntityTable<ModelSmokeTestRunRecord, 'id'>
   modelRuntimeStatuses: EntityTable<ModelRuntimeStatusRecord, 'id'>
+  userPreferences: EntityTable<UserPreferenceRecord, 'id'>
 }
 
 db.version(1).stores({
@@ -1396,6 +1410,10 @@ db.version(30).stores({
   modelRuntimeStatuses: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+providerId], providerId, mode, embeddingStatus, reasoningStatus, updatedAt',
 }).upgrade(() => {})
 
+db.version(31).stores({
+  userPreferences: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+key]',
+}).upgrade(() => {})
+
 export { db }
 export const dockItemsTable = db.table('dockItems')
 export const capturesTable = dockItemsTable
@@ -1435,3 +1453,4 @@ export const embeddingVectorsTable = db.table('embeddingVectors')
 export const algorithmAuditLogsTable = db.table('algorithmAuditLogs')
 export const modelSmokeTestRunsTable = db.table('modelSmokeTestRuns')
 export const modelRuntimeStatusesTable = db.table('modelRuntimeStatuses')
+export const userPreferencesTable = db.table('userPreferences')

@@ -57,9 +57,12 @@ export async function generateEmbeddingForTarget(
   text: string,
   contentHash: string,
 ): Promise<RuntimeEmbeddingResult> {
+  console.log(`[RuntimeService] generateEmbeddingForTarget → target: ${targetType}/${targetId}, textLen: ${text.length}`)
   const start = Date.now()
   const result = await modelProviderRegistry.generateEmbedding(text)
   const durationMs = Date.now() - start
+
+  console.log(`[RuntimeService] generateEmbeddingForTarget ← provider: ${result.modelProvider}, success: ${result.success}, dim: ${result.dim ?? 'N/A'}, durationMs: ${durationMs}`)
 
   const auditLogId = await upsertAlgorithmAuditLog({
     userId,
@@ -151,9 +154,12 @@ export async function generateSummaryForTarget(
   text: string,
   contentHash: string,
 ): Promise<RuntimeSummaryResult> {
+  console.log(`[RuntimeService] generateSummaryForTarget → target: ${targetType}/${targetId}, textLen: ${text.length}`)
   const start = Date.now()
   const result = await modelProviderRegistry.generateSummary(text)
   const durationMs = Date.now() - start
+
+  console.log(`[RuntimeService] generateSummaryForTarget ← provider: ${result.modelProvider}, success: ${result.success}, summaryLen: ${result.summary?.length ?? 0}, durationMs: ${durationMs}`)
 
   const auditLogId = await upsertAlgorithmAuditLog({
     userId,
@@ -225,6 +231,8 @@ export async function probeAndSyncStatus(
   const embeddingProvider = modelProviderRegistry.getEmbeddingProvider()
   const reasoningProvider = modelProviderRegistry.getReasoningProvider()
 
+  console.log('[probeAndSyncStatus] 开始探测 → embeddingProvider:', embeddingProvider?.providerId || '(无)', 'reasoningProvider:', reasoningProvider?.providerId || '(无)')
+
   let probeResult: ProbeResult = {
     available: false,
     embeddingAvailable: false,
@@ -236,6 +244,7 @@ export async function probeAndSyncStatus(
   let durationMs = 0
 
   if (embeddingProvider && typeof embeddingProvider.probe === 'function') {
+    console.log('[probeAndSyncStatus] 调用 embeddingProvider.probe()...')
     const start = Date.now()
     try {
       probeResult = await embeddingProvider.probe()
@@ -251,6 +260,8 @@ export async function probeAndSyncStatus(
     providerId = reasoningProvider.providerId
     providerName = reasoningProvider.providerName
   }
+
+  console.log('[probeAndSyncStatus] probe 结果:', { available: probeResult.available, embeddingAvailable: probeResult.embeddingAvailable, reasoningAvailable: probeResult.reasoningAvailable, error: probeResult.error, durationMs, providerId })
 
   const auditLogId = await upsertAlgorithmAuditLog({
     userId,
@@ -308,6 +319,8 @@ export async function probeAndSyncStatus(
     createdAt: now,
     updatedAt: now,
   }, workspaceId)
+
+  console.log('[probeAndSyncStatus] 状态已持久化 → mode:', mode, 'embedding:', embeddingStatus, 'reasoning:', reasoningStatus)
 
   return { ...probeResult, auditLogId }
 }
