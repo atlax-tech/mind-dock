@@ -8,12 +8,16 @@
 
 **日期**: 2026-05-18
 **任务起始时间**: 08:20
-**任务结束时间**: 08:30
-**工时**: 10分钟
+**任务结束时间**: 08:50
+**工时**: 30分钟
 
 ### 任务目标
 
 补充 Real Model Acceptance Gate 验证闭环，新增 `pnpm smoke:similarity` 命令。
+
+### 补交说明
+
+前一个 commit (`adb4212`) 遗漏了 `apps/web/scripts/smoke-similarity.ts` 脚本文件，本轮补交。
 
 ### 验证链路
 
@@ -23,7 +27,7 @@
 4. `SimilarityComparison.runComparison()` → Core vs Semantic 对比
 5. `fallbackUsed=false` → Semantic Core 可用
 
-### 真实模型验证结果
+### 真实模型验证结果（本次实际运行输出）
 
 **EmbeddingVector 已由真实 qwen3-embedding:0.6b 生成：**
 
@@ -33,7 +37,7 @@
 | modelId | qwen3-embedding:0.6b |
 | modelVersion | qwen3-embedding:0.6b |
 | dimension | 1024 |
-| durationMs | 157 |
+| durationMs | 110 |
 | fallbackUsed | false |
 | sourceTargetId | smoke_source |
 
@@ -52,7 +56,7 @@
 - overlapRate: 0.0000, rankDifference: 2.0000, scoreDifference: 0.7731
 - fallbackUsed: false
 
-**auditLogId:** smoke-sim-user_aal_smoke-sim-workspace_embedding_1779063724559
+**auditLogId:** smoke-sim-user_aal_smoke-sim-workspace_embedding_1779065328878
 
 ### 验证命令
 
