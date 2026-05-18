@@ -51,6 +51,8 @@ function makeModelRuntimeStatus(userId: string, workspaceId: string, overrides?:
     embeddingStatus: overrides?.embeddingStatus ?? 'available' as const,
     reasoningStatus: overrides?.reasoningStatus ?? 'available' as const,
     embeddingModelId: 'qwen3-embedding:0.6b',
+    embeddingModelVersion: '1.0',
+    embeddingDimension: 1024,
     reasoningModelId: 'qwen3:1.7b',
     lastProbeAt: nowISO(),
     lastProbeSuccess: true,

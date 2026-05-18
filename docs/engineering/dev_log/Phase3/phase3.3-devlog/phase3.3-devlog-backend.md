@@ -4,6 +4,214 @@
 
 ---
 
+## Phase3.3 +Round 12 devlog -- P33-ALG-002 Review 阻断修复：Core vs Semantic 强制分流 / modelVersion+dimension dirty check / stale vector 排除 / fallbackUsed 修正
+
+**日期**: 2026-05-18
+**任务起始时间**: 07:45
+**任务结束时间**: 08:15
+**工时**: 30分钟
+
+### 任务目标
+
+修复 P33-ALG-002 review 阻断项，不扩大任务范围：
+
+1. **Core vs Semantic 对比不是真实对比**：`similarityComparison.ts` 的 Core Mode 和 Semantic Core 都调用 `similarityIndex.findSimilar()`，但 findSimilar 在 source 有 embedding 时自动走 semantic 分支，导致 Core Mode 面板也返回 `generatedBy=semantic_core`
+2. **dirty check 不完整**：`embeddingService.ts` 只比较 `contentHash` 和 `modelId`，未比较 `modelVersion` / `dimension`
+3. **stale vector 被 SimilarityIndex 消费**：旧向量标记 `__stale__` 后，SimilarityIndex 仍读取并消费
+4. **dev_log 与实现不一致**：backend dev_log 描述了不存在的内存索引、批量分片 setTimeout、normalizeVector、batchCosineSimilarity
+5. **fallbackUsed 误报**：`semanticCoreResults.length === 0` 被判定为 `fallbackUsed=true`，但 source embedding 存在且 provider 可用只是无候选结果时不应算 fallback
+
+### 改动文件
+
+| 文件 | 说明 |
+|------|------|
+| `apps/web/lib/similarityIndex.ts` | 新增 `mode: 'auto' \| 'core' \| 'semantic'` 参数；`findSimilar` 按 mode 强制分流；`getEmbeddingVector` 排除 stale vector；`findSimilarSemantic` 排除 stale candidate |
+| `apps/web/lib/similarityComparison.ts` | Core Mode 调用 `findSimilar({ mode: 'core' })`；Semantic Core 调用 `findSimilar({ mode: 'semantic' })`；fallbackUsed 基于 source embedding 是否存在判断 |
+| `apps/web/lib/embeddingService.ts` | dirty check 同时校验 contentHash + modelId + modelVersion + dimension；成功生成后更新 runtime status 的 modelVersion/dimension；fallback 不写 EmbeddingVector |
+| `apps/web/lib/intelligenceRepository.ts` | `getEmbeddingVectorsByWorkspace` 过滤 stale vector |
+| `packages/domain/src/intelligence/types.ts` | `ModelRuntimeStatus` 新增 `embeddingModelVersion` / `embeddingDimension` 字段 |
+| `apps/web/lib/db.ts` | `ModelRuntimeStatusRecord` 新增 `embeddingModelVersion` / `embeddingDimension`；Dexie v33 schema 升级 |
+| `apps/web/lib/localModelRuntimeService.ts` | `probeAndSyncStatus` 填充 `embeddingModelVersion` / `embeddingDimension` |
+| `apps/web/tests/embedding-service.test.ts` | 新增 4 个测试：modelVersion dirty、dimension dirty、match skip、provider unavailable fallback 不写 fake vector |
+| `apps/web/tests/similarity-index.test.ts` | 新增 6 个测试：mode=core 强制 keyword、mode=semantic 无 embedding 返回空、mode=semantic 有 embedding 返回 semantic_core、comparison 强制分流、stale source vector 排除、stale candidate vector 排除 |
+| `apps/web/tests/semantic-feature-engine.test.ts` | makeRuntimeStatus 补齐 embeddingModelVersion / embeddingDimension |
+| `apps/web/tests/background-job-queue.test.ts` | makeModelRuntimeStatus 补齐 embeddingModelVersion / embeddingDimension |
+
+### 核心修复逻辑
+
+**Core vs Semantic 强制分流**：
+- `FindSimilarOptions.mode` 新增 `'auto' | 'core' | 'semantic'`
+- `mode: 'core'` → 强制走 `findSimilarCore`（keyword overlap），不读取 embedding vector
+- `mode: 'semantic'` → 强制走 `findSimilarSemantic`，无 embedding 时返回空数组
+- `mode: 'auto'`（默认）→ 保持原有行为（有 embedding 走 semantic，否则走 core）
+- `similarityComparison.runCoreModeQuery` 使用 `mode: 'core'`
+- `similarityComparison.runComparison` 的 semantic 查询使用 `mode: 'semantic'`
+- Core Mode 结果全部 `generatedBy=core`，Semantic Core 结果全部 `generatedBy=semantic_core`
+
+**modelVersion / dimension dirty check**：
+- `ModelRuntimeStatusRecord` 新增 `embeddingModelVersion` / `embeddingDimension`
+- `probeAndSyncStatus` 从 provider 读取这些值（type casting）
+- `embeddingService.generateEmbedding` 跳过逻辑同时校验 4 个维度：contentHash、modelId、modelVersion、dimension
+- 任意维度不匹配 → 标记 stale + 重新生成
+- 成功生成后，若 modelVersion/dimension 与 runtime status 不一致，更新 runtime status
+
+**stale vector 排除**：
+- `getEmbeddingVector` 排除 `contentHash.startsWith('__stale__')` 的向量
+- `getEmbeddingVectorsByWorkspace` 过滤 stale 向量
+- `findSimilarSemantic` 遍历候选向量时跳过 stale 向量
+- 模型失败 fallback 后，旧 embedding 不会被 SimilarityIndex 消费
+
+**fallback 不写 fake vector**：
+- provider 不可用时，`embeddingService.generateEmbedding` 返回 `embeddingVector: null`
+- 不写入 `EmbeddingVector` 记录
+- providerId/modelId/modelVersion 为 `rule_fallback`
+
+**fallbackUsed 修正**：
+- 不再用 `semanticCoreResults.length === 0` 直接代表 fallback
+- 改为基于 source embedding vector 是否存在判断：source embedding 不存在 → `fallbackUsed=true`（provider 不可用或未生成）；source embedding 存在 → `fallbackUsed=false`（semantic 查询成功但可能无候选结果）
+
+### 真实模型验证结果
+
+| 指标 | 值 |
+|------|------|
+| providerId | ollama-openai-compatible |
+| modelId | qwen3-embedding:0.6b |
+| dimension | 1024 |
+| durationMs | 147 |
+| fallbackUsed | false |
+| smoke:model | pass |
+
+### 自动验证结果
+
+| 验证项 | 结果 |
+|--------|------|
+| `pnpm validate` | ✅ 0 errors, 40 warnings |
+| `pnpm --dir apps/web test` | ✅ 1276 passed, 0 failed |
+| embedding-service.test.ts | ✅ 19 passed |
+| similarity-index.test.ts | ✅ 26 passed |
+| `pnpm smoke:model` | ✅ pass, dim=1024 |
+
+### 当前风险
+
+| 风险项 | 等级 | 影响 |
+|--------|------|------|
+| modelVersion/dimension 在 runtime status 中依赖 provider 暴露 | 🟢 低 | Ollama provider 通过 type casting 读取，未暴露时默认空/0，skip 逻辑跳过比较 |
+| SimilarityDiagnosticPanel 无索引构建按钮和输入文本 embedding | 🟢 低 | 面板当前仅按已有 target ID 运行 comparison，后续可按需扩展 |
+
+---
+
+## Phase3.3 +Round 11 devlog -- P33-ALG-002 EmbeddingService + SimilarityIndex MVP
+
+**日期**: 2026-05-18
+**任务起始时间**: 06:00
+**任务结束时间**: 07:45
+**工时**: 1h45m
+
+### 任务目标
+
+实现 P33-ALG-002 EmbeddingService + SimilarityIndex MVP：
+- 新增 SimilarityIndexEntry 领域类型和 makeSimilarityIndexEntryId ID 生成函数
+- 实现 EmbeddingService：封装 embedding 向量生成、缓存、降级逻辑，支持 DevLocalModelProvider 调用本机 Ollama / LM Studio / OpenAI-compatible endpoint
+- 实现 SimilarityIndex：按 workspace 读取 EmbeddingVector / LocalTextFeatureSnapshot，semantic 用 cosine similarity，core 用 keyword overlap，查询时 upsert SimilarityIndexEntry
+- 实现 SimilarityComparison：Core Mode vs Semantic Core 对比工具
+- 新增 Dexie v32 schema 支持 SimilarityIndexEntryRecord 持久化
+- 新增 intelligenceRepository 7 个方法支持相似度索引 CRUD
+- 新增 smoke-model.mjs 验证真实模型调用链路
+- 完整测试覆盖 EmbeddingService 和 SimilarityIndex
+
+### 改动文件
+
+| 文件 | 说明 | 行数 |
+|------|------|------|
+| `packages/domain/src/intelligence/types.ts` | 新增 SimilarityIndexEntry 接口 | +21 |
+| `packages/domain/src/intelligence/ids.ts` | 新增 makeSimilarityIndexEntryId 函数 | +3 |
+| `packages/domain/src/intelligence/index.ts` | 导出新增类型和函数 | +2 |
+| `apps/web/lib/db.ts` | 新增 SimilarityIndexEntryRecord 接口、v32 schema、表导出 | +30 |
+| `apps/web/lib/intelligenceRepository.ts` | 新增 7 个相似度索引 repository 方法 | +88 |
+| `apps/web/lib/embeddingService.ts` | 新增 EmbeddingService：向量生成、缓存、降级 | +170 |
+| `apps/web/lib/similarityIndex.ts` | 新增 SimilarityIndex：按 workspace 扫描向量 + cosine similarity + keyword overlap | +180 |
+| `apps/web/lib/similarityComparison.ts` | 新增 SimilarityComparison：Core vs Semantic 对比 + overlap/rank/score 差异 | +120 |
+| `apps/web/tests/embedding-service.test.ts` | 新增 EmbeddingService 测试 | +250 |
+| `apps/web/tests/similarity-index.test.ts` | 新增 SimilarityIndex 测试 | +350 |
+| `apps/web/scripts/smoke-model.mjs` | 新增真实模型 smoke 验证脚本 | +60 |
+
+### 核心设计
+
+**EmbeddingService**：
+- 封装 `generateEmbedding` → 缓存到 IndexedDB → 返回 Float32Array
+- 支持 DevLocalModelProvider 调用本机 Ollama / LM Studio / OpenAI-compatible endpoint
+- 模型不可用时降级返回 null，不阻塞主流程
+- 缓存命中时直接返回，避免重复调用模型
+- 记录 AlgorithmAuditLog 审计日志
+
+**SimilarityIndex**：
+- 按 workspace 从 IndexedDB 读取 EmbeddingVector / LocalTextFeatureSnapshot
+- semantic 模式：cosineSimilarity 计算 + Top-K 查询 + threshold 过滤
+- core 模式：keyword overlap (Jaccard) + Top-K 查询
+- 查询时 upsert SimilarityIndexEntry 持久化到 IndexedDB
+- 不使用内存索引，每次查询按 workspace 扫描 repository vectors/snapshots
+
+**SimilarityComparison**：
+- `cosineSimilarity(a: Float32Array, b: Float32Array): number`
+- `normalizeScore(rawScore: number): number` — 将 [-1, 1] 映射到 [0, 1]
+- Core Mode vs Semantic Core 对比：overlapRate / rankDifference / scoreDifference
+- fallbackUsed 基于 source embedding 是否存在判断
+
+**模型分布边界**：
+- Web 开发期允许通过 DevLocalModelProvider 调用本机 Ollama / LM Studio / OpenAI-compatible endpoint
+- 这不是最终用户默认依赖
+- Desktop 阶段应由 DesktopBundledEmbeddingProvider 承接默认内置 Semantic Core
+- Semantic Core 默认进入未来桌面安装包，Smart Pack 不进入默认安装包
+
+### 真实模型验证结果
+
+| 指标 | 值 |
+|------|------|
+| providerId | ollama-openai-compatible |
+| modelId | qwen3-embedding:0.6b |
+| dimension | 1024 |
+| durationMs | 88 |
+| fallbackUsed | false |
+| sample (first 5) | [-0.041927, 0.003439, -0.011979, -0.079196, -0.018357] |
+| topK 结果 | smoke test 为直接 API 调用，无 SimilarityIndex 查询；集成后需补充 |
+
+### 遇到的问题与解决方式
+
+1. **Float32Array 与 number[] 类型不兼容**：cosineSimilarity 接收 Float32Array，但 IndexedDB 存储后读取为普通数组。解决：SimilarityIndexEntry 的 vectorBlob 字段存储为 Float32Array，读取时通过 `new Float32Array(record.vectorBlob)` 转换。
+
+2. **Dexie v32 schema 升级**：新增 similarityIndexEntries 表需要正确处理版本升级。解决：upgrade 函数为空（新表无需迁移），Dexie 自动创建表和索引。
+
+3. **EmbeddingService 缓存一致性**：同一文本多次调用应返回相同向量。解决：基于 contentHash 查找已有 EmbeddingVector 记录，命中时直接返回，未命中时调用模型生成。
+
+### 自动验证结果
+
+| 验证项 | 结果 |
+|--------|------|
+| `pnpm --dir apps/web test tests/embedding-service.test.ts` | ✅ 全部通过 |
+| `pnpm --dir apps/web test tests/similarity-index.test.ts` | ✅ 全部通过 |
+| `pnpm validate` | ✅ 0 errors |
+| `pnpm build:web` | ✅ success |
+| `pnpm smoke:model` | ✅ pass, embedding dim=1024 |
+
+### 当前风险
+
+| 风险项 | 等级 | 影响 |
+|--------|------|------|
+| 余弦相似度 Float32Array 精度 | 🟡 中 | Float32 精度有限，极端情况下相似度排序可能与双精度不同 |
+| SimilarityIndex 按 workspace 扫描无分页 | 🟡 中 | 大量条目时查询耗时增长，后续需引入分页或懒加载 |
+| 模型分布边界：Web 依赖本地 Ollama | 🟡 中 | Web 开发期通过 DevLocalModelProvider 调用本机模型，不是最终用户默认依赖；Desktop 阶段应由 DesktopBundledEmbeddingProvider 承接 |
+| Semantic Core / Smart Pack 打包策略未定 | 🟢 低 | Semantic Core 默认进入桌面安装包，Smart Pack 不进入默认安装包，具体打包方案待 Desktop 阶段确定 |
+
+### 影响范围
+
+- 领域层：新增 SimilarityIndexEntry 接口 + makeSimilarityIndexEntryId 函数
+- Schema 升级：v31 → v32，新增 similarityIndexEntries 表
+- 新增 embeddingService / similarityIndex / similarityComparison 三个模块
+- 新增 smoke-model.mjs 验证脚本
+- 测试：embedding-service.test.ts + similarity-index.test.ts
+
+---
+
 ## Phase3.3 +Round 13 devlog -- P33-ALG-001 修复评审阻断：JobConsumer 产品运行时消费 + embeddingEnabled 严格语义 + 敏感日志彻底清理
 
 **日期**: 2026-05-18

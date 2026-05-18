@@ -49,6 +49,8 @@ function makeRuntimeStatus(overrides: Record<string, unknown> = {}) {
     embeddingStatus: 'available' as const,
     reasoningStatus: 'available' as const,
     embeddingModelId: 'qwen3-embedding:0.6b',
+    embeddingModelVersion: '1.0',
+    embeddingDimension: 1024,
     reasoningModelId: 'qwen3:1.7b',
     lastProbeAt: new Date().toISOString(),
     lastProbeSuccess: true,

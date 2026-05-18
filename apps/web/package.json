@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "seed:mount": "bash scripts/seed-mount.sh",
-    "seed:unmount": "bash scripts/seed-unmount.sh"
+    "seed:unmount": "bash scripts/seed-unmount.sh",
+    "smoke:model": "node scripts/smoke-model.mjs"
   },
   "dependencies": {
     "@atlax/domain": "workspace:*",

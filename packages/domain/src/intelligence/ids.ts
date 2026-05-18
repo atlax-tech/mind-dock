@@ -53,3 +53,7 @@ export function makeModelSmokeTestRunId(userId: string, workspaceId: string, tim
 export function makeModelRuntimeStatusId(userId: string, workspaceId: string, providerId: string): string {
   return `${userId}_mrs_${workspaceId}_${providerId}`
 }
+
+export function makeSimilarityIndexEntryId(userId: string, workspaceId: string, sourceTargetType: string, sourceTargetId: string, targetTargetType: string, targetTargetId: string): string {
+  return `${userId}_sie_${workspaceId}_${sourceTargetType}_${sourceTargetId}_${targetTargetType}_${targetTargetId}`
+}

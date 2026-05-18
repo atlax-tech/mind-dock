@@ -16,6 +16,7 @@ export type {
   JobType,
   JobStatus,
   BackgroundJob,
+  SimilarityIndexEntry,
 } from './types'
 
 export {
@@ -33,6 +34,7 @@ export {
   makeAlgorithmAuditLogId,
   makeModelSmokeTestRunId,
   makeModelRuntimeStatusId,
+  makeSimilarityIndexEntryId,
 } from './ids'
 
 export type {

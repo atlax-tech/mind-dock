@@ -310,6 +310,8 @@ export async function probeAndSyncStatus(
     embeddingStatus,
     reasoningStatus,
     embeddingModelId: (embeddingProvider as { embeddingModelId?: string })?.embeddingModelId ?? '',
+    embeddingModelVersion: (embeddingProvider as { embeddingModelVersion?: string })?.embeddingModelVersion ?? '',
+    embeddingDimension: (embeddingProvider as { embeddingDimension?: number })?.embeddingDimension ?? 0,
     reasoningModelId: (reasoningProvider as { reasoningModelId?: string })?.reasoningModelId ?? '',
     lastProbeAt: now,
     lastProbeSuccess: probeResult.available,

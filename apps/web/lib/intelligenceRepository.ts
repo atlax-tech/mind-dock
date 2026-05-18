@@ -1,4 +1,9 @@
-import { db } from './db'
+import { db, similarityIndexEntriesTable, embeddingVectorsTable } from './db'
+import type {
+  SimilarityIndexEntryRecord,
+  PersistedSimilarityIndexEntry,
+  PersistedEmbeddingVector,
+} from './db'
 import { DEFAULT_WORKSPACE_ID } from '@atlax/domain'
 import type {
   LocalTextFeatureSnapshot,
@@ -26,6 +31,7 @@ import {
   makeAlgorithmAuditLogId,
   makeModelSmokeTestRunId,
   makeModelRuntimeStatusId,
+  makeSimilarityIndexEntryId,
 } from '@atlax/domain'
 
 function collisionSafeSuffix(): string {
@@ -561,4 +567,94 @@ export async function setReasoningEnabledPref(
   workspaceId: string = DEFAULT_WORKSPACE_ID,
 ): Promise<void> {
   await setUserPreference(userId, 'reasoningEnabled', String(enabled), workspaceId)
+}
+
+export async function upsertSimilarityIndexEntry(
+  record: SimilarityIndexEntryRecord,
+  workspaceId: string,
+): Promise<string> {
+  const id = record.id ?? makeSimilarityIndexEntryId(record.userId, workspaceId, record.sourceTargetType, record.sourceTargetId, record.targetTargetType, record.targetTargetId)
+  await similarityIndexEntriesTable.put({ ...record, id, workspaceId })
+  return id
+}
+
+export async function getSimilarityIndexEntriesBySource(
+  userId: string,
+  sourceTargetType: string,
+  sourceTargetId: string,
+  workspaceId: string,
+): Promise<PersistedSimilarityIndexEntry[]> {
+  return similarityIndexEntriesTable
+    .where('[userId+workspaceId+sourceTargetType+sourceTargetId]')
+    .equals([userId, workspaceId, sourceTargetType, sourceTargetId])
+    .filter(entry => !entry.stale)
+    .toArray() as unknown as PersistedSimilarityIndexEntry[]
+}
+
+export async function markSimilarityIndexEntriesStaleBySource(
+  userId: string,
+  sourceTargetType: string,
+  sourceTargetId: string,
+  workspaceId: string,
+): Promise<void> {
+  const entries = await similarityIndexEntriesTable
+    .where('[userId+workspaceId+sourceTargetType+sourceTargetId]')
+    .equals([userId, workspaceId, sourceTargetType, sourceTargetId])
+    .toArray()
+  await Promise.all(entries.map(entry =>
+    similarityIndexEntriesTable.update(entry.id as string, { stale: true, staleKey: 1 as const, updatedAt: new Date().toISOString() })
+  ))
+}
+
+export async function markSimilarityIndexEntriesStaleByTarget(
+  userId: string,
+  targetTargetType: string,
+  targetTargetId: string,
+  workspaceId: string,
+): Promise<void> {
+  const entries = await similarityIndexEntriesTable
+    .where('[userId+workspaceId+targetTargetType+targetTargetId]')
+    .equals([userId, workspaceId, targetTargetType, targetTargetId])
+    .toArray()
+  await Promise.all(entries.map(entry =>
+    similarityIndexEntriesTable.update(entry.id as string, { stale: true, staleKey: 1 as const, updatedAt: new Date().toISOString() })
+  ))
+}
+
+export async function markSimilarityIndexEntriesStaleByModel(
+  userId: string,
+  modelId: string,
+  workspaceId: string,
+): Promise<void> {
+  const entries = await similarityIndexEntriesTable
+    .where('[userId+workspaceId]')
+    .equals([userId, workspaceId])
+    .filter(entry => entry.modelId === modelId)
+    .toArray()
+  await Promise.all(entries.map(entry =>
+    similarityIndexEntriesTable.update(entry.id as string, { stale: true, staleKey: 1 as const, updatedAt: new Date().toISOString() })
+  ))
+}
+
+export async function markSimilarityIndexEntriesStaleByVector(
+  userId: string,
+  targetType: string,
+  targetId: string,
+  workspaceId: string,
+): Promise<void> {
+  await Promise.all([
+    markSimilarityIndexEntriesStaleBySource(userId, targetType, targetId, workspaceId),
+    markSimilarityIndexEntriesStaleByTarget(userId, targetType, targetId, workspaceId),
+  ])
+}
+
+export async function getEmbeddingVectorsByWorkspace(
+  userId: string,
+  workspaceId: string,
+): Promise<PersistedEmbeddingVector[]> {
+  const all = await embeddingVectorsTable
+    .where('[userId+workspaceId]')
+    .equals([userId, workspaceId])
+    .toArray() as unknown as PersistedEmbeddingVector[]
+  return all.filter(v => !v.contentHash?.startsWith('__stale__'))
 }

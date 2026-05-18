@@ -808,6 +808,8 @@ export interface ModelRuntimeStatusRecord {
   embeddingStatus: string
   reasoningStatus: string
   embeddingModelId: string
+  embeddingModelVersion: string
+  embeddingDimension: number
   reasoningModelId: string
   lastProbeAt: string
   lastProbeSuccess: boolean
@@ -819,6 +821,31 @@ export interface ModelRuntimeStatusRecord {
 }
 
 export interface PersistedModelRuntimeStatus extends ModelRuntimeStatusRecord {
+  id: string
+}
+
+export interface SimilarityIndexEntryRecord {
+  id?: string
+  userId: string
+  workspaceId: string
+  sourceTargetType: string
+  sourceTargetId: string
+  targetTargetType: string
+  targetTargetId: string
+  score: number
+  generatedBy: 'core' | 'semantic_core'
+  providerId: string
+  modelId: string
+  modelVersion: string
+  sourceContentHash: string
+  targetContentHash: string
+  stale: boolean
+  staleKey: 0 | 1
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PersistedSimilarityIndexEntry extends SimilarityIndexEntryRecord {
   id: string
 }
 
@@ -873,6 +900,7 @@ const db = new Dexie('AtlaxDB') as Dexie & {
   modelSmokeTestRuns: EntityTable<ModelSmokeTestRunRecord, 'id'>
   modelRuntimeStatuses: EntityTable<ModelRuntimeStatusRecord, 'id'>
   userPreferences: EntityTable<UserPreferenceRecord, 'id'>
+  similarityIndexEntries: EntityTable<SimilarityIndexEntryRecord, 'id'>
 }
 
 db.version(1).stores({
@@ -1414,6 +1442,19 @@ db.version(31).stores({
   userPreferences: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+key]',
 }).upgrade(() => {})
 
+db.version(32).stores({
+  similarityIndexEntries: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+sourceTargetType+sourceTargetId], [userId+workspaceId+targetTargetType+targetTargetId], [userId+workspaceId+staleKey], modelId',
+}).upgrade(() => {})
+
+db.version(33).stores({
+  modelRuntimeStatuses: 'id, userId, workspaceId, [userId+workspaceId], [userId+workspaceId+providerId], providerId, mode, embeddingStatus, reasoningStatus, updatedAt',
+}).upgrade(tx => {
+  tx.table('modelRuntimeStatuses').toCollection().modify((record: Record<string, unknown>) => {
+    if (record.embeddingModelVersion === undefined) record.embeddingModelVersion = ''
+    if (record.embeddingDimension === undefined) record.embeddingDimension = 0
+  })
+})
+
 export { db }
 export const dockItemsTable = db.table('dockItems')
 export const capturesTable = dockItemsTable
@@ -1454,3 +1495,4 @@ export const algorithmAuditLogsTable = db.table('algorithmAuditLogs')
 export const modelSmokeTestRunsTable = db.table('modelSmokeTestRuns')
 export const modelRuntimeStatusesTable = db.table('modelRuntimeStatuses')
 export const userPreferencesTable = db.table('userPreferences')
+export const similarityIndexEntriesTable = db.table('similarityIndexEntries')

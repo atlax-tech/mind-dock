@@ -208,6 +208,8 @@ export interface ModelRuntimeStatus {
   embeddingStatus: 'available' | 'unavailable' | 'error'
   reasoningStatus: 'available' | 'unavailable' | 'error'
   embeddingModelId: string
+  embeddingModelVersion: string
+  embeddingDimension: number
   reasoningModelId: string
   lastProbeAt: string
   lastProbeSuccess: boolean
@@ -238,4 +240,25 @@ export interface BackgroundJob {
   updatedAt: string
   nextRunAt: string | null
   completedAt: string | null
+}
+
+export interface SimilarityIndexEntry {
+  id: string
+  userId: string
+  workspaceId: string
+  sourceTargetType: string
+  sourceTargetId: string
+  targetTargetType: string
+  targetTargetId: string
+  score: number
+  generatedBy: 'core' | 'semantic_core'
+  providerId: string
+  modelId: string
+  modelVersion: string
+  sourceContentHash: string
+  targetContentHash: string
+  stale: boolean
+  staleKey: 0 | 1
+  createdAt: string
+  updatedAt: string
 }

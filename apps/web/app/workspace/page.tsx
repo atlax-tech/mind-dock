@@ -40,6 +40,7 @@ import { startJobConsumer, stopJobConsumer } from '@/lib/jobConsumer'
 import { reactivatePendingModelJobs, enqueue } from '@/lib/backgroundJobQueue'
 import { computeContentHash } from '@/lib/contentHash'
 import { db } from '@/lib/db'
+import SimilarityDiagnosticPanel from './_components/SimilarityDiagnosticPanel'
 import {
   Home,
   Brain,
@@ -3366,6 +3367,8 @@ const SettingsView = ({ onToast }: { onToast: (msg: string) => void }) => {
           </h2>
           <p className="text-xs text-[#899298] leading-relaxed">云端存储不属于当前路线。Atlax 当前仅支持本地 IndexedDB 存储，所有数据保存在您的设备上。</p>
         </GlassPanel>
+
+        {process.env.NODE_ENV === 'development' && <SimilarityDiagnosticPanel />}
       </div>
     </div>
   )
