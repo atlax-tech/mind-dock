@@ -4,6 +4,66 @@
 
 ---
 
+## Phase3.3 +Round 13 devlog -- P33-ALG-002 Real Model Acceptance Gate：smoke:similarity 全链路验证
+
+**日期**: 2026-05-18
+**任务起始时间**: 08:20
+**任务结束时间**: 08:30
+**工时**: 10分钟
+
+### 任务目标
+
+补充 Real Model Acceptance Gate 验证闭环，新增 `pnpm smoke:similarity` 命令。
+
+### 验证链路
+
+1. `localModelRuntimeService.generateEmbeddingForTarget()` → 3 条真实 embedding（source / related / unrelated）
+2. `EmbeddingVector` 落库到 IndexedDB → 验证 providerId / modelId / modelVersion / dimension
+3. `SimilarityIndex.findSimilar({ mode: 'semantic' })` → 消费真实向量，输出 semantic_core topK
+4. `SimilarityComparison.runComparison()` → Core vs Semantic 对比
+5. `fallbackUsed=false` → Semantic Core 可用
+
+### 真实模型验证结果
+
+**EmbeddingVector 已由真实 qwen3-embedding:0.6b 生成：**
+
+| 指标 | 值 |
+|------|------|
+| providerId | ollama-openai-compatible |
+| modelId | qwen3-embedding:0.6b |
+| modelVersion | qwen3-embedding:0.6b |
+| dimension | 1024 |
+| durationMs | 157 |
+| fallbackUsed | false |
+| sourceTargetId | smoke_source |
+
+**SimilarityIndex 已消费真实向量，semantic_core topK 结果：**
+
+| targetId | score | generatedBy | providerId | modelId |
+|----------|-------|-------------|------------|---------|
+| smoke_related | 0.891469 | semantic_core | ollama-openai-compatible | qwen3-embedding:0.6b |
+| smoke_unrelated | 0.654795 | semantic_core | ollama-openai-compatible | qwen3-embedding:0.6b |
+
+**语义排序验证：** related (0.891469) > unrelated (0.654795) ✅
+
+**Core vs Semantic 对比：**
+- Core Mode topK: 0 results（keyword 无重叠，预期行为）
+- Semantic Core topK: 2 results
+- overlapRate: 0.0000, rankDifference: 2.0000, scoreDifference: 0.7731
+- fallbackUsed: false
+
+**auditLogId:** smoke-sim-user_aal_smoke-sim-workspace_embedding_1779063724559
+
+### 验证命令
+
+```bash
+pnpm validate              # ✅ 0 errors, 1278 tests passed
+pnpm smoke:model           # ✅ pass, dim=1024
+pnpm smoke:similarity      # ✅ pass, 3 embeddings, 2 semantic_core topK, related>unrelated
+```
+
+---
+
 ## Phase3.3 +Round 12 devlog -- P33-ALG-002 Review 阻断修复：Core vs Semantic 强制分流 / modelVersion+dimension dirty check / stale vector 排除 / fallbackUsed 修正
 
 **日期**: 2026-05-18
