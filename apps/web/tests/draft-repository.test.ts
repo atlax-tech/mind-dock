@@ -7,9 +7,11 @@ import {
   listDrafts,
   getDraft,
   updateDraft,
+  updateEditorDocument,
   publishDraftToDocument,
   discardDraft,
   findActiveDraftBySourceEntryId,
+  listDocuments,
   findMindNodeByDocumentId,
   findMindNodeBySourceType,
   upsertMindNode,
@@ -403,6 +405,46 @@ describe('draft repository', () => {
       expect(entry.id).toBe(entryId as number)
       expect(entry.title).toBe('修改后标题')
       expect(entry.content).toBe('修改后内容')
+    })
+
+    it('published draft remains accessible as a document', async () => {
+      const draft = unwrap(await createDraft(USER_A, '工作台发布文档', '发布后仍可打开', undefined, undefined, ['editor'], 'Phase 3.3'))
+      const result = await publishDraftToDocument(USER_A, draft.id, 'as_new')
+      const entry = unwrap(result.entry)
+
+      const documents = await listDocuments(USER_A)
+      expect(documents.some((doc) => doc.id === entry.id && doc.title === '工作台发布文档')).toBe(true)
+    })
+  })
+
+  describe('Editor document workspace lifecycle', () => {
+    it('updates an existing document without creating an active draft', async () => {
+      const entryId = await db.table('entries').add(makeEntry({
+        title: '正式文档',
+        content: '旧内容',
+        project: 'Phase 3.3',
+        tags: ['old'],
+      }))
+
+      const updated = unwrap(await updateEditorDocument(USER_A, entryId as number, {
+        title: '正式文档更新',
+        content: '新内容',
+        plainText: '新内容',
+        markdown: '新内容',
+        html: '<p>新内容</p>',
+        contentJson: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: '新内容' }] }] },
+        tags: ['new'],
+        project: 'Phase 3.3',
+      }))
+
+      expect(updated.id).toBe(entryId as number)
+      expect(updated.title).toBe('正式文档更新')
+      expect(updated.content).toBe('新内容')
+      expect(updated.tags).toEqual(['new'])
+      expect(updated.contentJson?.type).toBe('doc')
+
+      const drafts = await listDrafts(USER_A)
+      expect(drafts).toHaveLength(0)
     })
   })
 

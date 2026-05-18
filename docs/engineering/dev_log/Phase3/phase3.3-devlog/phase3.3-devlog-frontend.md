@@ -4,6 +4,146 @@
 
 ---
 
+## Phase3.3 +Round 14 devlog -- P33-EDITOR-001 Editor 展示与导航整改
+
+**日期**: 2026-05-19
+**任务起始时间**: 09:10
+**任务结束时间**: 11:35
+**工时**: 2h25m
+
+### 任务目标
+
+只整改 Editor 展示、导航和信息呈现方式，不改 Dock 和全局 App shell：
+- Editor 从 draft-only 页面改为项目 / Domain / 文档工作台
+- 顶部支持项目 / 文档 tab 与 Editor 内部面包屑
+- 左侧 Draft 列表改为当前项目 / Domain 层级树
+- 正式文档可直接打开和保存，不再自动转 Draft
+- Draft 发布后仍留在 Editor 工作台可访问
+- Tiptap 主编辑器保留，并补充最小 view block 能力
+- 右侧 Inspector 根据文档 / 当前视图块切换语义
+- `+` 打开 Notion 风格项目或散点文档选择弹窗
+
+### 分支同步方式
+
+按任务要求复用旧目标分支名，以 `origin/feature/phase-3-3` 为干净基线重建本地 `feature/local-core-phase-1`：
+
+```bash
+git fetch origin
+git checkout feature/local-core-phase-1
+git reset --hard origin/feature/phase-3-3
+```
+
+同步结果：
+- 当前开发分支：`feature/local-core-phase-1`
+- 同步后 HEAD：`2a68b60a5a94905ac585697a9c5905a81add9a63`
+- `origin/feature/phase-3-3`：`2a68b60a5a94905ac585697a9c5905a81add9a63`
+- 未在 `feature/phase-3-3` 上开发
+- 未新建额外分支
+- 未 push / force push
+
+### 修改文件
+
+| 文件 | 说明 |
+|------|------|
+| `apps/web/app/workspace/features/editor/DraftEditorView.tsx` | Editor workspace shell：顶部内部 tab、Domain 树、主编辑区、右侧 Inspector、打开项目或散点文档弹窗、Draft 发布后切正式文档 tab |
+| `apps/web/app/workspace/features/editor/TiptapEditor.tsx` | 新增最小 `viewBlock` node extension、slash 插入项、视图块选中回调和紧凑数据视图渲染 |
+| `apps/web/app/workspace/features/editor/useEditorDocument.ts` | 新增通用 Editor 文档 hook，统一加载 / 保存 draft 与正式 document |
+| `apps/web/lib/repository.ts` | 新增 `updateEditorDocument`，正式文档保存直接更新 `entries`，不创建 Draft |
+| `apps/web/tests/draft-repository.test.ts` | 覆盖正式文档打开保存不创建 active Draft、Draft 发布后仍可作为 document 访问 |
+| `apps/web/tests/dock-editor-003.test.ts` | 更新 Editor 静态验收：tab 类型、Domain 树、打开弹窗、view block inspector wiring |
+| `apps/web/tests/markdown-editor-adapter.test.tsx` | 更新 slash command 期望，加入五类 view block 插入项 |
+| `docs/engineering/dev_log/Phase3/phase3.3-devlog/phase3.3-devlog-frontend.md` | 记录本轮 P33-EDITOR-001 工程日志 |
+
+### Editor 布局变更摘要
+
+- 顶部新增 Editor 内部 tab / breadcrumb bar，tab 支持 `project` / `domain` / `document` / `draft`，`+` 打开选择弹窗。
+- 左侧从 Draft 列表改为当前激活项目 / Domain 的紧凑层级树，支持展开折叠、点击打开文档、隐藏左栏。
+- 散点文档只进入顶部文档 tab；激活散点文档时左侧展示“散点文档只进入顶部 tab，不进入左侧目录”的空态，不污染 Domain 树。
+- 主编辑区继续使用现有 `TiptapEditor`，保留 toolbar、block handles、autosave、标题编辑和保存体验。
+- 右侧 Inspector 保留原暗色细边框视觉：未选视图块显示文档属性；选中视图块时显示当前视图块配置。
+- 打开弹窗采用搜索 + 筛选栏 + 左侧紧凑列表 + 右侧实时预览结构，支持键盘上下选择和 Enter 打开。
+
+### Draft 生命周期修正摘要
+
+- `initialEntryId` 现在直接打开正式 document tab，加载 `entries` 内容，不创建关联 Draft。
+- 正式 document autosave 调用 `updateEditorDocument`，只更新 `entries` 的标题、内容、JSON、HTML、Markdown、标签和项目字段。
+- Draft autosave 仍调用 `updateDraft`，Draft 只代表新建未归档内容。
+- 发布 Draft 后，调用现有 `publishDraftToDocument`，然后关闭 draft tab 并打开发布后的正式 document tab；发布后的文档仍可从项目树、顶部 tab、打开弹窗重新打开。
+- Draft 列表不再作为 Editor 左侧唯一入口，只作为打开弹窗中的候选来源之一。
+
+### View Block 支持情况
+
+- 新增最小可回退的 Tiptap `viewBlock` node，attrs 包含 `viewId`、`name`、`viewType`、`dataSource`、`filters`、`sort`、`fields`、`pageSize`。
+- Slash menu 已预留五类插入项：
+  - 当前项目任务（Table / Tasks）
+  - 相关文档（List / Documents）
+  - 推荐处理（Queue / Recommendations）
+  - 关系预览（Graph / Mind Links）
+  - 局部数据库（Table / Local Database）
+- 视图块以文档内紧凑表格 / 列表 / Queue / Graph preview 壳渲染，使用细边框、小工具栏和字段行，不做 Dock 模块或大卡片。
+- 右侧 Inspector 可读取选中的 view block attrs 并展示 view type、data source、filters、sort、fields、page size。
+
+### 验证命令和结果
+
+| 命令 | 结果 |
+|------|------|
+| `git branch --show-current` | ✅ `feature/local-core-phase-1` |
+| `git rev-parse HEAD && git rev-parse origin/feature/phase-3-3` | ✅ 两者均为 `2a68b60a5a94905ac585697a9c5905a81add9a63` |
+| `pnpm --dir apps/web typecheck` | ✅ pass |
+| `pnpm lint` | ✅ pass，43 warnings，0 errors |
+| `pnpm build` | ✅ pass |
+| `pnpm typecheck` | ✅ pass |
+| `pnpm --dir apps/web test draft-repository.test.ts dock-editor-003.test.ts markdown-editor-adapter.test.tsx` | ✅ 3 files / 120 tests passed |
+| `pnpm test` | ✅ domain 20 files / 315 tests passed；web 45 files / 1280 tests passed |
+| `git diff --check` | ✅ pass |
+| Browser smoke：`http://localhost:3000/workspace` | ✅ Editor 可打开正式 document；显示 `Document · Saved`；打开弹窗包含搜索框、筛选栏、结果列表、实时预览和打开按钮 |
+
+### 未完成项 / 风险
+
+- Tasks / Local Database 目前仓库内没有完整真实任务或局部数据库实体，view block 先提供配置壳和明确空态，后续接真实数据源时不需要改 Tiptap 基础结构。
+- Domain 树优先使用 Mind `parent_child` 边；当关系缺失时，代码按 `entries.project` 把项目文档挂入树，并已在实现中标注 fallback。
+- `pnpm lint` 仍有 43 个 warning，未出现 error；部分 warning 来自既有代码，新增 Editor 代码也有少量 hooks/any warning，后续可单独收敛。
+- 本轮未做视觉像素级还原，只按参考图调整布局和信息组织，并保持当前产品 UI 风格。
+
+### 手工测试问题复修
+
+**日期**: 2026-05-19
+
+针对 PM 手工测试反馈补充 Editor 可操作性：
+- View Block 不再只显示静态 mock 壳：`Documents`、`Recommendations`、`Mind Links` 读取当前 Editor 数据适配层并渲染实际行；`Tasks` / `Local Database` 在真实数据源未接入前保留明确空态。
+- 空白文档不再必须先输入内容才能添加 block：光标进入空白段落时，段首直接显示 block handler，可插入视图块 / 文本 / 引用 / callout；移除文末“添加 block”按钮。
+- View Block 自身也纳入段首 block handler 命中范围，可选中后进行 block 操作。
+- Block handler 增加 hover 保持与延迟隐藏，避免鼠标移动到按钮过程中立即消失。
+- 左侧 Domain 树新增“在当前结构中新建空白页面”按钮，创建带当前项目的 Page，并立即出现在当前树中；顶部 `+` 弹窗的新建散点 Page 不进入左侧目录。
+- Draft 或正式文档修改项目 / Domain 后，Editor 本地 `drafts` / `documents` 状态同步更新，左侧树无需刷新页面即可显示。
+- 顶部 tab 的 `+` 统一承载打开和新建：弹窗补充“新建当前项目 Page”和“新建散点 Page”，移除独立的“新建 Draft”按钮，UI 文案不再把新页面称为 Draft。
+- 打开弹窗筛选项补齐可交互行为：`Title only`、`In`、`Filter`、`More Reset`、`Sort by` 会即时影响结果列表。
+- Markdown 粘贴优先解析 `text/plain` 中的 Markdown，再处理剪贴板 HTML，避免从 IDE / Markdown 编辑器粘贴时被当作普通段落。
+- HTML Preview 从文稿末尾改为右下侧边浮层预览框，不再撑到文档正文末尾。
+- Inspector 打开时隐藏独立浮动 Outline rail，避免右侧目录 / 刻度与 Inspector 或视图块操作冲突。
+- Inspector 恢复文稿操作区：Document 可保存 / 归档，Page 可发布为正式文档 / 移出工作台。
+
+补充修改文件：
+
+| 文件 | 说明 |
+|------|------|
+| `apps/web/app/workspace/features/editor/TiptapEditor.tsx` | View Block React NodeView、真实行渲染、段首 block handler 命中 / 保持、HTML 侧边预览 |
+| `apps/web/app/workspace/features/editor/DraftEditorView.tsx` | Domain 树新增项目 Page、顶部 `+` 弹窗统一打开 / 新建、项目变更即时刷新、弹窗筛选状态、Inspector 文稿操作、view block 数据适配 |
+| `apps/web/app/workspace/features/editor/PasteNormalizer.ts` | Markdown 粘贴优先解析 plain text |
+
+补充验证：
+
+| 命令 / 检查 | 结果 |
+|------|------|
+| `pnpm --dir apps/web typecheck` | ✅ pass |
+| `pnpm --dir apps/web test dock-editor-003.test.ts markdown-editor-adapter.test.tsx draft-repository.test.ts` | ✅ 3 files / 120 tests passed |
+| `pnpm lint` | ✅ pass，43 warnings，0 errors |
+| `pnpm build` | ✅ pass |
+| `git diff --check` | ✅ pass |
+| Browser smoke：`http://localhost:3000/workspace` | ✅ Editor 打开正常；顶部独立“新建 Draft”已移除；`+` 弹窗包含“新建当前项目 Page”和“新建散点 Page”；Inspector 显示文稿操作；正式文档仍显示 `Document · Saved` |
+
+---
+
 ## Phase3.3 +Round 13 devlog -- P33-ALG-002 Real Model Acceptance Gate：smoke:similarity 全链路验证
 
 **日期**: 2026-05-18
@@ -604,4 +744,3 @@ Settings 智能能力面板从 ModelRuntimeStatus 读取真实模型运行时状
 
 - `pnpm validate`：✅ 通过
 - `pnpm build:web`：✅ 通过
-

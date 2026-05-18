@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { BubbleMenu } from '@tiptap/react/menus'
-import { EditorContent, Extension, Node as TiptapNode, mergeAttributes, type Editor, useEditor } from '@tiptap/react'
+import { EditorContent, Extension, Node as TiptapNode, NodeViewWrapper, ReactNodeViewRenderer, mergeAttributes, type Editor, type NodeViewProps, useEditor } from '@tiptap/react'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
@@ -58,6 +58,31 @@ export interface EditorOutlineItem {
   index: number
 }
 
+export interface EditorViewBlockSelection {
+  viewId: string
+  name: string
+  viewType: 'Table' | 'List' | 'Board' | 'Graph' | 'Queue'
+  dataSource: 'Tasks' | 'Documents' | 'Recommendations' | 'Mind Links' | 'Local Database'
+  filters: string
+  sort: string
+  fields: string[]
+  pageSize: number
+}
+
+export interface EditorViewBlockRow {
+  id: string
+  name: string
+  status: string
+  updated: string
+  meta?: string
+}
+
+export interface EditorViewBlockData {
+  documents: EditorViewBlockRow[]
+  recommendations: EditorViewBlockRow[]
+  mindLinks: EditorViewBlockRow[]
+}
+
 export const EDITOR_WIDTH_CLASSES: Record<EditorWidthMode, string> = {
   compact: 'max-w-[640px]',
   comfortable: 'max-w-[720px]',
@@ -73,6 +98,8 @@ export interface TiptapEditorProps {
   widthMode?: EditorWidthMode
   focusMode?: boolean
   onOutlineChange?: (outline: EditorOutlineItem[]) => void
+  onViewBlockSelectionChange?: (selection: EditorViewBlockSelection | null) => void
+  viewBlockData?: EditorViewBlockData
   enableBubbleMenu?: boolean
   enableBlockHandles?: boolean
 }
@@ -107,7 +134,26 @@ const SUPPORTED_BLOCK_TYPES = new Set([
   'listItem',
   'taskItem',
   'callout',
+  'viewBlock',
 ])
+
+function createViewBlockAttrs(
+  name: string,
+  viewType: EditorViewBlockSelection['viewType'],
+  dataSource: EditorViewBlockSelection['dataSource'],
+  fields: string[],
+): EditorViewBlockSelection {
+  return {
+    viewId: `view-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`,
+    name,
+    viewType,
+    dataSource,
+    filters: dataSource === 'Tasks' ? 'status != Done' : 'current project',
+    sort: dataSource === 'Recommendations' ? 'confidence desc' : 'updated desc',
+    fields,
+    pageSize: 10,
+  }
+}
 
 export const SLASH_COMMANDS: SlashCommandItem[] = [
   {
@@ -165,6 +211,46 @@ export const SLASH_COMMANDS: SlashCommandItem[] = [
     label: 'Callout',
     command: (editor, range) => editor.chain().focus().deleteRange(range).toggleBlockquote().insertContent('Note').run(),
   },
+  {
+    title: 'projectTasksView',
+    label: '当前项目任务',
+    command: (editor, range) => editor.chain().focus().deleteRange(range).insertContent({
+      type: 'viewBlock',
+      attrs: createViewBlockAttrs('当前项目任务', 'Table', 'Tasks', ['任务', '状态', '负责人', '优先级', '截止日期']),
+    }).run(),
+  },
+  {
+    title: 'relatedDocumentsView',
+    label: '相关文档',
+    command: (editor, range) => editor.chain().focus().deleteRange(range).insertContent({
+      type: 'viewBlock',
+      attrs: createViewBlockAttrs('相关文档', 'List', 'Documents', ['文档', '类型', '关联', '更新日期']),
+    }).run(),
+  },
+  {
+    title: 'recommendationQueueView',
+    label: '推荐处理',
+    command: (editor, range) => editor.chain().focus().deleteRange(range).insertContent({
+      type: 'viewBlock',
+      attrs: createViewBlockAttrs('推荐处理', 'Queue', 'Recommendations', ['动作', '来源', '预计收益', '操作']),
+    }).run(),
+  },
+  {
+    title: 'mindGraphPreviewView',
+    label: '关系预览',
+    command: (editor, range) => editor.chain().focus().deleteRange(range).insertContent({
+      type: 'viewBlock',
+      attrs: createViewBlockAttrs('关系预览', 'Graph', 'Mind Links', ['节点', '关系', '强度']),
+    }).run(),
+  },
+  {
+    title: 'localDatabaseView',
+    label: '局部数据库',
+    command: (editor, range) => editor.chain().focus().deleteRange(range).insertContent({
+      type: 'viewBlock',
+      attrs: createViewBlockAttrs('局部数据库', 'Table', 'Local Database', ['名称', '状态', '更新']),
+    }).run(),
+  },
 ]
 
 export const Callout = TiptapNode.create({
@@ -188,6 +274,155 @@ export const Callout = TiptapNode.create({
     } as any
   },
 })
+
+export const ViewBlock = TiptapNode.create<{
+  data: EditorViewBlockData
+}>({
+  name: 'viewBlock',
+  group: 'block',
+  atom: true,
+  selectable: true,
+
+  addOptions() {
+    return {
+      data: {
+        documents: [],
+        recommendations: [],
+        mindLinks: [],
+      },
+    }
+  },
+
+  addAttributes() {
+    return {
+      viewId: { default: '' },
+      name: { default: '数据视图' },
+      viewType: { default: 'Table' },
+      dataSource: { default: 'Documents' },
+      filters: { default: 'current project' },
+      sort: { default: 'updated desc' },
+      fields: {
+        default: ['名称', '状态', '更新'],
+        parseHTML: element => {
+          const raw = element.getAttribute('data-fields')
+          if (!raw) return ['名称', '状态', '更新']
+          try {
+            const parsed = JSON.parse(raw)
+            return Array.isArray(parsed) ? parsed : ['名称', '状态', '更新']
+          } catch {
+            return ['名称', '状态', '更新']
+          }
+        },
+        renderHTML: attributes => ({ 'data-fields': JSON.stringify(attributes.fields ?? []) }),
+      },
+      pageSize: { default: 10 },
+    }
+  },
+
+  parseHTML() {
+    return [{ tag: 'section[data-type="view-block"]' }]
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    const fields = Array.isArray(HTMLAttributes.fields) ? HTMLAttributes.fields : ['名称', '状态', '更新']
+    const restAttributes = { ...HTMLAttributes }
+    delete (restAttributes as Record<string, unknown>).fields
+    const source = String(HTMLAttributes.dataSource ?? 'Documents')
+    const viewType = String(HTMLAttributes.viewType ?? 'Table')
+    const name = String(HTMLAttributes.name ?? '数据视图')
+    const helper = source === 'Tasks' || source === 'Local Database'
+      ? '真实数据源未接入，当前显示配置壳'
+      : `来自 ${source} 的实时预览`
+    return [
+      'section',
+      mergeAttributes(restAttributes, {
+        'data-type': 'view-block',
+        'data-view-id': HTMLAttributes.viewId,
+        'data-view-type': viewType,
+        'data-data-source': source,
+        contenteditable: 'false',
+      }),
+      [
+        'div',
+        { class: 'atlax-view-block-shell' },
+        ['div', { class: 'atlax-view-block-toolbar' },
+          ['div', { class: 'atlax-view-block-title' }, name],
+          ['div', { class: 'atlax-view-block-meta' }, `${viewType} · ${source}`],
+        ],
+        ['div', { class: 'atlax-view-block-grid' }, ...fields.slice(0, 5).map((field: string) => ['span', {}, String(field)])],
+        ['div', { class: 'atlax-view-block-empty' }, helper],
+      ],
+    ]
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(ViewBlockNodeView)
+  },
+})
+
+function ViewBlockNodeView(props: NodeViewProps) {
+  const selection = normalizeViewBlockAttrs(props.node.attrs)
+  const data = (props.extension.options as { data?: EditorViewBlockData }).data ?? { documents: [], recommendations: [], mindLinks: [] }
+  const rows = resolveViewBlockRows(selection, data)
+  const getNodePos = () => {
+    const pos = props.getPos()
+    return typeof pos === 'number' ? pos : 0
+  }
+  const emptyLabel = selection.dataSource === 'Tasks' || selection.dataSource === 'Local Database'
+    ? '真实数据源未接入，当前显示配置壳'
+    : '暂无匹配数据'
+
+  return (
+    <NodeViewWrapper
+      as="section"
+      data-type="view-block"
+      data-view-id={selection.viewId}
+      data-view-type={selection.viewType}
+      data-data-source={selection.dataSource}
+      className={props.selected ? 'ProseMirror-selectednode' : ''}
+    >
+      <div className="atlax-view-block-shell">
+        <div className="atlax-view-block-toolbar">
+          <div className="atlax-view-block-title">{selection.name}</div>
+          <div className="atlax-view-block-actions">
+            <button type="button" onClick={() => props.editor.commands.setNodeSelection(getNodePos())}>配置</button>
+            <button type="button" onClick={() => props.editor.chain().focus().insertContentAt(getNodePos() + props.node.nodeSize, { type: 'paragraph' }).run()}>下方继续</button>
+          </div>
+          <div className="atlax-view-block-meta">{selection.viewType} · {selection.dataSource}</div>
+        </div>
+        <div className="atlax-view-block-grid">
+          {selection.fields.slice(0, 5).map((field) => <span key={field}>{field}</span>)}
+        </div>
+        {rows.length > 0 ? (
+          <div className="atlax-view-block-rows">
+            {rows.slice(0, selection.pageSize).map((row) => (
+              <button
+                key={row.id}
+                type="button"
+                className="atlax-view-block-row"
+                onClick={() => props.editor.commands.setNodeSelection(getNodePos())}
+              >
+                <span>{row.name}</span>
+                <span>{row.status}</span>
+                <span>{row.meta ?? row.updated}</span>
+                <span>{row.updated}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="atlax-view-block-empty">{emptyLabel}</div>
+        )}
+      </div>
+    </NodeViewWrapper>
+  )
+}
+
+function resolveViewBlockRows(selection: EditorViewBlockSelection, data: EditorViewBlockData): EditorViewBlockRow[] {
+  if (selection.dataSource === 'Documents') return data.documents
+  if (selection.dataSource === 'Recommendations') return data.recommendations
+  if (selection.dataSource === 'Mind Links') return data.mindLinks
+  return []
+}
 
 export const SlashCommand = Extension.create({
   name: 'slashCommand',
@@ -316,6 +551,45 @@ export function extractEditorOutline(doc: TiptapJSONContent | null | undefined):
   })
 }
 
+function findSelectedViewBlock(editor: Editor): EditorViewBlockSelection | null {
+  const { selection, doc } = editor.state
+  let selected: EditorViewBlockSelection | null = null
+  doc.nodesBetween(selection.from, selection.to, (node) => {
+    if (selected || node.type.name !== 'viewBlock') return false
+    selected = normalizeViewBlockAttrs(node.attrs)
+    return false
+  })
+  if (!selected) {
+    const nearby = doc.nodeAt(selection.from)
+    if (nearby?.type.name === 'viewBlock') selected = normalizeViewBlockAttrs(nearby.attrs)
+  }
+  return selected
+}
+
+function normalizeViewBlockAttrs(attrs: Record<string, unknown>): EditorViewBlockSelection {
+  const fields = Array.isArray(attrs.fields) ? attrs.fields.map(String) : ['名称', '状态', '更新']
+  return {
+    viewId: String(attrs.viewId || ''),
+    name: String(attrs.name || '数据视图'),
+    viewType: normalizeViewType(attrs.viewType),
+    dataSource: normalizeDataSource(attrs.dataSource),
+    filters: String(attrs.filters || 'current project'),
+    sort: String(attrs.sort || 'updated desc'),
+    fields,
+    pageSize: Number(attrs.pageSize || 10),
+  }
+}
+
+function normalizeViewType(value: unknown): EditorViewBlockSelection['viewType'] {
+  if (value === 'Table' || value === 'List' || value === 'Board' || value === 'Graph' || value === 'Queue') return value
+  return 'Table'
+}
+
+function normalizeDataSource(value: unknown): EditorViewBlockSelection['dataSource'] {
+  if (value === 'Tasks' || value === 'Documents' || value === 'Recommendations' || value === 'Mind Links' || value === 'Local Database') return value
+  return 'Documents'
+}
+
 export function resolveBlockHandleTarget(editor: Editor, element: Element | null): BlockHandleTarget | null {
   if (!element) return null
   const root = editor.view.dom
@@ -413,6 +687,8 @@ export function TiptapEditor({
   widthMode = 'comfortable',
   focusMode = false,
   onOutlineChange,
+  onViewBlockSelectionChange,
+  viewBlockData,
   enableBubbleMenu = true,
   enableBlockHandles = false,
 }: TiptapEditorProps) {
@@ -444,8 +720,11 @@ export function TiptapEditor({
     }),
     SlashCommand,
     Callout,
+    ViewBlock.configure({
+      data: viewBlockData ?? { documents: [], recommendations: [], mindLinks: [] },
+    }),
     PasteNormalizer,
-  ], [placeholder])
+  ], [placeholder, viewBlockData])
 
   const editor = useEditor({
     extensions,
@@ -456,6 +735,9 @@ export function TiptapEditor({
       const payload = createEditorContentPayload(editor.getJSON() as TiptapJSONContent, editor.getText())
       latestValue.current = payload.contentJson
       onChange(payload)
+    },
+    onSelectionUpdate: ({ editor }) => {
+      onViewBlockSelectionChange?.(findSelectedViewBlock(editor))
     },
   }, [extensions, disabled])
 
@@ -631,9 +913,18 @@ export function TiptapEditor({
       )}
 
       {showHtml && (
-        <div className="mt-5 rounded-lg border border-white/[0.07] bg-[#111619] p-3" data-testid="tiptap-html-preview">
-          <div className="mb-2 text-[10px] font-semibold uppercase text-[#899298]">HTML Preview</div>
-          <pre className="max-h-[220px] overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed text-[#cfd7dc]">{payload.html}</pre>
+        <div className="fixed bottom-5 right-5 z-[75] w-[420px] max-w-[calc(100vw-2rem)] rounded-xl border border-white/[0.1] bg-[#111619]/95 p-3 shadow-2xl backdrop-blur-xl" data-testid="tiptap-html-preview">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="text-[10px] font-semibold uppercase text-[#899298]">HTML Preview</div>
+            <button
+              type="button"
+              onClick={() => setShowHtml(false)}
+              className="rounded p-1 text-[#899298] hover:bg-white/10 hover:text-white"
+            >
+              ×
+            </button>
+          </div>
+          <pre className="max-h-[360px] overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed text-[#cfd7dc]">{payload.html}</pre>
         </div>
       )}
 
@@ -771,6 +1062,102 @@ export function TiptapEditor({
           border-radius: 8px;
           border: 1px solid rgba(255, 255, 255, 0.1);
         }
+        .tiptap-editor .ProseMirror [data-type="view-block"] {
+          margin: 1.25rem 0;
+          border: 1px solid rgba(255, 255, 255, 0.09);
+          border-radius: 0.5rem;
+          background: rgba(13, 18, 21, 0.58);
+          overflow: hidden;
+        }
+        .tiptap-editor .ProseMirror [data-type="view-block"].ProseMirror-selectednode {
+          border-color: rgba(134, 215, 255, 0.45);
+          box-shadow: 0 0 0 1px rgba(134, 215, 255, 0.18);
+        }
+        .atlax-view-block-shell {
+          color: #dce3e8;
+          font-size: 12px;
+          line-height: 1.4;
+        }
+        .atlax-view-block-toolbar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.75rem;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+          padding: 0.45rem 0.6rem;
+          background: rgba(255, 255, 255, 0.025);
+        }
+        .atlax-view-block-actions {
+          margin-left: auto;
+          display: flex;
+          align-items: center;
+          gap: 0.35rem;
+        }
+        .atlax-view-block-actions button {
+          border: 1px solid rgba(255, 255, 255, 0.07);
+          border-radius: 0.35rem;
+          background: rgba(255, 255, 255, 0.04);
+          padding: 0.18rem 0.45rem;
+          color: rgba(220, 227, 232, 0.76);
+          font-size: 10px;
+        }
+        .atlax-view-block-actions button:hover {
+          border-color: rgba(134, 215, 255, 0.26);
+          color: #86d7ff;
+        }
+        .atlax-view-block-title {
+          color: #fff;
+          font-weight: 600;
+        }
+        .atlax-view-block-meta {
+          color: rgba(137, 146, 152, 0.9);
+          font-size: 10px;
+        }
+        .atlax-view-block-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+          border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+          color: rgba(220, 227, 232, 0.82);
+          font-size: 10px;
+          font-weight: 600;
+        }
+        .atlax-view-block-grid span {
+          border-right: 1px solid rgba(255, 255, 255, 0.06);
+          padding: 0.42rem 0.55rem;
+        }
+        .atlax-view-block-grid span:last-child {
+          border-right: 0;
+        }
+        .atlax-view-block-empty {
+          padding: 0.65rem 0.6rem;
+          color: rgba(137, 146, 152, 0.82);
+          font-size: 11px;
+        }
+        .atlax-view-block-rows {
+          display: flex;
+          flex-direction: column;
+        }
+        .atlax-view-block-row {
+          display: grid;
+          grid-template-columns: minmax(120px, 1.6fr) minmax(80px, 0.8fr) minmax(96px, 1fr) minmax(80px, 0.8fr);
+          align-items: center;
+          border: 0;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+          background: transparent;
+          color: rgba(220, 227, 232, 0.84);
+          text-align: left;
+          font-size: 11px;
+        }
+        .atlax-view-block-row:hover {
+          background: rgba(255, 255, 255, 0.035);
+        }
+        .atlax-view-block-row span {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          padding: 0.48rem 0.55rem;
+        }
       `}</style>
     </div>
   )
@@ -793,6 +1180,7 @@ function BlockHandleController({ editor }: { editor: Editor }) {
   const pendingPositionTargetRef = useRef<BlockHandleTarget | null>(null)
   const lastHandleKeyRef = useRef('')
   const selectedDomRef = useRef<HTMLElement | null>(null)
+  const clearHoverTimerRef = useRef<number | null>(null)
 
   const activeTarget = selectedTarget ?? hoverTarget
   const visible = Boolean(activeTarget || menuOpen || insertMenuOpen || dragState)
@@ -829,6 +1217,10 @@ function BlockHandleController({ editor }: { editor: Editor }) {
   }
 
   const setCurrentHover = (target: BlockHandleTarget | null) => {
+    if (clearHoverTimerRef.current != null) {
+      window.clearTimeout(clearHoverTimerRef.current)
+      clearHoverTimerRef.current = null
+    }
     setHoverTarget((current) => {
       if (current?.from === target?.from && current?.dom === target?.dom) return current
       return target
@@ -844,6 +1236,7 @@ function BlockHandleController({ editor }: { editor: Editor }) {
   useEffect(() => {
     return () => {
       if (rafRef.current != null) window.cancelAnimationFrame(rafRef.current)
+      if (clearHoverTimerRef.current != null) window.clearTimeout(clearHoverTimerRef.current)
     }
   }, [])
 
@@ -857,10 +1250,30 @@ function BlockHandleController({ editor }: { editor: Editor }) {
   }, [selectedTarget])
 
   useEffect(() => {
+    const syncFromSelection = () => {
+      const target = resolveBlockHandleTargetFromSelection(editor)
+      if (target) {
+        setSelectedTarget(null)
+        setCurrentHover(target)
+      }
+    }
     const onPointerMove = (event: PointerEvent) => {
       if (menuOpen || dragState) return
+      if (handleRef.current?.contains(event.target as Node)) {
+        if (activeTarget) schedulePosition(activeTarget)
+        return
+      }
       const target = resolveBlockHandleTargetFromPoint(editor, event.clientX, event.clientY, event.target as Element | null)
-      setCurrentHover(target)
+      if (target) {
+        setCurrentHover(target)
+      } else if (!selectedTarget) {
+        if (clearHoverTimerRef.current == null) {
+          clearHoverTimerRef.current = window.setTimeout(() => {
+            clearHoverTimerRef.current = null
+            setCurrentHover(null)
+          }, 450)
+        }
+      }
     }
     const onScrollOrResize = () => {
       if (menuOpen) {
@@ -890,14 +1303,19 @@ function BlockHandleController({ editor }: { editor: Editor }) {
     document.addEventListener('keydown', onKeyDown)
     window.addEventListener('scroll', onScrollOrResize, true)
     window.addEventListener('resize', onScrollOrResize)
+    editor.on('selectionUpdate', syncFromSelection)
+    editor.on('focus', syncFromSelection)
+    syncFromSelection()
     return () => {
       document.removeEventListener('pointermove', onPointerMove)
       document.removeEventListener('mousedown', onMouseDown)
       document.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('scroll', onScrollOrResize, true)
       window.removeEventListener('resize', onScrollOrResize)
+      editor.off('selectionUpdate', syncFromSelection)
+      editor.off('focus', syncFromSelection)
     }
-  }, [editor, menuOpen, insertMenuOpen, dragState])
+  }, [editor, menuOpen, insertMenuOpen, dragState, activeTarget, selectedTarget])
 
   useEffect(() => {
     if (!dragState) return
@@ -1157,13 +1575,42 @@ function BlockInsertMenu({
   onClose: () => void
 }) {
   const [filter, setFilter] = useState('')
+  const insertAt = placement === 'after' ? target.to : target.from
+  return <InsertMenuContent editor={editor} insertAt={insertAt} filter={filter} setFilter={setFilter} onClose={onClose} className="tiptap-block-insert-menu absolute left-0 top-9 z-[80] w-[260px] rounded-[16px] border border-white/10 bg-[#1c2023]/92 p-1.5 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-[24px]" />
+}
 
-  const items = [
-    { title: 'Page', label: 'Page', icon: FileText, disabled: true, group: 'Suggested' },
-    { title: 'Code', label: 'Code', icon: FileCode, group: 'Suggested', action: () => editor.chain().focus().insertContentAt(placement === 'after' ? target.to : target.from, { type: 'codeBlock' }).run() },
-    { title: 'Quote', label: 'Quote', icon: Quote, group: 'Suggested', action: () => editor.chain().focus().insertContentAt(placement === 'after' ? target.to : target.from, { type: 'blockquote', content: [{ type: 'paragraph' }] }).run() },
-    { title: 'Callout', label: 'Callout', icon: Terminal, group: 'Suggested', action: () => editor.chain().focus().insertContentAt(placement === 'after' ? target.to : target.from, { type: 'callout', content: [{ type: 'paragraph' }] }).run() },
-    { title: 'Text', label: 'Text', icon: Pilcrow, group: 'Basic blocks', action: () => editor.chain().focus().insertContentAt(placement === 'after' ? target.to : target.from, { type: 'paragraph' }).run() },
+function InsertMenuContent({
+  editor,
+  insertAt,
+  filter,
+  setFilter,
+  onClose,
+  className,
+}: {
+  editor: Editor
+  insertAt: number
+  filter: string
+  setFilter: (value: string) => void
+  onClose: () => void
+  className: string
+}) {
+  const items: Array<{
+    title: string
+    label: string
+    icon: React.ComponentType<{ className?: string }>
+    group: string
+    action?: () => boolean
+    disabled?: boolean
+  }> = [
+    { title: 'Project Tasks', label: '当前项目任务', icon: CheckSquare, group: 'Data views', action: () => editor.chain().focus().insertContentAt(insertAt, { type: 'viewBlock', attrs: createViewBlockAttrs('当前项目任务', 'Table', 'Tasks', ['任务', '状态', '负责人', '优先级', '截止日期']) }).run() },
+    { title: 'Related Documents', label: '相关文档', icon: FileText, group: 'Data views', action: () => editor.chain().focus().insertContentAt(insertAt, { type: 'viewBlock', attrs: createViewBlockAttrs('相关文档', 'List', 'Documents', ['文档', '类型', '关联', '更新日期']) }).run() },
+    { title: 'Recommendation Queue', label: '推荐处理', icon: Terminal, group: 'Data views', action: () => editor.chain().focus().insertContentAt(insertAt, { type: 'viewBlock', attrs: createViewBlockAttrs('推荐处理', 'Queue', 'Recommendations', ['动作', '来源', '预计收益', '操作']) }).run() },
+    { title: 'Mind Graph Preview', label: '关系预览', icon: Search, group: 'Data views', action: () => editor.chain().focus().insertContentAt(insertAt, { type: 'viewBlock', attrs: createViewBlockAttrs('关系预览', 'Graph', 'Mind Links', ['节点', '关系', '强度']) }).run() },
+    { title: 'Local Database', label: '局部数据库', icon: FileCode, group: 'Data views', action: () => editor.chain().focus().insertContentAt(insertAt, { type: 'viewBlock', attrs: createViewBlockAttrs('局部数据库', 'Table', 'Local Database', ['名称', '状态', '更新']) }).run() },
+    { title: 'Code', label: 'Code', icon: FileCode, group: 'Suggested', action: () => editor.chain().focus().insertContentAt(insertAt, { type: 'codeBlock' }).run() },
+    { title: 'Quote', label: 'Quote', icon: Quote, group: 'Suggested', action: () => editor.chain().focus().insertContentAt(insertAt, { type: 'blockquote', content: [{ type: 'paragraph' }] }).run() },
+    { title: 'Callout', label: 'Callout', icon: Terminal, group: 'Suggested', action: () => editor.chain().focus().insertContentAt(insertAt, { type: 'callout', content: [{ type: 'paragraph' }] }).run() },
+    { title: 'Text', label: 'Text', icon: Pilcrow, group: 'Basic blocks', action: () => editor.chain().focus().insertContentAt(insertAt, { type: 'paragraph' }).run() },
   ]
 
   const filteredItems = items.filter(item => 
@@ -1173,7 +1620,7 @@ function BlockInsertMenu({
 
   return (
     <div 
-      className="tiptap-block-insert-menu absolute left-0 top-9 z-[80] w-[260px] rounded-[16px] border border-white/10 bg-[#1c2023]/92 p-1.5 shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-[24px]"
+      className={className}
       onMouseDown={e => e.stopPropagation()}
     >
       <div className="flex items-center gap-2 px-2.5 py-2 border-b border-white/5 mb-1.5">
@@ -1198,7 +1645,7 @@ function BlockInsertMenu({
       </div>
       
       <div className="max-h-[320px] overflow-y-auto custom-scrollbar">
-        {['Suggested', 'Basic blocks'].map(group => {
+        {['Data views', 'Suggested', 'Basic blocks'].map(group => {
           const groupItems = filteredItems.filter(i => i.group === group)
           if (groupItems.length === 0) return null
           return (
@@ -1396,8 +1843,27 @@ function resolveBlockHandleTargetFromPoint(
   return null
 }
 
+function resolveBlockHandleTargetFromSelection(editor: Editor): BlockHandleTarget | null {
+  const { selection, doc } = editor.state
+  const $from = selection.$from
+  for (let depth = $from.depth; depth >= 1; depth -= 1) {
+    const node = $from.node(depth)
+    if (!SUPPORTED_BLOCK_TYPES.has(node.type.name)) continue
+    const from = $from.before(depth)
+    const dom = editor.view.nodeDOM(from)
+    return createBlockHandleTarget(doc, from, dom instanceof HTMLElement ? dom : undefined)
+  }
+  const first = doc.childCount > 0 ? doc.child(0) : null
+  if (first && SUPPORTED_BLOCK_TYPES.has(first.type.name)) {
+    const dom = editor.view.nodeDOM(0)
+    return createBlockHandleTarget(doc, 0, dom instanceof HTMLElement ? dom : undefined)
+  }
+  return null
+}
+
 function findBlockHandleElement(element: Element, root: HTMLElement): HTMLElement | null {
   const prioritySelectors = [
+    '[data-type="view-block"]',
     'li[data-type="taskItem"]',
     'li',
     '[data-type="callout"]',

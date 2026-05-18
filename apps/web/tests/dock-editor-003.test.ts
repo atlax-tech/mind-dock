@@ -547,14 +547,18 @@ describe('DOCK-EDITOR-003: Tiptap editor foundation constraints', () => {
     expect(content).not.toContain('repository')
   })
 
-  it('DraftEditorView shows the draft list by default and keeps publish actions right aligned', async () => {
+  it('DraftEditorView renders workspace tabs, domain tree, and view block inspector wiring', async () => {
     const fs = await import('fs')
     const path = await import('path')
     const content = fs.readFileSync(path.join(process.cwd(), 'app/workspace/features/editor/DraftEditorView.tsx'), 'utf-8')
-    expect(content).toContain('const [showDraftsList, setShowDraftsList] = useState(true)')
+    expect(content).toContain("type EditorTabKind = 'project' | 'domain' | 'document' | 'draft'")
+    expect(content).toContain('const [showDomainTree, setShowDomainTree] = useState(true)')
+    expect(content).toContain('buildDomainTree')
+    expect(content).toContain('OpenDialog')
+    expect(content).toContain('ViewBlockInspector')
     expect(content).toContain('editor-dock-toolbar-slot')
     expect(content).toContain('toolbarPortalTargetId')
-    expect(content).toContain('ml-auto flex items-center gap-2 shrink-0')
+    expect(content).toContain('onViewBlockSelectionChange={setSelectedViewBlock}')
     expect(content).not.toContain('max-w-[920px]')
   })
 })

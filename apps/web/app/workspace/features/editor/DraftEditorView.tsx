@@ -1,43 +1,58 @@
 'use client'
 
-import React, { useState, useCallback, useEffect } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import dynamic from 'next/dynamic'
 import {
-  PenTool,
-  Plus,
+  AlertCircle,
+  Calendar,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Columns3,
+  Database,
   FileText,
-  Trash2,
-  Send,
-  Clock,
+  Filter,
+  Folder,
+  GitBranch,
+  Layers,
+  Loader2,
+  MoreHorizontal,
   PanelLeft,
   PanelRight,
-  TerminalSquare,
+  Plus,
+  Search,
+  Send,
   SlidersHorizontal,
-  Globe,
-  Calendar,
-  Sparkles,
-  Check,
-  Loader2,
-  AlertCircle,
-  Copy,
-  RefreshCw,
-  Undo2,
-  X,
-  MoreHorizontal,
+  Table2,
+  Tags,
   Type,
-  Maximize2,
-  Columns3,
+  X,
 } from 'lucide-react'
-import { useDrafts } from './useDrafts'
-import { useEditorDraft } from './useEditorDraft'
-import type { StoredDraft, PublishMode, DiscardMode } from '@/lib/repository'
+import {
+  createDraft,
+  discardDraft,
+  listDocuments,
+  listDrafts,
+  listMindEdges,
+  listMindNodes,
+  listRecommendationDockQueue,
+  publishDraftToDocument,
+  recordRecentDocumentOpen,
+  updateArchivedEntry,
+  type RecommendationDockQueueItem,
+  type StoredDocument,
+  type StoredDraft,
+  type StoredMindEdge,
+  type StoredMindNode,
+} from '@/lib/repository'
 import type { EditorContentPayload } from '@/lib/editorContentAdapter'
-import type { EditorOutlineItem, EditorWidthMode } from './TiptapEditor'
-import { getEntryById } from '@/lib/repository'
+import type { EditorOutlineItem, EditorViewBlockData, EditorViewBlockSelection, EditorWidthMode } from './TiptapEditor'
+import { useEditorDocument, type EditorTarget } from './useEditorDocument'
+import { emit } from '@/lib/events'
 
 const TiptapEditor = dynamic(
   () => import('./TiptapEditor').then((mod) => mod.TiptapEditor),
-  { ssr: false }
+  { ssr: false },
 )
 
 const WIDTH_LABELS: Record<EditorWidthMode, string> = {
@@ -47,9 +62,42 @@ const WIDTH_LABELS: Record<EditorWidthMode, string> = {
 }
 
 const EDITOR_SURFACE_WIDTH: Record<EditorWidthMode, string> = {
-  compact: 'max-w-[640px]',
-  comfortable: 'max-w-[720px]',
-  wide: 'max-w-[860px]',
+  compact: 'max-w-[700px]',
+  comfortable: 'max-w-[820px]',
+  wide: 'max-w-[980px]',
+}
+
+type EditorTabKind = 'project' | 'domain' | 'document' | 'draft'
+
+interface EditorWorkspaceTab {
+  id: string
+  kind: EditorTabKind
+  title: string
+  path: string
+  projectName: string | null
+  rootNodeId?: string | null
+  target: EditorTarget
+  lastOpenedAt: Date
+}
+
+interface DomainTreeNode {
+  id: string
+  title: string
+  nodeType: string
+  documentId: number | null
+  draftId?: number | null
+  children: DomainTreeNode[]
+}
+
+interface OpenResult {
+  id: string
+  kind: 'project' | 'domain' | 'document'
+  title: string
+  path: string
+  typeLabel: 'project' | 'topic' | 'scatter document'
+  updatedAt: Date
+  node?: StoredMindNode
+  document?: StoredDocument
 }
 
 interface DraftEditorViewProps {
@@ -68,9 +116,7 @@ interface DraftEditorViewProps {
 
 export default function DraftEditorView({
   userId,
-  showSourcePacket,
   showInspector,
-  onToggleSourcePacket,
   onToggleInspector,
   onToast,
   initialDraftId,
@@ -80,304 +126,427 @@ export default function DraftEditorView({
   onActiveDraftMetaChange,
 }: DraftEditorViewProps) {
   const toolbarPortalTargetId = 'editor-dock-toolbar-slot'
-  const {
-    drafts,
-    loading: draftsLoading,
-    createDraft: handleCreateDraft,
-    publishDraft: handlePublishDraft,
-    discardDraft: handleDiscardDraft,
-    findActiveBySourceEntry,
-    patchDraftLocal,
-  } = useDrafts(userId)
-
-  const [activeDraftId, setActiveDraftId] = useState<number | null>(null)
-  const [showDraftsList, setShowDraftsList] = useState(true)
-  const [showFormatMenu, setShowFormatMenu] = useState(false)
-  const [showMoreMenu, setShowMoreMenu] = useState(false)
-  const [focusMode, setFocusMode] = useState(false)
+  const [documents, setDocuments] = useState<StoredDocument[]>([])
+  const [drafts, setDrafts] = useState<StoredDraft[]>([])
+  const [mindNodes, setMindNodes] = useState<StoredMindNode[]>([])
+  const [mindEdges, setMindEdges] = useState<StoredMindEdge[]>([])
+  const [recommendations, setRecommendations] = useState<RecommendationDockQueueItem[]>([])
+  const [loading, setLoading] = useState(true)
+  const [tabs, setTabs] = useState<EditorWorkspaceTab[]>([])
+  const [activeTabId, setActiveTabId] = useState<string | null>(null)
+  const [showDomainTree, setShowDomainTree] = useState(true)
+  const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(() => new Set())
+  const [showOpenDialog, setShowOpenDialog] = useState(false)
+  const [openQuery, setOpenQuery] = useState('')
+  const [selectedOpenIndex, setSelectedOpenIndex] = useState(0)
+  const [openTypeFilter, setOpenTypeFilter] = useState<'all' | 'project' | 'document'>('all')
+  const [titleOnlyFilter, setTitleOnlyFilter] = useState(false)
+  const [sortMode, setSortMode] = useState<'recent' | 'title'>('recent')
   const [widthMode, setWidthMode] = useState<EditorWidthMode>('comfortable')
   const [outline, setOutline] = useState<EditorOutlineItem[]>([])
+  const [selectedViewBlock, setSelectedViewBlock] = useState<EditorViewBlockSelection | null>(null)
   const [publishing, setPublishing] = useState(false)
-  const [discarding, setDiscarding] = useState<number | null>(null)
-  const [showPublishChoice, setShowPublishChoice] = useState(false)
-  const [showDiscardChoice, setShowDiscardChoice] = useState(false)
-  const [discardTargetId, setDiscardTargetId] = useState<number | null>(null)
-  const [showDeleteAllConfirm, setShowDeleteAllConfirm] = useState(false)
-  const [deleteConfirmText, setDeleteConfirmText] = useState('')
-  const [sourceData, setSourceData] = useState<{ type: string; title: string; subtitle: string; meta: string } | null>(null)
 
-  const {
-    title,
-    content,
-    contentJson,
-    tags,
-    project,
-    saveStatus,
-    loaded,
-    handleTitleChange,
-    handleContentChange,
-    handleTagsChange,
-    handleProjectChange,
-    flushSave,
-    resetForDraft,
-  } = useEditorDraft({
+  const activeTab = useMemo(() => tabs.find((tab) => tab.id === activeTabId) ?? null, [activeTabId, tabs])
+  const activeTarget = activeTab?.target ?? null
+  const activeProjectName = activeTab?.projectName ?? null
+
+  const editorDoc = useEditorDocument({
     userId,
-    draftId: activeDraftId,
-    enabled: activeDraftId != null,
+    target: activeTarget,
   })
+
+  const refreshWorkspaceData = useCallback(async () => {
+    if (!userId) return
+    setLoading(true)
+    try {
+      const [nextDocuments, nextDrafts, nextNodes, nextEdges, recQueue] = await Promise.all([
+        listDocuments(userId),
+        listDrafts(userId),
+        listMindNodes(userId),
+        listMindEdges(userId),
+        listRecommendationDockQueue(userId, { status: 'generated', limit: 8 }).catch(() => ({ items: [] as RecommendationDockQueueItem[], total: 0, nextCursor: null })),
+      ])
+      setDocuments(nextDocuments)
+      setDrafts(nextDrafts)
+      setMindNodes(nextNodes)
+      setMindEdges(nextEdges)
+      setRecommendations(recQueue.items)
+    } finally {
+      setLoading(false)
+    }
+  }, [userId])
+
+  useEffect(() => {
+    refreshWorkspaceData()
+  }, [refreshWorkspaceData])
 
   useEffect(() => {
     const savedWidth = window.localStorage.getItem('atlax_editor_width_mode')
-    if (savedWidth === 'compact' || savedWidth === 'comfortable' || savedWidth === 'wide') {
-      setWidthMode(savedWidth)
-    }
+    if (savedWidth === 'compact' || savedWidth === 'comfortable' || savedWidth === 'wide') setWidthMode(savedWidth)
   }, [])
 
   useEffect(() => {
     window.localStorage.setItem('atlax_editor_width_mode', widthMode)
   }, [widthMode])
 
+  const projectOptions = useMemo(() => {
+    return buildProjectOptions(documents, mindNodes)
+  }, [documents, mindNodes])
+
+  const openTab = useCallback((tab: EditorWorkspaceTab) => {
+    setTabs((prev) => {
+      const existing = prev.find((item) => item.id === tab.id)
+      if (existing) {
+        return prev.map((item) => item.id === tab.id ? { ...item, ...tab, lastOpenedAt: new Date() } : item)
+      }
+      return [...prev, tab]
+    })
+    setActiveTabId(tab.id)
+    if (tab.projectName) {
+      const expandedId = tab.rootNodeId ?? tab.projectName
+      setExpandedNodeIds((current) => new Set([...Array.from(current), expandedId]))
+    }
+  }, [])
+
+  const openDocumentTab = useCallback((document: StoredDocument, options?: { activateOnly?: boolean }) => {
+    const tab: EditorWorkspaceTab = {
+      id: `document:${document.id}`,
+      kind: 'document',
+      title: normalizeTitle(document.title),
+      path: document.project ? `${document.project} / ${normalizeTitle(document.title)}` : normalizeTitle(document.title),
+      projectName: document.project ?? null,
+      target: { kind: 'document', id: document.id },
+      lastOpenedAt: new Date(),
+    }
+    openTab(tab)
+    if (!options?.activateOnly) {
+      recordRecentDocumentOpen({ userId, documentId: document.id, title: normalizeTitle(document.title) }).catch(() => {})
+    }
+  }, [openTab, userId])
+
+  const openDraftTab = useCallback((draft: StoredDraft) => {
+    openTab({
+      id: `draft:${draft.id}`,
+      kind: 'draft',
+      title: normalizeTitle(draft.title),
+      path: draft.project ? `${draft.project} / Page / ${normalizeTitle(draft.title)}` : `Scatter / ${normalizeTitle(draft.title)}`,
+      projectName: draft.project ?? null,
+      target: { kind: 'draft', id: draft.id },
+      lastOpenedAt: new Date(),
+    })
+  }, [openTab])
+
+  const openProjectTab = useCallback((projectName: string, rootNodeId?: string | null) => {
+    const projectDocs = documents
+      .filter((doc) => doc.project === projectName)
+      .sort((a, b) => new Date(b.archivedAt ?? b.createdAt).getTime() - new Date(a.archivedAt ?? a.createdAt).getTime())
+    const defaultDoc = projectDocs.find((doc) => /overview|总览|概览/i.test(doc.title)) ?? projectDocs[0] ?? null
+    openTab({
+      id: `project:${rootNodeId ?? projectName}`,
+      kind: 'project',
+      title: projectName,
+      path: `${projectName} / ${defaultDoc ? normalizeTitle(defaultDoc.title) : 'Overview'}`,
+      projectName,
+      rootNodeId,
+      target: defaultDoc ? { kind: 'document', id: defaultDoc.id } : null,
+      lastOpenedAt: new Date(),
+    })
+  }, [documents, openTab])
+
   useEffect(() => {
+    if (loading || tabs.length > 0) return
+    if (projectOptions.length > 0) {
+      openProjectTab(projectOptions[0].title, projectOptions[0].rootNodeId)
+      return
+    }
+    if (documents.length > 0) {
+      openDocumentTab(documents[0], { activateOnly: true })
+    }
+  }, [documents, loading, openDocumentTab, openProjectTab, projectOptions, tabs.length])
+
+  useEffect(() => {
+    if (initialEntryId == null) return
+    const doc = documents.find((item) => item.id === initialEntryId)
+    if (doc) {
+      openDocumentTab(doc)
+      onInitialEntryConsumed?.()
+      onToast?.('已在 Editor 中打开正式文档')
+    }
+  }, [documents, initialEntryId, onInitialEntryConsumed, onToast, openDocumentTab])
+
+  useEffect(() => {
+    if (initialDraftId == null) return
+    const draft = drafts.find((item) => item.id === initialDraftId)
+    if (draft) {
+      openDraftTab(draft)
+      onInitialDraftConsumed?.()
+    }
+  }, [drafts, initialDraftId, onInitialDraftConsumed, openDraftTab])
+
+  useEffect(() => {
+    onActiveDraftMetaChange?.({
+      id: activeTarget?.kind === 'draft' ? activeTarget.id : null,
+      title: editorDoc.title || activeTab?.title || 'Untitled',
+      status: activeTarget?.kind === 'draft' ? 'active' : activeTarget?.kind === 'document' ? 'document' : 'idle',
+    })
+  }, [activeTab?.title, activeTarget, editorDoc.title, onActiveDraftMetaChange])
+
+  const domainTree = useMemo(() => {
+    if (!activeProjectName) return null
+    return buildDomainTree(activeProjectName, documents, drafts, mindNodes, mindEdges)
+  }, [activeProjectName, documents, drafts, mindEdges, mindNodes])
+
+  const viewBlockData = useMemo<EditorViewBlockData>(() => {
+    const projectDocuments = activeProjectName
+      ? documents.filter((doc) => doc.project === activeProjectName)
+      : documents
+    return {
+      documents: projectDocuments.slice(0, 12).map((doc) => ({
+        id: `document:${doc.id}`,
+        name: normalizeTitle(doc.title),
+        status: doc.type || 'document',
+        meta: doc.project ?? 'Scatter',
+        updated: formatTime(doc.archivedAt ?? doc.createdAt),
+      })),
+      recommendations: recommendations.slice(0, 12).map((item) => ({
+        id: item.id,
+        name: item.recommendationType,
+        status: item.status,
+        meta: `${Math.round(item.confidenceScore * 100)}%`,
+        updated: formatTime(item.updatedAt),
+      })),
+      mindLinks: mindEdges.slice(0, 12).map((edge) => ({
+        id: edge.id,
+        name: `${resolveMindNodeLabel(mindNodes, edge.sourceNodeId)} -> ${resolveMindNodeLabel(mindNodes, edge.targetNodeId)}`,
+        status: edge.edgeType,
+        meta: edge.source,
+        updated: formatTime(edge.updatedAt),
+      })),
+    }
+  }, [activeProjectName, documents, mindEdges, mindNodes, recommendations])
+
+  const flattenedTree = useMemo(() => {
+    if (!domainTree) return []
+    return flattenTree(domainTree, expandedNodeIds)
+  }, [domainTree, expandedNodeIds])
+
+  const openResults = useMemo(() => {
+    const projectResults: OpenResult[] = projectOptions.map((project) => ({
+      id: `project:${project.rootNodeId ?? project.title}`,
+      kind: project.kind,
+      title: project.title,
+      path: project.path,
+      typeLabel: project.kind === 'domain' ? 'topic' : 'project',
+      updatedAt: project.updatedAt,
+      node: project.node,
+    }))
+    const docResults: OpenResult[] = documents.map((document) => ({
+      id: `document:${document.id}`,
+      kind: 'document',
+      title: normalizeTitle(document.title),
+      path: document.project ? `~/${document.project}` : '~/Scatter',
+      typeLabel: 'scatter document',
+      updatedAt: new Date(document.archivedAt ?? document.createdAt),
+      document,
+    }))
+    const all = [...projectResults, ...docResults]
+    const query = openQuery.trim().toLowerCase()
+    return all
+      .filter((item) => openTypeFilter === 'all' || (openTypeFilter === 'project' ? item.kind !== 'document' : item.kind === 'document'))
+      .filter((item) => {
+        if (!query) return true
+        if (titleOnlyFilter) return item.title.toLowerCase().includes(query)
+        return item.title.toLowerCase().includes(query) || item.path.toLowerCase().includes(query)
+      })
+      .sort((a, b) => sortMode === 'title' ? a.title.localeCompare(b.title) : b.updatedAt.getTime() - a.updatedAt.getTime())
+      .slice(0, 40)
+  }, [documents, openQuery, openTypeFilter, projectOptions, sortMode, titleOnlyFilter])
+
+  const selectedOpenResult = openResults[Math.min(selectedOpenIndex, Math.max(0, openResults.length - 1))] ?? null
+
+  const handleOpenResult = useCallback((result: OpenResult) => {
+    if (result.kind === 'project' || result.kind === 'domain') {
+      openProjectTab(result.title, result.node?.id ?? null)
+    } else if (result.document) {
+      openDocumentTab(result.document)
+    }
+    setShowOpenDialog(false)
+  }, [openDocumentTab, openProjectTab])
+
+  useEffect(() => {
+    if (!showOpenDialog) return
     const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'f') {
+      if (event.key === 'Escape') setShowOpenDialog(false)
+      if (event.key === 'ArrowDown') {
         event.preventDefault()
-        setFocusMode((v) => !v)
-        setShowFormatMenu(false)
-        setShowMoreMenu(false)
+        setSelectedOpenIndex((index) => Math.min(index + 1, Math.max(0, openResults.length - 1)))
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        setSelectedOpenIndex((index) => Math.max(0, index - 1))
+      }
+      if (event.key === 'Enter' && selectedOpenResult) {
+        event.preventDefault()
+        handleOpenResult(selectedOpenResult)
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  }, [handleOpenResult, openResults.length, selectedOpenResult, showOpenDialog])
 
-  const handleLocalTitleChange = useCallback((newTitle: string) => {
-    handleTitleChange(newTitle)
-    if (activeDraftId != null) {
-      patchDraftLocal(activeDraftId, { title: newTitle })
-    }
-  }, [activeDraftId, handleTitleChange, patchDraftLocal])
-
-  const handleLocalContentChange = useCallback((payload: EditorContentPayload) => {
-    handleContentChange(payload)
-    if (activeDraftId != null) {
-      patchDraftLocal(activeDraftId, {
-        content: payload.content,
-        plainText: payload.plainText,
-        html: payload.html,
-        markdown: payload.markdown,
-        contentJson: payload.contentJson,
+  const handleTreeNodeOpen = useCallback((node: DomainTreeNode) => {
+    if (node.children.length > 0 || node.nodeType !== 'document') {
+      setExpandedNodeIds((current) => {
+        const next = new Set(current)
+        if (next.has(node.id)) next.delete(node.id)
+        else next.add(node.id)
+        return next
       })
     }
-  }, [activeDraftId, handleContentChange, patchDraftLocal])
-
-  const onCreateNewDraft = useCallback(async () => {
-    if (showSourcePacket) onToggleSourcePacket()
-    if (showInspector) onToggleInspector()
-    const draft = await handleCreateDraft('Untitled', '')
-    if (draft) {
-      setActiveDraftId(draft.id)
-      resetForDraft(draft)
-      setShowFormatMenu(false)
-      setShowMoreMenu(false)
-      onToast?.('新草稿已创建')
+    if (node.documentId != null) {
+      const doc = documents.find((item) => item.id === node.documentId)
+      if (doc) openDocumentTab(doc)
     }
-  }, [handleCreateDraft, resetForDraft, onToast, showSourcePacket, showInspector, onToggleSourcePacket, onToggleInspector])
-
-  const onSelectDraft = useCallback((draft: StoredDraft) => {
-    setActiveDraftId(draft.id)
-    resetForDraft(draft)
-    setShowFormatMenu(false)
-    setShowMoreMenu(false)
-  }, [resetForDraft])
-
-  useEffect(() => {
-    if (initialDraftId != null && initialDraftId !== activeDraftId) {
-      setActiveDraftId(initialDraftId)
-      const draft = drafts.find((d) => d.id === initialDraftId)
-      if (draft) {
-        resetForDraft(draft)
-      }
-      onInitialDraftConsumed?.()
+    if (node.draftId != null) {
+      const draft = drafts.find((item) => item.id === node.draftId)
+      if (draft) openDraftTab(draft)
     }
-  }, [initialDraftId, activeDraftId, onInitialDraftConsumed, drafts, resetForDraft])
+  }, [documents, drafts, openDocumentTab, openDraftTab])
 
-  useEffect(() => {
-    if (initialEntryId == null) return
-    let cancelled = false
-    ;(async () => {
-      const existingDraft = await findActiveBySourceEntry(initialEntryId)
-      if (cancelled) return
-      if (existingDraft) {
-        setActiveDraftId(existingDraft.id)
-        resetForDraft(existingDraft)
-        onInitialEntryConsumed?.()
-        onToast?.('已打开关联此文档的草稿')
-        return
+  const closeTab = useCallback((tabId: string) => {
+    setTabs((prev) => {
+      const next = prev.filter((tab) => tab.id !== tabId)
+      if (activeTabId === tabId) {
+        setActiveTabId(next[next.length - 1]?.id ?? null)
       }
-      const entry = await getEntryById(userId, initialEntryId)
-      if (cancelled) return
-      if (!entry) {
-        onToast?.('无法打开 Editor：文档不存在或已被删除')
-        onInitialEntryConsumed?.()
-        return
-      }
-      const draft = await handleCreateDraft(
-        entry.title || 'Untitled',
-        entry.content || '',
-        initialEntryId,
-        'entry',
-        entry.tags ?? [],
-        entry.project ?? null,
-        null,
-        {
-          contentJson: entry.contentJson ?? null,
-          plainText: entry.plainText ?? entry.content ?? '',
-          html: entry.html,
-          markdown: entry.markdown ?? entry.content ?? '',
-        },
-      )
-      if (cancelled) return
-      if (!draft) {
-        onToast?.('无法打开 Editor：草稿创建失败')
-        onInitialEntryConsumed?.()
-        return
-      }
-      setActiveDraftId(draft.id)
-      resetForDraft(draft)
-      onInitialEntryConsumed?.()
-      onToast?.('已从归档文档创建草稿')
-    })()
-    return () => { cancelled = true }
-  }, [initialEntryId, handleCreateDraft, resetForDraft, onToast, findActiveBySourceEntry, onInitialEntryConsumed])
+      return next
+    })
+  }, [activeTabId])
 
-  const executePublish = useCallback(async (draftId: number, publishMode: PublishMode) => {
+  const handleCreateDraft = useCallback(async () => {
+    const draft = await createDraft(userId, 'Untitled', '', undefined, undefined, [], null, null)
+    if (!draft) return
+    setDrafts((prev) => [draft, ...prev])
+    openDraftTab(draft)
+    emit({ type: 'draft_created', draftId: draft.id })
+    setShowOpenDialog(false)
+    onToast?.('已新建散点 Page')
+  }, [onToast, openDraftTab, userId])
+
+  const handleCreateProjectDraft = useCallback(async () => {
+    const projectName = activeProjectName
+    if (!projectName) {
+      await handleCreateDraft()
+      return
+    }
+    const draft = await createDraft(userId, 'Untitled', '', undefined, undefined, [], projectName, null)
+    if (!draft) return
+    setDrafts((prev) => [draft, ...prev.filter((item) => item.id !== draft.id)])
+    setExpandedNodeIds((current) => {
+      const next = new Set(current)
+      if (domainTree) next.add(domainTree.id)
+      next.add(projectName)
+      return next
+    })
+    openDraftTab(draft)
+    emit({ type: 'draft_created', draftId: draft.id })
+    setShowOpenDialog(false)
+    onToast?.('已在当前 Domain 新增 Page')
+  }, [activeProjectName, domainTree, handleCreateDraft, onToast, openDraftTab, userId])
+
+  const handlePublish = useCallback(async () => {
+    if (!activeTarget) return
+    await editorDoc.flushSave()
+    if (activeTarget.kind === 'document') {
+      onToast?.('文档已保存')
+      return
+    }
     setPublishing(true)
-    setShowPublishChoice(false)
     try {
-      await flushSave()
-      const result = await handlePublishDraft(draftId, publishMode)
+      const result = await publishDraftToDocument(userId, activeTarget.id, 'update_original')
       if (result.emptyDraft) {
-        onToast?.('空草稿不能发布，请先编写内容')
+        onToast?.('空 Draft 不能发布，请先编写内容')
         return
       }
       if (result.nameConflict) {
         onToast?.('同名文档已存在于当前层级，请修改标题后重试')
         return
       }
-      if (result.draft && result.entryId) {
-        setActiveDraftId(null)
-        if (publishMode === 'update_original' && result.draft.sourceEntryId != null) {
-          onToast?.(`已更新原文档 (ID: ${result.draft.sourceEntryId})`)
-        } else {
-          onToast?.(`已发布为新文档 (ID: ${result.entryId})`)
-        }
+      if (result.entry) {
+        await refreshWorkspaceData()
+        setDrafts((prev) => prev.filter((draft) => draft.id !== activeTarget.id))
+        setTabs((prev) => prev.filter((tab) => tab.id !== `draft:${activeTarget.id}`))
+        openDocumentTab(result.entry)
+        onToast?.(`已发布为正式文档 (ID: ${result.entry.id})`)
       } else {
         onToast?.('发布失败')
       }
     } finally {
       setPublishing(false)
     }
-  }, [flushSave, handlePublishDraft, onToast])
+  }, [activeTarget, editorDoc, onToast, openDocumentTab, refreshWorkspaceData, userId])
 
-  const onPublish = useCallback(async () => {
-    if (!activeDraftId) return
-    const activeDraft = drafts.find((d) => d.id === activeDraftId)
-    if (activeDraft?.sourceEntryId != null) {
-      setShowPublishChoice(true)
+  const handleArchiveActive = useCallback(async () => {
+    if (!activeTarget || !activeTabId) return
+    if (activeTarget.kind === 'draft') {
+      await discardDraft(userId, activeTarget.id, 'abandon_changes')
+      setDrafts((prev) => prev.filter((draft) => draft.id !== activeTarget.id))
+      closeTab(activeTabId)
+      onToast?.('Page 已移出 Editor')
       return
     }
-    await executePublish(activeDraftId, 'update_original')
-  }, [activeDraftId, drafts, executePublish])
+    await updateArchivedEntry(userId, activeTarget.id, { archivedAt: new Date() })
+    setDocuments((prev) => prev.filter((doc) => doc.id !== activeTarget.id))
+    closeTab(activeTabId)
+    onToast?.('文档已归档')
+  }, [activeTabId, activeTarget, closeTab, onToast, userId])
 
-  const executeDiscard = useCallback(async (draftId: number, discardMode: DiscardMode) => {
-    setDiscarding(draftId)
-    setShowDiscardChoice(false)
-    try {
-      const ok = await handleDiscardDraft(draftId, discardMode)
-      if (ok) {
-        if (activeDraftId === draftId) {
-          setActiveDraftId(null)
-        }
-        if (discardMode === 'abandon_changes') {
-          onToast?.('已放弃更改')
-        } else {
-          onToast?.('已丢弃草稿并归档原文档')
-        }
-      }
-    } finally {
-      setDiscarding(null)
+  const handleLocalTitleChange = useCallback((nextTitle: string) => {
+    editorDoc.handleTitleChange(nextTitle)
+    if (!activeTab) return
+    setTabs((prev) => prev.map((tab) => tab.id === activeTab.id ? { ...tab, title: normalizeTitle(nextTitle) } : tab))
+    if (activeTarget?.kind === 'draft') {
+      setDrafts((prev) => prev.map((draft) => draft.id === activeTarget.id ? { ...draft, title: nextTitle, updatedAt: new Date() } : draft))
     }
-  }, [activeDraftId, handleDiscardDraft, onToast])
-
-  const onDiscard = useCallback(async (draftId: number) => {
-    const targetDraft = drafts.find((d) => d.id === draftId)
-    if (targetDraft?.sourceEntryId != null) {
-      setDiscardTargetId(draftId)
-      setShowDiscardChoice(true)
-      return
+    if (activeTarget?.kind === 'document') {
+      setDocuments((prev) => prev.map((doc) => doc.id === activeTarget.id ? { ...doc, title: nextTitle, archivedAt: new Date() } : doc))
     }
-    await executeDiscard(draftId, 'abandon_changes')
-  }, [drafts, executeDiscard])
+  }, [activeTab, activeTarget, editorDoc])
 
-  const activeDraft = drafts.find((d) => d.id === activeDraftId)
-  const displayTitle = normalizeTitle(loaded ? title : activeDraft?.title)
-  const sourceCreatedAt = activeDraft ? formatTime(activeDraft.createdAt) : ''
+  const handleLocalContentChange = useCallback((payload: EditorContentPayload) => {
+    editorDoc.handleContentChange(payload)
+  }, [editorDoc])
 
-  useEffect(() => {
-    onActiveDraftMetaChange?.({
-      id: activeDraftId,
-      title: displayTitle,
-      status: activeDraftId == null ? 'idle' : 'active',
-    })
-  }, [activeDraftId, displayTitle, onActiveDraftMetaChange])
-
-  useEffect(() => {
-    if (activeDraftId == null) {
-      setSourceData(null)
-      return
+  const handleProjectChange = useCallback((project: string | null) => {
+    editorDoc.handleProjectChange(project)
+    if (!activeTarget) return
+    if (activeTarget.kind === 'draft') {
+      setDrafts((prev) => prev.map((draft) => draft.id === activeTarget.id ? { ...draft, project, updatedAt: new Date() } : draft))
+    } else {
+      setDocuments((prev) => prev.map((doc) => doc.id === activeTarget.id ? { ...doc, project, archivedAt: new Date() } : doc))
     }
-    const draft = drafts.find((d) => d.id === activeDraftId)
-    if (!draft?.sourceEntryId) {
-      setSourceData({ type: 'Direct Draft', title: '直接创建的草稿', subtitle: 'Editor Draft', meta: '' })
-      return
+    setTabs((prev) => prev.map((tab) => tab.id === activeTabId ? {
+      ...tab,
+      projectName: project,
+      path: project ? `${project} / ${tab.kind === 'draft' ? 'Draft / ' : ''}${tab.title}` : tab.title,
+    } : tab))
+    if (project) {
+      setExpandedNodeIds((current) => new Set([...Array.from(current), project]))
     }
-    let cancelled = false
-    ;(async () => {
-      const entry = await getEntryById(userId, draft.sourceEntryId as number)
-      if (cancelled) return
-      if (entry) {
-        const dateStr = entry.archivedAt
-          ? new Date(entry.archivedAt).toLocaleDateString('zh-CN')
-          : new Date(entry.createdAt).toLocaleDateString('zh-CN')
-        const tagsCount = entry.tags?.length ?? 0
-        const projectStr = entry.project ?? ''
-        const metaParts: string[] = [dateStr]
-        if (tagsCount > 0) metaParts.push(`${tagsCount} 个标签`)
-        if (projectStr) metaParts.push(projectStr)
-        setSourceData({
-          type: 'Document',
-          title: entry.title || 'Untitled',
-          subtitle: `归档文档 #${entry.id}`,
-          meta: metaParts.join(' · '),
-        })
-      } else {
-        setSourceData({ type: 'Document', title: '文档已删除', subtitle: `文档 #${draft.sourceEntryId}`, meta: '' })
-      }
-    })()
-    return () => { cancelled = true }
-  }, [activeDraftId, drafts])
+  }, [activeTabId, activeTarget, editorDoc])
 
-  const saveStatusLabel = (): string => {
-    switch (saveStatus) {
+  const saveStatusLabel = () => {
+    switch (editorDoc.saveStatus) {
       case 'saving': return 'Saving...'
-      case 'saved': return 'Local · Saved'
+      case 'saved': return activeTarget?.kind === 'document' ? 'Document · Saved' : 'Page · Saved'
       case 'failed': return 'Save failed'
-      default: return activeDraftId == null ? '' : 'Unsaved'
+      default: return activeTarget ? 'Unsaved' : ''
     }
   }
 
   const saveStatusIcon = () => {
-    switch (saveStatus) {
+    switch (editorDoc.saveStatus) {
       case 'saving': return <Loader2 size={11} className="animate-spin text-slate-400" />
       case 'saved': return <Check size={11} className="text-emerald-400" />
       case 'failed': return <AlertCircle size={11} className="text-red-400" />
@@ -385,680 +554,779 @@ export default function DraftEditorView({
     }
   }
 
-  function formatTime(date: Date) {
-    const d = new Date(date)
-    const now = new Date()
-    const diffMs = now.getTime() - d.getTime()
-    const diffMin = Math.floor(diffMs / 60000)
-    if (diffMin < 1) return '刚刚'
-    if (diffMin < 60) return `${diffMin}分钟前`
-    const diffHr = Math.floor(diffMin / 60)
-    if (diffHr < 24) return `${diffHr}小时前`
-    return d.toLocaleDateString('zh-CN')
-  }
+  const isScatterDocument = activeTab?.kind === 'document' && !activeTab.projectName
 
   return (
-    <div className={`w-full h-full flex gap-0 animate-in fade-in duration-500 overflow-hidden text-sm ${focusMode ? 'bg-[#090d0f]' : ''}`} data-focus-mode={focusMode ? 'true' : 'false'}>
-
-      {/* 左侧：Drafts 列表 */}
-      {showDraftsList && !focusMode && (
-        <div className="w-[240px] flex flex-col shrink-0 border-r border-white/[0.045] bg-[#0d1215]/80">
-          <div className="flex items-center justify-between px-3 py-3 border-b border-white/[0.07]">
-            <div className="flex items-center gap-2 text-white font-medium text-xs">
-              <PenTool className="w-3.5 h-3.5" /> Drafts
-            </div>
-            <button
-              onClick={onCreateNewDraft}
-              className="p-1 rounded-md hover:bg-white/10 text-[#899298] hover:text-white transition-colors"
-              title="新建草稿"
-            >
-              <Plus className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
-          <div className="flex-1 overflow-y-auto custom-scrollbar py-1">
-            {draftsLoading ? (
-              <div className="px-3 py-6 text-center text-[10px] text-[#899298]">Loading...</div>
-            ) : drafts.length === 0 ? (
-              <div className="px-3 py-6 text-center text-[10px] text-[#899298]">
-                暂无草稿<br />
-                <span className="text-[9px]">点击 + 创建新草稿</span>
-              </div>
-            ) : (
-              drafts.map((draft) => (
-                <div
-                  key={draft.id}
-                  onClick={() => onSelectDraft(draft)}
-                  className={`group px-3 py-2.5 cursor-pointer transition-colors border-l-2 ${
-                    activeDraftId === draft.id
-                      ? 'bg-white/[0.04] border-l-[#86d7ff]/70'
-                      : 'border-l-transparent hover:bg-white/[0.03]'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-1">
-                    <div className="flex-1 min-w-0">
-                      <div className="text-[12px] text-white truncate leading-tight">
-                        {normalizeTitle(draft.title)}
-                      </div>
-                      <div className="mt-1 line-clamp-2 text-[10px] leading-snug text-[#899298]/80">
-                        {draftExcerpt(draft)}
-                      </div>
-                      <div className="flex items-center gap-1.5 mt-1.5">
-                        <Clock className="w-2.5 h-2.5 text-[#899298]" />
-                        <span className="text-[9px] text-[#899298]">{formatTime(draft.updatedAt)}</span>
-                        <span className="text-[9px] text-[#59646b]">·</span>
-                        <span className="text-[9px] text-[#899298]">{draftWordCount(draft)} 字</span>
-                      </div>
-                    </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onDiscard(draft.id)
-                      }}
-                      disabled={discarding === draft.id}
-                      className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-white/10 text-[#899298] hover:text-red-400 transition-all shrink-0"
-                      title="丢弃草稿"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className="px-3 py-2 border-t border-white/[0.07]">
-            <button
-              onClick={onCreateNewDraft}
-              className="w-full py-1.5 rounded-lg bg-white/5 border border-white/[0.07] text-[10px] text-[#899298] hover:text-white hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5"
-            >
-              <Plus className="w-3 h-3" /> 新建草稿
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* 左侧：源数据包 (Source Packet) - 保持 Golden UI */}
-      {showSourcePacket && activeDraftId != null && !focusMode && (
-        <div className="w-[260px] flex flex-col shrink-0 overflow-y-auto custom-scrollbar pb-10 border-r border-white/[0.07]">
-          <div className="flex justify-between items-center mb-2 px-4 pt-4">
-            <div className="flex items-center gap-2 text-white font-medium text-sm">
-              <TerminalSquare className="w-4 h-4" /> 源数据包
-            </div>
-            {sourceData && (
-              <span className="px-1.5 py-0.5 rounded-full bg-white/10 text-[9px] text-[#899298] font-medium tracking-wider">{sourceData.type === 'Direct Draft' ? 'Direct' : '1 个项目'}</span>
-            )}
-          </div>
-          <div className="flex items-center gap-1.5 text-[#899298] text-[11px] mb-5 px-4">
-            <Globe className="w-3 h-3" /> 源自 <span className="text-white">{sourceData?.type ?? '—'}</span>
-          </div>
-          <div className="px-4">
-            {sourceData?.type === 'Direct Draft' ? (
-              <div className="p-3.5 flex flex-col gap-2.5 bg-[#1c2023]/40 backdrop-blur-[20px] border-[0.5px] border-white/5 rounded-[16px] relative">
-                <div className="absolute left-0 top-0 w-1 h-full bg-[#9cf4d4]/80 rounded-l-[16px]"></div>
-                <div className="flex justify-between items-center">
-                  <div className="flex items-center gap-1.5 text-[#9cf4d4] text-[11px] font-medium">
-                    <FileText className="w-3 h-3" /> Direct Draft
-                  </div>
-                </div>
-                <p className="text-[#899298] text-[11px] leading-relaxed">
-                  此草稿由 Editor 直接创建，暂无关联的源数据包。
-                </p>
-              </div>
-            ) : sourceData ? (
-              <div className="p-3.5 flex flex-col gap-2.5 bg-[#1c2023]/40 backdrop-blur-[20px] border-[0.5px] border-white/5 rounded-[16px] relative">
-                <div className="absolute left-0 top-0 w-1 h-full bg-[#86d7ff]/80 rounded-l-[16px]"></div>
-                <div className="flex justify-between items-center">
-                  <div className="flex items-center gap-1.5 text-[#86d7ff] text-[11px] font-medium">
-                    <FileText className="w-3 h-3" /> {sourceData.type}
-                  </div>
-                </div>
-                <div className="text-white text-[12px] font-medium leading-tight truncate">
-                  {sourceData.title}
-                </div>
-                <div className="text-[#899298] text-[10px]">
-                  {sourceData.subtitle}
-                </div>
-                {sourceData.meta && (
-                  <div className="text-[#899298] text-[10px] leading-relaxed">
-                    {sourceData.meta}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="p-3.5 flex flex-col gap-2.5 bg-[#1c2023]/40 backdrop-blur-[20px] border-[0.5px] border-white/5 rounded-[16px]">
-                <p className="text-[#899298] text-[11px] leading-relaxed">
-                  加载中...
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* 中间：编辑器主体 (Main Canvas) */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {/* 顶部工具栏 */}
-        <div className={`relative h-[38px] bg-[#0d1215]/85 border-b border-white/[0.05] flex items-center px-4 gap-2 shrink-0 ${focusMode ? 'justify-end bg-transparent border-transparent' : ''}`}>
-          {!focusMode && (
-            <button
-              onClick={() => setShowDraftsList((v) => !v)}
-              className={`p-1.5 rounded hover:bg-white/10 transition-colors ${showDraftsList ? 'text-white' : 'text-[#899298] hover:text-white'}`}
-              title="切换草稿列表"
-            >
-              <PanelLeft className="w-3.5 h-3.5" />
-            </button>
-          )}
-
-          {activeDraftId != null && (
-            <>
-              {!focusMode && <div className="w-px h-4 bg-white/[0.07] mx-1" />}
-              {!focusMode && <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#86d7ff]/8 text-[#86d7ff]/80 uppercase font-semibold">草稿</span>}
-              <div
-                id={toolbarPortalTargetId}
-                className={`absolute left-12 top-[42px] z-40 h-8 min-w-[340px] rounded-lg border border-white/[0.08] bg-[#151a1e]/95 px-1 shadow-2xl backdrop-blur-xl transition-all ${
-                  showFormatMenu && !focusMode
-                    ? 'pointer-events-auto translate-y-0 opacity-100'
-                    : 'pointer-events-none -translate-y-1 opacity-0'
+    <div className="w-full h-full flex flex-col overflow-hidden text-sm animate-in fade-in duration-300">
+      <div className="h-[42px] shrink-0 border-b border-white/[0.06] bg-[#0d1215]/85 flex items-center">
+        <div className="flex h-full min-w-0 flex-1 items-center overflow-x-auto custom-scrollbar">
+          {tabs.map((tab) => {
+            const active = tab.id === activeTabId
+            const Icon = tab.kind === 'project' || tab.kind === 'domain' ? Folder : tab.kind === 'draft' ? Type : FileText
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTabId(tab.id)}
+                className={`group flex h-full min-w-[150px] max-w-[240px] items-center gap-2 border-r border-white/[0.055] px-3 text-left transition-colors ${
+                  active ? 'bg-white/[0.045] text-white shadow-[inset_0_-1px_0_#86d7ff]' : 'text-[#899298] hover:bg-white/[0.03] hover:text-white'
                 }`}
-              />
-              <div className="ml-auto flex items-center gap-2 shrink-0">
-                <span className="flex items-center gap-1.5 text-[11px] text-[#899298]/75">
-                  {saveStatusIcon()}
-                  {saveStatusLabel()}
-                </span>
-                {!focusMode && (
-                  <button
-                    type="button"
-                    onClick={() => setShowFormatMenu((v) => !v)}
-                    className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-colors ${showFormatMenu ? 'bg-white/10 text-white' : 'text-[#899298] hover:bg-white/[0.08] hover:text-white'}`}
-                    title="格式工具"
-                  >
-                    <Type className="w-3.5 h-3.5" /> 格式
-                  </button>
-                )}
-                <button
-                  onClick={onPublish}
-                  disabled={publishing || !activeDraftId}
-                  className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#86d7ff]/8 text-[#86d7ff]/85 text-[11px] font-medium hover:bg-[#86d7ff]/16 hover:text-[#86d7ff] transition-colors disabled:opacity-40"
-                  title="发布为正式文档"
+              >
+                <Icon className={`h-3.5 w-3.5 shrink-0 ${active ? 'text-[#86d7ff]' : 'text-[#899298]'}`} />
+                <span className="min-w-0 flex-1 truncate text-[12px] font-medium">{tab.path}</span>
+                <span
+                  onClick={(event) => { event.stopPropagation(); closeTab(tab.id) }}
+                  className="rounded p-0.5 opacity-0 transition-opacity hover:bg-white/10 group-hover:opacity-100"
                 >
-                  <Send className="w-3 h-3" /> {publishing ? '发布中...' : '发布'}
-                </button>
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setShowMoreMenu((v) => !v)}
-                    className={`p-1.5 rounded-md transition-colors ${showMoreMenu ? 'bg-white/10 text-white' : 'text-[#899298] hover:bg-white/10 hover:text-white'}`}
-                    title="更多"
-                  >
-                    <MoreHorizontal className="w-3.5 h-3.5" />
-                  </button>
-                  {showMoreMenu && (
-                    <div className="absolute right-0 top-full z-50 mt-2 w-56 rounded-xl border border-white/10 bg-[#1c2023]/95 p-1.5 shadow-2xl backdrop-blur-xl">
-                      <button
-                        type="button"
-                        onClick={() => { setFocusMode((v) => !v); setShowMoreMenu(false); setShowFormatMenu(false) }}
-                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-[#d8dde2] hover:bg-white/[0.07]"
-                      >
-                        <Maximize2 className="w-3.5 h-3.5 text-[#899298]" /> {focusMode ? '退出 Focus Mode' : 'Focus Mode'}
-                      </button>
-                      <div className="my-1 h-px bg-white/[0.07]" />
-                      <div className="px-3 py-1.5 text-[10px] font-semibold uppercase text-[#899298]">正文宽度</div>
-                      {(Object.keys(WIDTH_LABELS) as EditorWidthMode[]).map((mode) => (
-                        <button
-                          key={mode}
-                          type="button"
-                          onClick={() => setWidthMode(mode)}
-                          className={`flex w-full items-center justify-between rounded-lg px-3 py-1.5 text-left text-[12px] hover:bg-white/[0.07] ${widthMode === mode ? 'text-[#86d7ff]' : 'text-[#d8dde2]'}`}
-                        >
-                          <span className="flex items-center gap-2"><Columns3 className="w-3.5 h-3.5 text-[#899298]" /> {WIDTH_LABELS[mode]}</span>
-                          {widthMode === mode && <Check className="w-3 h-3" />}
-                        </button>
-                      ))}
-                      <div className="my-1 h-px bg-white/[0.07]" />
-                      <button
-                        type="button"
-                        onClick={() => { onToggleSourcePacket(); setShowMoreMenu(false) }}
-                        className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-[12px] text-[#d8dde2] hover:bg-white/[0.07]"
-                      >
-                        <span className="flex items-center gap-2"><PanelLeft className="w-3.5 h-3.5 text-[#899298]" /> 源数据包</span>
-                        <span className="text-[10px] text-[#899298]">{showSourcePacket ? '隐藏' : '显示'}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { onToggleInspector(); setShowMoreMenu(false) }}
-                        className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-[12px] text-[#d8dde2] hover:bg-white/[0.07]"
-                      >
-                        <span className="flex items-center gap-2"><PanelRight className="w-3.5 h-3.5 text-[#899298]" /> 检查器</span>
-                        <span className="text-[10px] text-[#899298]">{showInspector ? '隐藏' : '显示'}</span>
-                      </button>
-                      <div className="my-1 h-px bg-white/[0.07]" />
-                      <button
-                        type="button"
-                        onClick={() => { if (activeDraftId) onDiscard(activeDraftId); setShowMoreMenu(false) }}
-                        disabled={!activeDraftId}
-                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-red-300 hover:bg-red-500/10 disabled:opacity-40"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" /> 丢弃草稿
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </>
-          )}
-
-          {activeDraftId == null && !focusMode && (
-            <>
-              <div className="flex-1" />
-              <button
-                onClick={onToggleSourcePacket}
-                className="p-1.5 rounded hover:bg-white/10 text-[#899298] hover:text-white transition-colors"
-                title="源数据包"
-              >
-                <PanelLeft className="w-3.5 h-3.5" />
+                  <X className="h-3 w-3" />
+                </span>
               </button>
-              <button
-                onClick={onToggleInspector}
-                className="p-1.5 rounded hover:bg-white/10 text-[#899298] hover:text-white transition-colors"
-                title="检查器"
-              >
-                <PanelRight className="w-3.5 h-3.5" />
-              </button>
-            </>
-          )}
+            )
+          })}
+          <button
+            type="button"
+            onClick={() => { setSelectedOpenIndex(0); setShowOpenDialog(true) }}
+            className="flex h-full w-11 shrink-0 items-center justify-center border-r border-white/[0.055] text-[#899298] hover:bg-white/[0.04] hover:text-white"
+            title="打开项目或散点文档"
+          >
+            <Plus className="h-4 w-4" />
+          </button>
         </div>
-
-        {/* 编辑区域 */}
-        <div className="flex-1 overflow-y-auto custom-scrollbar">
-          {activeDraftId == null ? (
-            <div className="flex flex-col items-center justify-center h-full text-slate-500">
-              <PenTool size={32} className="opacity-15 mb-4" />
-              <p className="text-sm text-slate-500 mb-4">选择一个草稿开始编辑，或创建新草稿</p>
-              <button
-                onClick={onCreateNewDraft}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 border border-white/[0.07] text-[12px] text-white hover:bg-white/10 transition-colors"
-              >
-                <Plus className="w-4 h-4" /> 新建草稿
-              </button>
-            </div>
-          ) : !loaded ? (
-            <div className="flex items-center justify-center h-full">
-              <Loader2 className="w-5 h-5 animate-spin text-slate-500" />
-            </div>
-          ) : (
-            <div className={`${EDITOR_SURFACE_WIDTH[widthMode]} relative w-full mx-auto px-8 pb-20 pt-8`}>
-              <div className="pointer-events-none absolute inset-x-2 top-0 h-[520px] rounded-[32px] bg-[radial-gradient(circle_at_50%_0%,rgba(255,255,255,0.035),rgba(255,255,255,0.012)_42%,transparent_76%)]" />
-              <div className="relative">
-              <div className="flex items-center gap-2.5 text-[11px] text-[#899298] mb-4">
-                <span className="flex items-center gap-1.5"><Calendar className="w-3 h-3" /> {sourceCreatedAt}</span>
-                <span>•</span>
-                <span>{content.length} 字</span>
-                <span>•</span>
-                <span className="px-1.5 py-0.5 rounded bg-[#86d7ff]/8 text-[#86d7ff]/80 text-[9px] uppercase font-semibold">草稿</span>
-              </div>
-
-              <input
-                type="text"
-                value={title}
-                onChange={(e) => handleLocalTitleChange(e.target.value)}
-                className="w-full bg-transparent text-[30px] font-bold text-white mb-3 leading-tight tracking-normal outline-none placeholder:text-[#899298]/35"
-                placeholder="Untitled"
-              />
-              {!title.trim() && !content.trim() && (
-                <div className="mb-5 text-[13px] leading-relaxed text-[#899298]/65">
-                  <p>Start writing, or press / for blocks.</p>
-                  <p className="mt-1 text-[11px] text-[#899298]/45">Markdown shortcuts supported · Local autosave</p>
-                </div>
-              )}
-
-              <div className="h-px bg-white/[0.06] mb-7" />
-
-              <TiptapEditor
-                value={contentJson}
-                onChange={handleLocalContentChange}
-                placeholder="Start writing, or press / for blocks."
-                toolbarPortalTargetId={toolbarPortalTargetId}
-                widthMode={widthMode}
-                focusMode={focusMode}
-                onOutlineChange={setOutline}
-                enableBubbleMenu
-                enableBlockHandles
-              />
-              </div>
-            </div>
-          )}
+        <div className="flex h-full items-center gap-1 px-2">
+          <button
+            onClick={onToggleInspector}
+            className={`rounded-md p-1.5 ${showInspector ? 'bg-white/[0.08] text-white' : 'text-[#899298] hover:bg-white/[0.07] hover:text-white'}`}
+            title="检查器"
+          >
+            <PanelRight className="h-3.5 w-3.5" />
+          </button>
         </div>
       </div>
 
-      {/* 右侧：检查器 (Inspector) - 保持 Golden UI */}
-      {showInspector && !focusMode && (
-        <div className="w-[260px] flex flex-col shrink-0 overflow-y-auto custom-scrollbar pb-10 border-l border-white/[0.07]">
-          <div className="flex items-center gap-2 text-white text-base font-medium mb-6 px-4 pt-4">
-            <SlidersHorizontal className="w-4 h-4" /> 检查器
-          </div>
-
-          <div className="px-4 mb-8">
-            <h3 className="text-[9px] font-semibold text-[#899298] uppercase tracking-wider mb-3">属性</h3>
-            <div className="space-y-3">
-              <div className="flex justify-between items-center text-xs border-b border-white/5 pb-2.5">
-                <span className="text-[#899298]">状态</span>
-                <span className="text-white">{activeDraftId ? '编辑中' : '未选择'}</span>
+      <div className="flex min-h-0 flex-1">
+        {showDomainTree && (
+          <aside className="w-[260px] shrink-0 border-r border-white/[0.06] bg-[#0b1013]/78 flex flex-col">
+            <div className="flex h-10 items-center justify-between border-b border-white/[0.06] px-3">
+              <div className="flex min-w-0 items-center gap-2 text-[12px] font-medium text-white">
+                <Layers className="h-3.5 w-3.5 text-[#86d7ff]" />
+                <span className="truncate">{activeProjectName ?? 'Domain 目录'}</span>
               </div>
-              <div className="flex justify-between items-center text-xs border-b border-white/5 pb-2.5">
-                <span className="text-[#899298]">类型</span>
-                <span className="text-[#86d7ff]">Draft</span>
-              </div>
-              {activeDraft && (
-                <>
-                  <div className="flex justify-between items-center text-xs border-b border-white/5 pb-2.5">
-                    <span className="text-[#899298]">字数</span>
-                    <span className="text-white">{content.length}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-xs border-b border-white/5 pb-2.5">
-                    <span className="text-[#899298]">创建</span>
-                    <span className="text-white">{new Date(activeDraft.createdAt).toLocaleDateString('zh-CN')}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-xs border-b border-white/5 pb-2.5">
-                    <span className="text-[#899298]">更新</span>
-                    <span className="text-white">{formatTime(activeDraft.updatedAt)}</span>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-
-          <div className="px-4 mb-8">
-            <h3 className="text-[9px] font-semibold text-[#899298] uppercase tracking-wider mb-3">标签</h3>
-            <div className="flex flex-wrap gap-1.5 mb-2">
-              {tags.map((tag) => (
-                <span
-                  key={tag}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#86d7ff]/10 text-[10px] text-[#86d7ff]"
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={handleCreateProjectDraft}
+                  className="rounded p-1 text-[#899298] hover:bg-white/[0.07] hover:text-[#86d7ff]"
+                  title="在当前结构中新建空白页面"
                 >
-                  {tag}
-                  <button
-                    onClick={() => handleTagsChange(tags.filter((t) => t !== tag))}
-                    className="hover:text-white transition-colors"
-                  >
-                    <X className="w-2.5 h-2.5" />
-                  </button>
-                </span>
-              ))}
-              {tags.length === 0 && (
-                <span className="text-[10px] text-[#899298]">暂无标签</span>
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  onClick={() => setShowDomainTree(false)}
+                  className="rounded p-1 text-[#899298] hover:bg-white/[0.07] hover:text-white"
+                  title="隐藏左侧目录"
+                >
+                  <PanelLeft className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar py-1">
+              {loading ? (
+                <div className="px-3 py-6 text-center text-[10px] text-[#899298]">Loading...</div>
+              ) : isScatterDocument ? (
+                <div className="px-4 py-6 text-[11px] leading-relaxed text-[#899298]">
+                  散点文档只进入顶部 tab，不进入左侧目录。
+                </div>
+              ) : flattenedTree.length === 0 ? (
+                <div className="px-4 py-6 text-[11px] leading-relaxed text-[#899298]">
+                  当前项目暂无层级结构。保存正式文档并设置项目后会出现在这里。
+                </div>
+              ) : (
+                flattenedTree.map(({ node, depth }) => {
+                  const expanded = expandedNodeIds.has(node.id)
+                  const active = (node.documentId != null && activeTarget?.kind === 'document' && activeTarget.id === node.documentId) ||
+                    (node.draftId != null && activeTarget?.kind === 'draft' && activeTarget.id === node.draftId)
+                  return (
+                    <button
+                      key={node.id}
+                      type="button"
+                      onClick={() => handleTreeNodeOpen(node)}
+                      className={`flex w-full items-center gap-1.5 px-2 py-1.5 text-left text-[12px] transition-colors ${
+                        active ? 'bg-[#86d7ff]/10 text-[#dff5ff]' : 'text-[#b8c0c5] hover:bg-white/[0.045] hover:text-white'
+                      }`}
+                      style={{ paddingLeft: `${8 + depth * 14}px` }}
+                    >
+                      {node.children.length > 0 ? (
+                        expanded ? <ChevronDown className="h-3 w-3 text-[#899298]" /> : <ChevronRight className="h-3 w-3 text-[#899298]" />
+                      ) : (
+                        <span className="h-3 w-3" />
+                      )}
+                      {node.nodeType === 'document' || node.nodeType === 'draft' ? <FileText className="h-3.5 w-3.5 text-[#9edcff]" /> : <Folder className="h-3.5 w-3.5 text-[#899298]" />}
+                      <span className="truncate">{node.title}</span>
+                      {node.nodeType === 'draft' && <span className="ml-auto rounded bg-[#9cf4d4]/10 px-1 text-[8px] uppercase text-[#9cf4d4]">Page</span>}
+                    </button>
+                  )
+                })
               )}
             </div>
-            {activeDraftId && (
-              <div className="flex gap-1.5">
+          </aside>
+        )}
+
+        <main className="min-w-0 flex-1 flex flex-col overflow-hidden">
+          <div className="h-[38px] shrink-0 border-b border-white/[0.05] bg-[#0d1215]/65 flex items-center gap-2 px-3">
+            {!showDomainTree && (
+              <button
+                onClick={() => setShowDomainTree(true)}
+                className="rounded p-1.5 text-[#899298] hover:bg-white/[0.07] hover:text-white"
+                title="显示左侧目录"
+              >
+                <PanelLeft className="h-3.5 w-3.5" />
+              </button>
+            )}
+            <div className="min-w-0 flex-1 truncate text-[11px] uppercase tracking-wide text-[#899298]">
+              {activeTab?.path ?? 'Editor 工作台'}
+            </div>
+            <div
+              id={toolbarPortalTargetId}
+              className="h-7 min-w-[380px] rounded-md border border-white/[0.08] bg-[#151a1e]/85 px-1"
+            />
+            <span className="flex items-center gap-1.5 text-[11px] text-[#899298]/75">
+              {saveStatusIcon()}
+              {saveStatusLabel()}
+            </span>
+            <div className="relative">
+              <button
+                type="button"
+                className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-[#899298] hover:bg-white/[0.07] hover:text-white"
+                onClick={() => setWidthMode(widthMode === 'comfortable' ? 'wide' : widthMode === 'wide' ? 'compact' : 'comfortable')}
+                title="正文宽度"
+              >
+                <Columns3 className="h-3.5 w-3.5" />
+                {WIDTH_LABELS[widthMode]}
+              </button>
+            </div>
+            <button
+              onClick={handlePublish}
+              disabled={!activeTarget || publishing}
+              className="flex items-center gap-1.5 rounded-md bg-[#86d7ff]/10 px-3 py-1 text-[11px] font-medium text-[#86d7ff] transition-colors hover:bg-[#86d7ff]/18 disabled:opacity-40"
+            >
+              <Send className="h-3 w-3" />
+              {activeTarget?.kind === 'draft' ? (publishing ? '发布中...' : '发布') : '保存'}
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto custom-scrollbar">
+            {!activeTarget ? (
+              <div className="flex h-full flex-col items-center justify-center text-[#899298]">
+                <FileText className="mb-4 h-9 w-9 opacity-20" />
+                <p className="mb-4 text-sm">打开一个项目、正式文档或 Draft 开始编辑。</p>
+                <button
+                  onClick={() => setShowOpenDialog(true)}
+                  className="flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.04] px-4 py-2 text-[12px] text-white hover:bg-white/[0.08]"
+                >
+                  <Plus className="h-4 w-4" /> 打开项目或散点文档
+                </button>
+              </div>
+            ) : !editorDoc.loaded ? (
+              <div className="flex h-full items-center justify-center">
+                <Loader2 className="h-5 w-5 animate-spin text-[#899298]" />
+              </div>
+            ) : (
+              <div className={`${EDITOR_SURFACE_WIDTH[widthMode]} relative mx-auto w-full px-8 pb-20 pt-7`}>
+                <div className="mb-4 flex items-center gap-2 text-[11px] text-[#899298]">
+                  <Calendar className="h-3 w-3" />
+                  <span>{editorDoc.createdAt ? formatTime(editorDoc.createdAt) : '—'}</span>
+                  <span>·</span>
+                  <span>{editorDoc.content.length} 字</span>
+                  <span>·</span>
+                  <span className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase ${activeTarget.kind === 'draft' ? 'bg-[#9cf4d4]/10 text-[#9cf4d4]' : 'bg-[#86d7ff]/10 text-[#86d7ff]'}`}>
+                    {activeTarget.kind === 'draft' ? 'Page' : 'Document'}
+                  </span>
+                </div>
                 <input
                   type="text"
-                  placeholder="添加标签..."
-                  className="flex-1 px-2 py-1 rounded-md bg-white/5 border border-white/[0.07] text-[10px] text-white placeholder-[#899298] outline-none focus:border-[#86d7ff]/30"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      const value = (e.target as HTMLInputElement).value.trim()
-                      if (value && !tags.includes(value)) {
-                        handleTagsChange([...tags, value])
-                      }
-                      ;(e.target as HTMLInputElement).value = ''
-                    }
-                  }}
+                  value={editorDoc.title}
+                  onChange={(event) => handleLocalTitleChange(event.target.value)}
+                  className="mb-3 w-full bg-transparent text-[30px] font-bold leading-tight tracking-normal text-white outline-none placeholder:text-[#899298]/35"
+                  placeholder="Untitled"
+                />
+                <div className="mb-6 h-px bg-white/[0.06]" />
+                <TiptapEditor
+                  value={editorDoc.contentJson}
+                  onChange={handleLocalContentChange}
+                  placeholder="Start writing, or press / for blocks."
+                  toolbarPortalTargetId={toolbarPortalTargetId}
+                  widthMode={widthMode}
+                  focusMode={showInspector}
+                  onOutlineChange={setOutline}
+                  onViewBlockSelectionChange={setSelectedViewBlock}
+                  viewBlockData={viewBlockData}
+                  enableBubbleMenu
+                  enableBlockHandles
                 />
               </div>
             )}
           </div>
+        </main>
 
-          {outline.length > 0 && (
-            <div className="px-4 mb-8">
-              <h3 className="text-[9px] font-semibold text-[#899298] uppercase tracking-wider mb-3">文档目录</h3>
-              <div className="space-y-1">
-                {outline.slice(0, 12).map((item) => (
-                  <div
-                    key={item.id}
-                    className="truncate text-[11px] leading-relaxed text-[#899298]"
-                    style={{ paddingLeft: `${(item.level - 1) * 10}px` }}
-                    title={item.title}
-                  >
-                    {item.title}
-                  </div>
-                ))}
+        {showInspector && (
+          <aside className="w-[300px] shrink-0 border-l border-white/[0.07] bg-[#0d1215]/82 flex flex-col overflow-y-auto custom-scrollbar">
+            <div className="flex h-10 items-center justify-between border-b border-white/[0.06] px-4">
+              <div className="flex items-center gap-2 text-sm font-medium text-white">
+                <SlidersHorizontal className="h-4 w-4" /> Inspector
               </div>
+              <button onClick={onToggleInspector} className="rounded p-1 text-[#899298] hover:bg-white/[0.07] hover:text-white">
+                <X className="h-3.5 w-3.5" />
+              </button>
             </div>
-          )}
-
-          <div className="px-4 mb-8">
-            <h3 className="text-[9px] font-semibold text-[#899298] uppercase tracking-wider mb-3">项目</h3>
-            {activeDraftId ? (
-              <input
-                type="text"
-                value={project ?? ''}
-                placeholder="未指定项目"
-                onChange={(e) => handleProjectChange(e.target.value || null)}
-                onBlur={() => {}}
-                className="w-full px-2 py-1.5 rounded-md bg-white/5 border border-white/[0.07] text-[11px] text-white placeholder-[#899298] outline-none focus:border-[#86d7ff]/30"
-              />
+            {selectedViewBlock ? (
+              <ViewBlockInspector selection={selectedViewBlock} />
             ) : (
-              <span className="text-[10px] text-[#899298]">未选择</span>
-            )}
-          </div>
-
-          <div className="px-4 mb-8">
-            <h3 className="text-[9px] font-semibold text-[#899298] uppercase tracking-wider mb-3">集合</h3>
-            <div className="px-2 py-1.5 rounded-md bg-white/[0.02] border border-white/[0.05] text-[10px] text-[#899298] opacity-50">
-              Planned — 集合功能开发中
-            </div>
-          </div>
-
-          {activeDraftId && (
-            <div className="px-4 mb-8">
-              <h3 className="text-[9px] font-semibold text-[#899298] uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                <Sparkles className="w-3 h-3" /> 操作
-              </h3>
-              <div className="space-y-2">
-                <button
-                  onClick={onPublish}
-                  disabled={publishing}
-                  className="w-full py-2 rounded-lg bg-[#86d7ff]/10 border border-[#86d7ff]/20 text-[11px] text-[#86d7ff] hover:bg-[#86d7ff]/20 transition-colors flex items-center justify-center gap-2 disabled:opacity-40"
-                >
-                  <Send className="w-3 h-3" /> {publishing ? '发布中...' : '发布为正式文档'}
-                </button>
-                <button
-                  onClick={() => onDiscard(activeDraftId)}
-                  disabled={discarding === activeDraftId}
-                  className="w-full py-2 rounded-lg bg-white/5 border border-white/[0.07] text-[11px] text-[#899298] hover:text-red-400 hover:border-red-400/20 transition-colors flex items-center justify-center gap-2 disabled:opacity-40"
-                >
-                  <Trash2 className="w-3 h-3" /> 丢弃草稿
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="px-4">
-            <h3 className="text-[9px] font-semibold text-[#899298] uppercase tracking-wider mb-3">相关节点</h3>
-            <div className="space-y-3">
-              <div className="flex items-center gap-2.5 cursor-pointer group opacity-40">
-                <div className="w-6 h-6 rounded-full bg-[#86d7ff]/10 text-[#86d7ff] flex items-center justify-center">
-                  <FileText className="w-3 h-3" />
-                </div>
-                <span className="text-xs text-[#899298]">发布后自动生成</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showPublishChoice && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div
-            className="absolute inset-0 bg-[#0b0f11]/60 backdrop-blur-sm"
-            onClick={() => setShowPublishChoice(false)}
-          />
-          <div className="relative w-[420px] bg-[#1c2023]/90 backdrop-blur-[40px] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
-              <h3 className="text-sm font-medium text-white">发布方式</h3>
-              <button
-                onClick={() => setShowPublishChoice(false)}
-                className="p-1 rounded-md hover:bg-white/10 text-[#899298] hover:text-white transition-colors"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="px-5 py-3">
-              <p className="text-[11px] text-[#899298] mb-4">
-                此草稿源自已有文档，请选择发布方式：
-              </p>
-              <div className="space-y-2">
-                <button
-                  onClick={() => activeDraftId && executePublish(activeDraftId, 'update_original')}
-                  disabled={publishing}
-                  className="w-full p-3.5 rounded-xl bg-[#86d7ff]/10 border border-[#86d7ff]/20 hover:bg-[#86d7ff]/20 transition-colors text-left disabled:opacity-40"
-                >
-                  <div className="flex items-center gap-2.5 mb-1.5">
-                    <RefreshCw className="w-4 h-4 text-[#86d7ff]" />
-                    <span className="text-[12px] font-medium text-[#86d7ff]">修改原文档</span>
-                  </div>
-                  <p className="text-[10px] text-[#899298] pl-6">
-                    用当前草稿内容覆盖原文档，保留原文档 ID 和关联关系
-                  </p>
-                </button>
-                <button
-                  onClick={() => activeDraftId && executePublish(activeDraftId, 'as_new')}
-                  disabled={publishing}
-                  className="w-full p-3.5 rounded-xl bg-white/5 border border-white/[0.07] hover:bg-white/10 transition-colors text-left disabled:opacity-40"
-                >
-                  <div className="flex items-center gap-2.5 mb-1.5">
-                    <Copy className="w-4 h-4 text-white" />
-                    <span className="text-[12px] font-medium text-white">作为新文档存入</span>
-                  </div>
-                  <p className="text-[10px] text-[#899298] pl-6">
-                    创建一个全新的文档，原文档保持不变
-                  </p>
-                </button>
-              </div>
-            </div>
-            <div className="px-5 py-3 border-t border-white/[0.07]">
-              <button
-                onClick={() => setShowPublishChoice(false)}
-                className="w-full py-2 rounded-lg bg-white/5 text-[11px] text-[#899298] hover:text-white hover:bg-white/10 transition-colors"
-              >
-                取消
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showDiscardChoice && discardTargetId != null && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div
-            className="absolute inset-0 bg-[#0b0f11]/60 backdrop-blur-sm"
-            onClick={() => setShowDiscardChoice(false)}
-          />
-          <div className="relative w-[420px] bg-[#1c2023]/90 backdrop-blur-[40px] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
-              <h3 className="text-sm font-medium text-white">丢弃方式</h3>
-              <button
-                onClick={() => setShowDiscardChoice(false)}
-                className="p-1 rounded-md hover:bg-white/10 text-[#899298] hover:text-white transition-colors"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="px-5 py-3">
-              <p className="text-[11px] text-[#899298] mb-4">
-                此草稿源自已有文档，请选择丢弃方式：
-              </p>
-              <div className="space-y-2">
-                <button
-                  onClick={() => executeDiscard(discardTargetId, 'abandon_changes')}
-                  disabled={discarding === discardTargetId}
-                  className="w-full p-3.5 rounded-xl bg-[#86d7ff]/10 border border-[#86d7ff]/20 hover:bg-[#86d7ff]/20 transition-colors text-left disabled:opacity-40"
-                >
-                  <div className="flex items-center gap-2.5 mb-1.5">
-                    <Undo2 className="w-4 h-4 text-[#86d7ff]" />
-                    <span className="text-[12px] font-medium text-[#86d7ff]">放弃更改</span>
-                  </div>
-                  <p className="text-[10px] text-[#899298] pl-6">
-                    丢弃草稿内容，保留原文档不变
-                  </p>
-                </button>
-                <button
-                  onClick={() => { setShowDiscardChoice(false); setShowDeleteAllConfirm(true) }}
-                  disabled={discarding === discardTargetId}
-                  className="w-full p-3.5 rounded-xl bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 transition-colors text-left disabled:opacity-40"
-                >
-                  <div className="flex items-center gap-2.5 mb-1.5">
-                    <Trash2 className="w-4 h-4 text-red-400" />
-                    <span className="text-[12px] font-medium text-red-400">丢弃草稿并归档原文档</span>
-                  </div>
-                  <p className="text-[10px] text-[#899298] pl-6">
-                    丢弃草稿，原文档归档保留，可恢复
-                  </p>
-                </button>
-              </div>
-            </div>
-            <div className="px-5 py-3 border-t border-white/[0.07]">
-              <button
-                onClick={() => setShowDiscardChoice(false)}
-                className="w-full py-2 rounded-lg bg-white/5 text-[11px] text-[#899298] hover:text-white hover:bg-white/10 transition-colors"
-              >
-                取消
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showDeleteAllConfirm && discardTargetId != null && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div
-            className="absolute inset-0 bg-[#0b0f11]/60 backdrop-blur-sm"
-            onClick={() => { setShowDeleteAllConfirm(false); setDeleteConfirmText('') }}
-          />
-          <div className="relative w-[420px] bg-[#1c2023]/90 backdrop-blur-[40px] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
-              <h3 className="text-sm font-medium text-red-400">确认归档原文档</h3>
-              <button
-                onClick={() => { setShowDeleteAllConfirm(false); setDeleteConfirmText('') }}
-                className="p-1 rounded-md hover:bg-white/10 text-[#899298] hover:text-white transition-colors"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="px-5 py-3">
-              <p className="text-[11px] text-[#ffb4ab] mb-3">此操作将丢弃草稿并归档原文档，原文档可恢复。</p>
-              <p className="text-[11px] text-[#899298] mb-3">请输入 <span className="text-white font-mono font-bold">ARCHIVE</span> 以确认：</p>
-              <input
-                type="text"
-                value={deleteConfirmText}
-                onChange={(e) => setDeleteConfirmText(e.target.value)}
-                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-red-500/50 font-mono"
-                placeholder="输入 ARCHIVE"
-                autoFocus
+              <DocumentInspector
+                activeTab={activeTab}
+                target={activeTarget}
+                editorDoc={editorDoc}
+                outline={outline}
+                recommendations={recommendations}
+                onTagsChange={editorDoc.handleTagsChange}
+                onProjectChange={handleProjectChange}
+                onPublish={handlePublish}
+                onArchive={handleArchiveActive}
+                publishing={publishing}
               />
-            </div>
-            <div className="px-5 py-3 border-t border-white/[0.07] flex gap-2">
-              <button
-                onClick={() => { setShowDeleteAllConfirm(false); setDeleteConfirmText('') }}
-                className="flex-1 py-2 rounded-lg bg-white/5 text-[11px] text-[#899298] hover:text-white hover:bg-white/10 transition-colors"
-              >
-                取消
-              </button>
-              <button
-                onClick={() => { executeDiscard(discardTargetId, 'delete_all'); setShowDeleteAllConfirm(false); setDeleteConfirmText('') }}
-                disabled={deleteConfirmText !== 'ARCHIVE' || discarding === discardTargetId}
-                className="flex-1 py-2 rounded-lg bg-red-500/20 text-[11px] text-red-400 hover:bg-red-500/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-              >
-                确认归档
-              </button>
-            </div>
-          </div>
-        </div>
+            )}
+          </aside>
+        )}
+      </div>
+
+      {showOpenDialog && (
+        <OpenDialog
+          query={openQuery}
+          onQueryChange={(value) => { setOpenQuery(value); setSelectedOpenIndex(0) }}
+          results={openResults}
+          selectedIndex={selectedOpenIndex}
+          selected={selectedOpenResult}
+          onSelectIndex={setSelectedOpenIndex}
+          onOpen={handleOpenResult}
+          onClose={() => setShowOpenDialog(false)}
+          typeFilter={openTypeFilter}
+          onTypeFilterChange={setOpenTypeFilter}
+          titleOnly={titleOnlyFilter}
+          onTitleOnlyChange={setTitleOnlyFilter}
+          sortMode={sortMode}
+          onSortModeChange={setSortMode}
+          activeProjectName={activeProjectName}
+          onCreateProjectPage={handleCreateProjectDraft}
+          onCreateScatterPage={handleCreateDraft}
+        />
       )}
     </div>
   )
+}
+
+function DocumentInspector({
+  activeTab,
+  target,
+  editorDoc,
+  outline,
+  recommendations,
+  onTagsChange,
+  onProjectChange,
+  onPublish,
+  onArchive,
+  publishing,
+}: {
+  activeTab: EditorWorkspaceTab | null
+  target: EditorTarget
+  editorDoc: ReturnType<typeof useEditorDocument>
+  outline: EditorOutlineItem[]
+  recommendations: RecommendationDockQueueItem[]
+  onTagsChange: (tags: string[]) => void
+  onProjectChange: (project: string | null) => void
+  onPublish: () => void
+  onArchive: () => void
+  publishing: boolean
+}) {
+  return (
+    <div className="px-4 py-4">
+      {target && (
+        <section className="mb-7">
+          <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[#899298]">文稿操作</h3>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={onPublish}
+              disabled={publishing}
+              className="rounded-md border border-[#86d7ff]/20 bg-[#86d7ff]/10 px-3 py-2 text-[11px] font-medium text-[#86d7ff] hover:bg-[#86d7ff]/18 disabled:opacity-50"
+            >
+              {target.kind === 'draft' ? (publishing ? '发布中...' : '发布为文档') : '保存文档'}
+            </button>
+            <button
+              onClick={onArchive}
+              className="rounded-md border border-[#ffb4ab]/20 bg-[#ffb4ab]/10 px-3 py-2 text-[11px] font-medium text-[#ffb4ab] hover:bg-[#ffb4ab]/18"
+            >
+              {target.kind === 'draft' ? '移出工作台' : '归档文档'}
+            </button>
+          </div>
+        </section>
+      )}
+      <section className="mb-7">
+        <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[#899298]">文档属性</h3>
+        <div className="space-y-2 text-[12px]">
+          <InspectorRow label="状态" value={target ? '编辑中' : '未选择'} />
+          <InspectorRow label="类型" value={target?.kind === 'draft' ? 'Draft' : target?.kind === 'document' ? 'Document' : '—'} />
+          <InspectorRow label="路径" value={activeTab?.path ?? '—'} />
+          <InspectorRow label="字数" value={String(editorDoc.content.length)} />
+          <InspectorRow label="更新" value={editorDoc.updatedAt ? formatTime(editorDoc.updatedAt) : '—'} />
+        </div>
+      </section>
+
+      <section className="mb-7">
+        <h3 className="mb-3 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[#899298]">
+          <Tags className="h-3 w-3" /> 标签
+        </h3>
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {editorDoc.tags.map((tag) => (
+            <span key={tag} className="inline-flex items-center gap-1 rounded bg-[#86d7ff]/10 px-2 py-0.5 text-[10px] text-[#86d7ff]">
+              {tag}
+              <button onClick={() => onTagsChange(editorDoc.tags.filter((item) => item !== tag))}>
+                <X className="h-2.5 w-2.5" />
+              </button>
+            </span>
+          ))}
+          {editorDoc.tags.length === 0 && <span className="text-[10px] text-[#899298]">暂无标签</span>}
+        </div>
+        {target && (
+          <input
+            className="w-full rounded-md border border-white/[0.07] bg-white/[0.04] px-2 py-1.5 text-[11px] text-white outline-none placeholder:text-[#899298]/60 focus:border-[#86d7ff]/35"
+            placeholder="添加标签..."
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return
+              const value = event.currentTarget.value.trim()
+              if (value && !editorDoc.tags.includes(value)) onTagsChange([...editorDoc.tags, value])
+              event.currentTarget.value = ''
+            }}
+          />
+        )}
+      </section>
+
+      <section className="mb-7">
+        <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[#899298]">项目 / Domain</h3>
+        <input
+          value={editorDoc.project ?? ''}
+          onChange={(event) => onProjectChange(event.target.value || null)}
+          className="w-full rounded-md border border-white/[0.07] bg-white/[0.04] px-2 py-1.5 text-[11px] text-white outline-none placeholder:text-[#899298]/60 focus:border-[#86d7ff]/35"
+          placeholder="未指定项目"
+        />
+      </section>
+
+      {outline.length > 0 && (
+        <section className="mb-7">
+          <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[#899298]">文档目录</h3>
+          <div className="space-y-1">
+            {outline.slice(0, 14).map((item) => (
+              <div key={item.id} className="truncate text-[11px] leading-relaxed text-[#899298]" style={{ paddingLeft: `${(item.level - 1) * 10}px` }}>
+                {item.title}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <section>
+        <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[#899298]">推荐处理</h3>
+        <div className="space-y-2">
+          {recommendations.length === 0 ? (
+            <div className="rounded-md border border-white/[0.06] bg-white/[0.025] px-3 py-2 text-[11px] text-[#899298]">暂无待处理推荐</div>
+          ) : recommendations.slice(0, 3).map((item) => (
+            <div key={item.id} className="rounded-md border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+              <div className="truncate text-[11px] font-medium text-white">{item.recommendationType}</div>
+              <div className="mt-1 text-[10px] text-[#899298]">置信度 {Math.round(item.confidenceScore * 100)}%</div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function ViewBlockInspector({ selection }: { selection: EditorViewBlockSelection }) {
+  return (
+    <div className="px-4 py-4">
+      <div className="mb-5 flex items-start gap-3">
+        <div className="flex h-9 w-9 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.05] text-[#86d7ff]">
+          {selection.viewType === 'Graph' ? <GitBranch className="h-4 w-4" /> : <Table2 className="h-4 w-4" />}
+        </div>
+        <div className="min-w-0">
+          <h3 className="truncate text-sm font-semibold text-white">{selection.name}</h3>
+          <p className="mt-0.5 text-[11px] text-[#899298]">当前视图块</p>
+        </div>
+      </div>
+      <section className="mb-6 space-y-2">
+        <InspectorRow label="View type" value={selection.viewType} />
+        <InspectorRow label="数据源" value={selection.dataSource} />
+        <InspectorRow label="过滤条件" value={selection.filters} />
+        <InspectorRow label="排序条件" value={selection.sort} />
+        <InspectorRow label="分页设置" value={`${selection.pageSize} / page`} />
+      </section>
+      <section className="mb-6">
+        <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[#899298]">显示字段</h3>
+        <div className="space-y-1.5">
+          {selection.fields.map((field) => (
+            <div key={field} className="flex items-center justify-between rounded-md border border-white/[0.06] bg-white/[0.025] px-2 py-1.5 text-[11px] text-[#dce3e8]">
+              <span>{field}</span>
+              <span className="text-[#899298]">显示</span>
+            </div>
+          ))}
+        </div>
+      </section>
+      <section>
+        <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[#899298]">样式配置</h3>
+        <div className="rounded-md border border-white/[0.06] bg-white/[0.025] px-3 py-2 text-[11px] text-[#899298]">
+          沿用当前 Editor 紧凑表格样式。
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function InspectorRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-white/[0.05] pb-2">
+      <span className="shrink-0 text-[#899298]">{label}</span>
+      <span className="min-w-0 truncate text-right text-white" title={value}>{value}</span>
+    </div>
+  )
+}
+
+function OpenDialog({
+  query,
+  onQueryChange,
+  results,
+  selectedIndex,
+  selected,
+  onSelectIndex,
+  onOpen,
+  onClose,
+  typeFilter,
+  onTypeFilterChange,
+  titleOnly,
+  onTitleOnlyChange,
+  sortMode,
+  onSortModeChange,
+  activeProjectName,
+  onCreateProjectPage,
+  onCreateScatterPage,
+}: {
+  query: string
+  onQueryChange: (value: string) => void
+  results: OpenResult[]
+  selectedIndex: number
+  selected: OpenResult | null
+  onSelectIndex: (index: number) => void
+  onOpen: (result: OpenResult) => void
+  onClose: () => void
+  typeFilter: 'all' | 'project' | 'document'
+  onTypeFilterChange: (value: 'all' | 'project' | 'document') => void
+  titleOnly: boolean
+  onTitleOnlyChange: (value: boolean) => void
+  sortMode: 'recent' | 'title'
+  onSortModeChange: (value: 'recent' | 'title') => void
+  activeProjectName: string | null
+  onCreateProjectPage: () => void
+  onCreateScatterPage: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#05080a]/65 backdrop-blur-sm">
+      <div className="flex h-[76vh] w-[1040px] max-w-[calc(100vw-48px)] flex-col overflow-hidden rounded-2xl border border-white/15 bg-[#11171b]/96 shadow-[0_32px_100px_rgba(0,0,0,0.7)]">
+        <div className="border-b border-white/[0.07] px-6 py-4">
+          <div className="mb-3 flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-white">打开项目或散点文档</h2>
+              <p className="mt-1 text-[12px] text-[#899298]">项目会切换左侧结构；散点文档只进入顶部面包屑，不进入左侧目录。</p>
+            </div>
+            <button onClick={onClose} className="rounded-md p-1.5 text-[#899298] hover:bg-white/[0.07] hover:text-white">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="mb-3 flex items-center gap-2 rounded-lg border border-[#86d7ff]/45 bg-black/20 px-3 py-2">
+            <Search className="h-4 w-4 text-[#899298]" />
+            <input
+              autoFocus
+              value={query}
+              onChange={(event) => onQueryChange(event.target.value)}
+              placeholder="搜索项目或散点文档..."
+              className="w-full bg-transparent text-sm text-white outline-none placeholder:text-[#899298]/60"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-[11px] text-[#c4ccd2]">
+            <button
+              onClick={() => onTitleOnlyChange(!titleOnly)}
+              className={`flex items-center gap-1 rounded-md border px-2.5 py-1.5 hover:bg-white/[0.07] ${titleOnly ? 'border-[#86d7ff]/35 bg-[#86d7ff]/10 text-[#86d7ff]' : 'border-white/[0.07] bg-white/[0.035]'}`}
+            >
+              Title only
+            </button>
+            <button className="flex cursor-not-allowed items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.025] px-2.5 py-1.5 text-[#899298]" title="本地单用户模式，创建者筛选暂无更多候选">
+              Created by <span className="text-white">Me</span>
+            </button>
+            <button
+              onClick={() => onTypeFilterChange(typeFilter === 'all' ? 'project' : typeFilter === 'project' ? 'document' : 'all')}
+              className="flex items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.035] px-2.5 py-1.5 hover:bg-white/[0.07]"
+            >
+              In <span className="text-white">{typeFilter === 'all' ? 'All' : typeFilter === 'project' ? 'Projects' : 'Documents'}</span>
+            </button>
+            <button
+              onClick={() => onTypeFilterChange(typeFilter === 'document' ? 'all' : 'document')}
+              className={`flex items-center gap-1 rounded-md border px-2.5 py-1.5 hover:bg-white/[0.07] ${typeFilter === 'document' ? 'border-[#86d7ff]/35 bg-[#86d7ff]/10 text-[#86d7ff]' : 'border-white/[0.07] bg-white/[0.035]'}`}
+            >
+              <Filter className="h-3 w-3" />
+              Filter
+            </button>
+            <button
+              onClick={() => {
+                onTitleOnlyChange(false)
+                onTypeFilterChange('all')
+                onSortModeChange('recent')
+              }}
+              className="flex items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.035] px-2.5 py-1.5 hover:bg-white/[0.07]"
+            >
+              More <span className="text-[#899298]">Reset</span>
+            </button>
+            <button
+              onClick={() => onSortModeChange(sortMode === 'recent' ? 'title' : 'recent')}
+              className="ml-auto rounded-md px-2.5 py-1.5 text-[#899298] hover:bg-white/[0.06]"
+            >
+              Sort by&nbsp;<span className="text-white">{sortMode === 'recent' ? '最近打开' : '标题 A-Z'}</span>
+            </button>
+          </div>
+        </div>
+        <div className="border-b border-white/[0.07] px-6 py-2">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={onCreateProjectPage}
+              className="flex items-center gap-3 rounded-md border border-white/[0.07] bg-white/[0.035] px-3 py-2 text-left hover:border-[#86d7ff]/30 hover:bg-[#86d7ff]/8"
+            >
+              <Plus className="h-4 w-4 text-[#86d7ff]" />
+              <span className="min-w-0">
+                <span className="block text-[12px] font-medium text-white">新建当前项目 Page</span>
+                <span className="block truncate text-[10px] text-[#899298]">{activeProjectName ? `保存到 ${activeProjectName}` : '当前没有项目时会新建散点 Page'}</span>
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={onCreateScatterPage}
+              className="flex items-center gap-3 rounded-md border border-white/[0.07] bg-white/[0.035] px-3 py-2 text-left hover:border-[#86d7ff]/30 hover:bg-[#86d7ff]/8"
+            >
+              <FileText className="h-4 w-4 text-[#86d7ff]" />
+              <span>
+                <span className="block text-[12px] font-medium text-white">新建散点 Page</span>
+                <span className="block text-[10px] text-[#899298]">只进入顶部 tab，不进入左侧目录</span>
+              </span>
+            </button>
+          </div>
+        </div>
+        <div className="grid min-h-0 flex-1 grid-cols-[46%_54%]">
+          <div className="min-h-0 border-r border-white/[0.07]">
+            <div className="flex items-center justify-between px-4 py-3 text-[11px] text-[#899298]">
+              <span>最近和候选</span>
+              <span>{results.length} 个结果</span>
+            </div>
+            <div className="h-[calc(100%-42px)] overflow-y-auto custom-scrollbar px-2 pb-3">
+              {results.map((result, index) => {
+                const selectedRow = index === selectedIndex
+                const Icon = result.kind === 'document' ? FileText : Folder
+                return (
+                  <button
+                    key={result.id}
+                    onMouseEnter={() => onSelectIndex(index)}
+                    onClick={() => onOpen(result)}
+                    className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-left transition-colors ${
+                      selectedRow ? 'bg-[#86d7ff]/12 text-white' : 'text-[#dce3e8] hover:bg-white/[0.05]'
+                    }`}
+                  >
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/[0.07] bg-white/[0.04]">
+                      <Icon className="h-4 w-4 text-[#86d7ff]" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[12px] font-medium">{result.title}</div>
+                      <div className="mt-0.5 truncate text-[10px] text-[#899298]">{result.path}</div>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <div className="text-[10px] text-[#899298]">{formatTime(result.updatedAt)}</div>
+                      <div className="mt-1 text-[9px] uppercase tracking-wide text-[#86d7ff]">{result.typeLabel}</div>
+                    </div>
+                  </button>
+                )
+              })}
+              {results.length === 0 && <div className="px-4 py-8 text-center text-[12px] text-[#899298]">没有匹配结果</div>}
+            </div>
+          </div>
+          <div className="min-h-0 overflow-y-auto custom-scrollbar p-6">
+            {selected ? (
+              <div>
+                <div className="mb-5 flex items-start gap-4">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.05] text-[#86d7ff]">
+                    {selected.kind === 'document' ? <FileText className="h-5 w-5" /> : <Database className="h-5 w-5" />}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="truncate text-xl font-semibold text-white">{selected.title}</h3>
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[12px] text-[#899298]">
+                      <span>{selected.typeLabel}</span>
+                      <span>·</span>
+                      <span>{selected.path}</span>
+                    </div>
+                  </div>
+                  <button className="rounded-md p-1.5 text-[#899298] hover:bg-white/[0.07] hover:text-white">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </button>
+                </div>
+                <PreviewSection label="创建 / 更新" value={`${formatTime(selected.document?.createdAt ?? selected.updatedAt)} / ${formatTime(selected.updatedAt)}`} />
+                <PreviewSection label="标签" value={selected.document?.tags?.length ? selected.document.tags.join(' · ') : '暂无标签'} />
+                <PreviewSection label="摘要" value={selected.document ? excerpt(selected.document.plainText || selected.document.content || selected.document.markdown || '') : '项目上下文会打开对应 Domain 树，并加载 Overview 或最近文档。'} />
+                <div className="mb-6">
+                  <h4 className="mb-2 text-[12px] font-semibold text-white">关键点</h4>
+                  <ul className="space-y-1.5 text-[12px] text-[#c4ccd2]">
+                    <li>· {selected.kind === 'document' ? '作为顶部文档 tab 打开' : '作为项目 tab 打开并同步左侧结构'}</li>
+                    <li>· {selected.kind === 'document' && !selected.document?.project ? '散点文档不会进入左侧目录' : '可在当前 Editor 工作台中继续编辑'}</li>
+                    <li>· 最近打开记录会用于后续排序</li>
+                  </ul>
+                </div>
+                <div className="mb-6">
+                  <h4 className="mb-2 text-[12px] font-semibold text-white">相关内容</h4>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(selected.document?.tags ?? ['Documents', 'Mind Links', 'Recommendations']).slice(0, 3).map((item) => (
+                      <div key={item} className="rounded-md border border-white/[0.07] bg-white/[0.025] px-3 py-2 text-[11px] text-[#dce3e8]">{item}</div>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2 border-t border-white/[0.07] pt-4">
+                  <button onClick={() => onOpen(selected)} className="rounded-lg bg-[#86d7ff]/15 px-4 py-2 text-[12px] font-medium text-[#86d7ff] hover:bg-[#86d7ff]/24">
+                    在当前 Editor 中打开
+                  </button>
+                  <button onClick={() => onOpen(selected)} className="rounded-lg border border-white/[0.1] bg-white/[0.04] px-4 py-2 text-[12px] text-white hover:bg-white/[0.08]">
+                    在新标签页中打开
+                  </button>
+                  <button className="rounded-lg border border-white/[0.1] bg-white/[0.04] px-3 py-2 text-white hover:bg-white/[0.08]">
+                    <ChevronDown className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex h-full items-center justify-center text-[12px] text-[#899298]">选择一个结果查看预览</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PreviewSection({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="mb-5">
+      <h4 className="mb-2 text-[12px] font-semibold text-white">{label}</h4>
+      <p className="text-[12px] leading-relaxed text-[#c4ccd2]">{value || '—'}</p>
+    </div>
+  )
+}
+
+function buildProjectOptions(documents: StoredDocument[], nodes: StoredMindNode[]) {
+  const byName = new Map<string, { title: string; rootNodeId: string | null; kind: 'project' | 'domain'; path: string; updatedAt: Date; node?: StoredMindNode }>()
+  nodes
+    .filter((node) => node.nodeType === 'project' || node.nodeType === 'domain' || node.nodeType === 'topic')
+    .forEach((node) => {
+      byName.set(node.label, {
+        title: node.label,
+        rootNodeId: node.id,
+        kind: node.nodeType === 'domain' ? 'domain' : 'project',
+        path: `~/${node.nodeType}/${node.label}`,
+        updatedAt: new Date(node.updatedAt),
+        node,
+      })
+    })
+  documents.forEach((doc) => {
+    if (!doc.project || byName.has(doc.project)) return
+    byName.set(doc.project, {
+      title: doc.project,
+      rootNodeId: null,
+      kind: 'project',
+      path: `~/Projects/${doc.project}`,
+      updatedAt: new Date(doc.archivedAt ?? doc.createdAt),
+    })
+  })
+  return Array.from(byName.values()).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+}
+
+function buildDomainTree(projectName: string, documents: StoredDocument[], drafts: StoredDraft[], nodes: StoredMindNode[], edges: StoredMindEdge[]): DomainTreeNode {
+  const rootNode = nodes.find((node) => node.label === projectName && (node.nodeType === 'project' || node.nodeType === 'domain' || node.nodeType === 'topic'))
+  const childrenByParent = new Map<string, StoredMindEdge[]>()
+  edges.filter((edge) => edge.edgeType === 'parent_child').forEach((edge) => {
+    const children = childrenByParent.get(edge.sourceNodeId) ?? []
+    children.push(edge)
+    childrenByParent.set(edge.sourceNodeId, children)
+  })
+  const nodeById = new Map(nodes.map((node) => [node.id, node]))
+
+  const buildFromNode = (node: StoredMindNode, seen = new Set<string>()): DomainTreeNode => {
+    if (seen.has(node.id)) {
+      return { id: node.id, title: node.label, nodeType: node.nodeType, documentId: node.documentId, draftId: null, children: [] }
+    }
+    const nextSeen = new Set(seen)
+    nextSeen.add(node.id)
+    const children = (childrenByParent.get(node.id) ?? [])
+      .map((edge) => nodeById.get(edge.targetNodeId))
+      .filter((child): child is StoredMindNode => Boolean(child))
+      .filter((child) => child.nodeType === 'project' || child.nodeType === 'domain' || child.nodeType === 'topic' || child.nodeType === 'document')
+      .map((child) => buildFromNode(child, nextSeen))
+    return { id: node.id, title: node.label, nodeType: node.nodeType, documentId: node.documentId, draftId: null, children }
+  }
+
+  const root = rootNode
+    ? buildFromNode(rootNode)
+    : { id: `project:${projectName}`, title: projectName, nodeType: 'project', documentId: null, draftId: null, children: [] }
+
+  const knownDocIds = new Set<number>()
+  collectDocumentIds(root, knownDocIds)
+  // Fallback: when Mind parent_child edges are incomplete, project-tagged documents still appear in the Editor tree.
+  const fallbackDocs = documents
+    .filter((doc) => doc.project === projectName && !knownDocIds.has(doc.id))
+    .sort((a, b) => new Date(b.archivedAt ?? b.createdAt).getTime() - new Date(a.archivedAt ?? a.createdAt).getTime())
+    .map((doc) => ({
+      id: `fallback-doc:${doc.id}`,
+      title: normalizeTitle(doc.title),
+      nodeType: 'document',
+      documentId: doc.id,
+      draftId: null,
+      children: [],
+    }))
+  const projectDrafts = drafts
+    .filter((draft) => draft.project === projectName && draft.status !== 'published')
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .map((draft) => ({
+      id: `draft:${draft.id}`,
+      title: normalizeTitle(draft.title),
+      nodeType: 'draft',
+      documentId: null,
+      draftId: draft.id,
+      children: [],
+    }))
+  return { ...root, children: [...root.children, ...projectDrafts, ...fallbackDocs] }
+}
+
+function collectDocumentIds(node: DomainTreeNode, result: Set<number>) {
+  if (node.documentId != null) result.add(node.documentId)
+  node.children.forEach((child) => collectDocumentIds(child, result))
+}
+
+function flattenTree(root: DomainTreeNode, expanded: Set<string>): Array<{ node: DomainTreeNode; depth: number }> {
+  const result: Array<{ node: DomainTreeNode; depth: number }> = [{ node: root, depth: 0 }]
+  const visit = (node: DomainTreeNode, depth: number) => {
+    if (!expanded.has(node.id)) return
+    node.children.forEach((child) => {
+      result.push({ node: child, depth })
+      visit(child, depth + 1)
+    })
+  }
+  visit(root, 1)
+  return result
 }
 
 function normalizeTitle(value?: string | null): string {
@@ -1066,16 +1334,26 @@ function normalizeTitle(value?: string | null): string {
   return title || 'Untitled'
 }
 
-function draftBodyText(draft: StoredDraft): string {
-  return (draft.plainText || draft.content || draft.markdown || '').replace(/\s+/g, ' ').trim()
+function formatTime(value: Date | string | number): string {
+  const date = new Date(value)
+  const now = new Date()
+  const diffMs = now.getTime() - date.getTime()
+  const diffMin = Math.floor(diffMs / 60000)
+  if (diffMin < 1) return '刚刚'
+  if (diffMin < 60) return `${diffMin} 分钟前`
+  const diffHour = Math.floor(diffMin / 60)
+  if (diffHour < 24) return `${diffHour} 小时前`
+  const diffDay = Math.floor(diffHour / 24)
+  if (diffDay < 7) return `${diffDay} 天前`
+  return date.toLocaleDateString('zh-CN')
 }
 
-function draftExcerpt(draft: StoredDraft): string {
-  const text = draftBodyText(draft)
-  if (!text) return 'Start writing, or press / for blocks.'
-  return text.length > 58 ? `${text.slice(0, 58)}...` : text
+function excerpt(text: string): string {
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  if (!normalized) return '暂无摘要'
+  return normalized.length > 180 ? `${normalized.slice(0, 180)}...` : normalized
 }
 
-function draftWordCount(draft: StoredDraft): number {
-  return draftBodyText(draft).length
+function resolveMindNodeLabel(nodes: StoredMindNode[], nodeId: string): string {
+  return nodes.find((node) => node.id === nodeId)?.label ?? nodeId
 }

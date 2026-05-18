@@ -119,6 +119,11 @@ describe('Tiptap editor foundation behavior', () => {
       'codeBlock',
       'horizontalRule',
       'callout',
+      'projectTasksView',
+      'relatedDocumentsView',
+      'recommendationQueueView',
+      'mindGraphPreviewView',
+      'localDatabaseView',
     ])
   })
 

@@ -235,14 +235,14 @@ export function handleEditorPaste(event: ClipboardEvent, editor: Editor): boolea
 
   let contentToInsert: string = ''
 
-  if (html) {
+  if (text && looksLikeMarkdown(text)) {
+    // Some editors put Markdown into text/plain and a styled plain paragraph into text/html.
+    // Prefer the Markdown source so headings/lists become real Tiptap nodes on paste.
+    contentToInsert = parseMarkdownPaste(text)
+  } else if (html) {
     contentToInsert = normalizeHtmlPaste(html)
   } else if (text) {
-    if (looksLikeMarkdown(text)) {
-      contentToInsert = parseMarkdownPaste(text)
-    } else {
-      contentToInsert = splitPlainTextToBlocks(text)
-    }
+    contentToInsert = splitPlainTextToBlocks(text)
   }
 
   if (!contentToInsert) return false

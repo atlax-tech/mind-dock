@@ -1539,6 +1539,51 @@ export async function updateDocument(
   return updateArchivedEntry(userId, documentId, updates)
 }
 
+export interface EditorDocumentUpdateInput extends EditorContentInput {
+  title?: string
+  content?: string
+  tags?: string[]
+  project?: string | null
+}
+
+export async function updateEditorDocument(
+  userId: string,
+  documentId: number,
+  updates: EditorDocumentUpdateInput,
+): Promise<PersistedDocument | null> {
+  const entry = await entriesTable.get(documentId)
+  if (!entry || entry.userId !== userId || entry.workspaceId !== DEFAULT_WORKSPACE_ID) return null
+
+  const patch: Partial<EntryRecord> = { archivedAt: new Date() }
+  if (updates.title !== undefined) patch.title = updates.title
+  if (updates.tags !== undefined) patch.tags = updates.tags
+  if (updates.project !== undefined) patch.project = updates.project
+  if (
+    updates.content !== undefined ||
+    updates.contentJson !== undefined ||
+    updates.plainText !== undefined ||
+    updates.html !== undefined ||
+    updates.markdown !== undefined
+  ) {
+    const normalizedContent = buildEditorContentRecord(updates.content ?? entry.content, {
+      contentJson: updates.contentJson ?? entry.contentJson ?? null,
+      plainText: updates.plainText ?? updates.content ?? entry.plainText ?? entry.content,
+      html: updates.html ?? entry.html,
+      markdown: updates.markdown ?? entry.markdown,
+    })
+    patch.content = normalizedContent.content
+    patch.contentJson = normalizedContent.contentJson
+    patch.plainText = normalizedContent.plainText
+    patch.html = normalizedContent.html
+    patch.markdown = normalizedContent.markdown
+  }
+
+  await entriesTable.update(documentId, patch)
+  const updated = toPersistedEntry(await entriesTable.get(documentId))
+  notifyDocumentContentChanged(userId, updated, 'updated')
+  return updated
+}
+
 export async function createCaptureToDocumentFlow(
   input: CaptureToDocumentInput,
 ): Promise<CaptureToDocumentResult> {
