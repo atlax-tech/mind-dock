@@ -1059,7 +1059,7 @@ function DockDatabaseTable({
         style={{ gridTemplateColumns }}
       >
         {visibleColumns.map((col) => (
-          <div key={col.key}>{col.label}</div>
+          <div key={col.key} className="min-w-0 truncate">{col.label}</div>
         ))}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar">
@@ -1080,7 +1080,7 @@ function DockDatabaseTable({
             style={{ gridTemplateColumns }}
           >
             {visibleColumns.map((col) => (
-              <div key={col.key}>{renderCell(item, col.key)}</div>
+              <div key={col.key} className="min-w-0 overflow-hidden">{renderCell(item, col.key)}</div>
             ))}
           </div>
         ))}
