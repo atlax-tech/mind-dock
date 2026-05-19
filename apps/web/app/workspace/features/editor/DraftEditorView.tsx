@@ -38,6 +38,7 @@ import {
   listRecommendationDockQueue,
   publishDraftToDocument,
   recordRecentDocumentOpen,
+  updateDraft,
   updateArchivedEntry,
   type RecommendationDockQueueItem,
   type StoredDocument,
@@ -70,19 +71,12 @@ const EDITOR_SURFACE_WIDTH: Record<EditorWidthMode, string> = {
 type EditorTabKind = 'project' | 'domain' | 'document' | 'draft'
 const SCRATCH_TAB_ID_PREFIX = 'scratch:'
 
-function hasNonEmptyTextNode(node: any): boolean {
-  if (!node || typeof node !== 'object') return false
-  if (typeof node.text === 'string' && node.text.trim().length > 0) return true
-  if (Array.isArray(node.content)) return node.content.some((child: any) => hasNonEmptyTextNode(child))
-  return false
-}
-
 function shouldMaterializeDraft(title: string, payload: EditorContentPayload): boolean {
   const titleTrimmed = title.trim()
   if (titleTrimmed && titleTrimmed !== 'Untitled') return true
   if (payload.plainText.trim().length >= 2) return true
   if (payload.markdown.trim().length >= 2) return true
-  return hasNonEmptyTextNode(payload.contentJson)
+  return false
 }
 
 interface EditorWorkspaceTab {
@@ -164,6 +158,15 @@ export default function DraftEditorView({
   const [selectedViewBlock, setSelectedViewBlock] = useState<EditorViewBlockSelection | null>(null)
   const [publishing, setPublishing] = useState(false)
   const materializingRef = useRef(false)
+  const pendingScratchRef = useRef<{
+    title: string
+    contentJson: EditorContentPayload['contentJson']
+    plainText: string
+    html: string
+    markdown: string
+    tags: string[]
+    project: string | null
+  } | null>(null)
 
   const activeTab = useMemo(() => tabs.find((tab) => tab.id === activeTabId) ?? null, [activeTabId, tabs])
   const activeTarget = activeTab?.target ?? null
@@ -509,6 +512,10 @@ export default function DraftEditorView({
 
   const handlePublish = useCallback(async () => {
     if (!activeTarget) return
+    if (activeTarget.kind === 'scratch') {
+      onToast?.('空白 Page 尚未创建，请先输入内容。')
+      return
+    }
     await editorDoc.flushSave()
     if (activeTarget.kind === 'document') {
       onToast?.('文档已保存')
@@ -541,6 +548,11 @@ export default function DraftEditorView({
 
   const handleArchiveActive = useCallback(async () => {
     if (!activeTarget || !activeTabId) return
+    if (activeTarget.kind === 'scratch') {
+      closeTab(activeTabId)
+      onToast?.('临时 Page 已关闭')
+      return
+    }
     if (activeTarget.kind === 'draft') {
       await discardDraft(userId, activeTarget.id, 'abandon_changes')
       setDrafts((prev) => prev.filter((draft) => draft.id !== activeTarget.id))
@@ -555,6 +567,17 @@ export default function DraftEditorView({
   }, [activeTabId, activeTarget, closeTab, onToast, userId])
 
   const handleLocalTitleChange = useCallback((nextTitle: string) => {
+    if (activeTarget?.kind === 'scratch') {
+      pendingScratchRef.current = {
+        title: nextTitle,
+        contentJson: editorDoc.contentJson,
+        plainText: editorDoc.plainText,
+        html: editorDoc.html,
+        markdown: editorDoc.markdown,
+        tags: editorDoc.tags,
+        project: activeTab?.projectName ?? null,
+      }
+    }
     if (!materializingRef.current && activeTarget?.kind === 'scratch' && activeTab && shouldMaterializeDraft(nextTitle, {
       content: editorDoc.content,
       contentJson: editorDoc.contentJson,
@@ -569,16 +592,34 @@ export default function DraftEditorView({
         markdown: editorDoc.markdown,
       }).then((draft) => {
         if (!draft) return
-        setDrafts((prev) => [draft, ...prev])
-        setTabs((prev) => prev.map((tab) => tab.id === activeTab.id ? {
-          ...tab,
-          id: `draft:${draft.id}`,
-          title: normalizeTitle(draft.title),
-          path: draft.project ? `${draft.project} / Page / ${normalizeTitle(draft.title)}` : `Scatter / ${normalizeTitle(draft.title)}`,
-          target: { kind: 'draft', id: draft.id },
-        } : tab))
-        setActiveTabId(`draft:${draft.id}`)
-        emit({ type: 'draft_created', draftId: draft.id })
+        const latest = pendingScratchRef.current
+        Promise.resolve(
+          latest
+            ? updateDraft(userId, draft.id, {
+              title: latest.title,
+              content: latest.plainText || latest.markdown,
+              contentJson: latest.contentJson,
+              plainText: latest.plainText,
+              html: latest.html,
+              markdown: latest.markdown,
+              tags: latest.tags,
+              project: latest.project,
+            })
+            : draft
+        ).then((updated) => {
+          const finalDraft = (updated as StoredDraft) ?? draft
+          setDrafts((prev) => [finalDraft, ...prev])
+          setTabs((prev) => prev.map((tab) => tab.id === activeTab.id ? {
+            ...tab,
+            id: `draft:${finalDraft.id}`,
+            title: normalizeTitle(finalDraft.title),
+            path: finalDraft.project ? `${finalDraft.project} / Page / ${normalizeTitle(finalDraft.title)}` : `Scatter / ${normalizeTitle(finalDraft.title)}`,
+            target: { kind: 'draft', id: finalDraft.id },
+          } : tab))
+          setActiveTabId(`draft:${finalDraft.id}`)
+          emit({ type: 'draft_created', draftId: finalDraft.id })
+          pendingScratchRef.current = null
+        }).catch(() => {})
       }).catch(() => {}).finally(() => { materializingRef.current = false })
       materializingRef.current = true
     }
@@ -592,9 +633,20 @@ export default function DraftEditorView({
       setDocuments((prev) => prev.map((doc) => doc.id === activeTarget.id ? { ...doc, title: nextTitle, archivedAt: new Date() } : doc))
       setMindNodes((prev) => prev.map((node) => node.documentId === activeTarget.id ? { ...node, label: nextTitle, updatedAt: new Date() } : node))
     }
-  }, [activeTab, activeTarget, editorDoc])
+  }, [activeTab, activeTarget, editorDoc, userId])
 
   const handleLocalContentChange = useCallback((payload: EditorContentPayload) => {
+    if (activeTarget?.kind === 'scratch') {
+      pendingScratchRef.current = {
+        title: editorDoc.title,
+        contentJson: payload.contentJson,
+        plainText: payload.plainText,
+        html: payload.html,
+        markdown: payload.markdown,
+        tags: editorDoc.tags,
+        project: activeTab?.projectName ?? null,
+      }
+    }
     if (!materializingRef.current && activeTarget?.kind === 'scratch' && activeTab && shouldMaterializeDraft(editorDoc.title, payload)) {
       createDraft(userId, editorDoc.title, payload.content, undefined, undefined, editorDoc.tags, activeTab.projectName ?? null, null, {
         contentJson: payload.contentJson,
@@ -603,16 +655,34 @@ export default function DraftEditorView({
         markdown: payload.markdown,
       }).then((draft) => {
         if (!draft) return
-        setDrafts((prev) => [draft, ...prev])
-        setTabs((prev) => prev.map((tab) => tab.id === activeTab.id ? {
-          ...tab,
-          id: `draft:${draft.id}`,
-          title: normalizeTitle(draft.title),
-          path: draft.project ? `${draft.project} / Page / ${normalizeTitle(draft.title)}` : `Scatter / ${normalizeTitle(draft.title)}`,
-          target: { kind: 'draft', id: draft.id },
-        } : tab))
-        setActiveTabId(`draft:${draft.id}`)
-        emit({ type: 'draft_created', draftId: draft.id })
+        const latest = pendingScratchRef.current
+        Promise.resolve(
+          latest
+            ? updateDraft(userId, draft.id, {
+              title: latest.title,
+              content: latest.plainText || latest.markdown,
+              contentJson: latest.contentJson,
+              plainText: latest.plainText,
+              html: latest.html,
+              markdown: latest.markdown,
+              tags: latest.tags,
+              project: latest.project,
+            })
+            : draft
+        ).then((updated) => {
+          const finalDraft = (updated as StoredDraft) ?? draft
+          setDrafts((prev) => [finalDraft, ...prev])
+          setTabs((prev) => prev.map((tab) => tab.id === activeTab.id ? {
+            ...tab,
+            id: `draft:${finalDraft.id}`,
+            title: normalizeTitle(finalDraft.title),
+            path: finalDraft.project ? `${finalDraft.project} / Page / ${normalizeTitle(finalDraft.title)}` : `Scatter / ${normalizeTitle(finalDraft.title)}`,
+            target: { kind: 'draft', id: finalDraft.id },
+          } : tab))
+          setActiveTabId(`draft:${finalDraft.id}`)
+          emit({ type: 'draft_created', draftId: finalDraft.id })
+          pendingScratchRef.current = null
+        }).catch(() => {})
       }).catch(() => {}).finally(() => { materializingRef.current = false })
       materializingRef.current = true
     }
@@ -806,11 +876,12 @@ export default function DraftEditorView({
             </div>
             <button
               onClick={handlePublish}
-              disabled={!activeTarget || publishing}
+              disabled={!activeTarget || publishing || activeTarget.kind === 'scratch'}
               className="flex items-center gap-1.5 rounded-md bg-[#86d7ff]/10 px-3 py-1 text-[11px] font-medium text-[#86d7ff] transition-colors hover:bg-[#86d7ff]/18 disabled:opacity-40"
+              title={activeTarget?.kind === 'scratch' ? '临时 Page 不可发布' : undefined}
             >
               <Send className="h-3 w-3" />
-              {activeTarget?.kind === 'draft' ? (publishing ? '发布中...' : '发布') : '保存'}
+              {activeTarget?.kind === 'scratch' ? '临时 Page' : activeTarget?.kind === 'draft' ? (publishing ? '发布中...' : '发布') : '保存'}
             </button>
           </div>
 
@@ -946,9 +1017,10 @@ function DocumentInspector({
   onArchive: () => void
   publishing: boolean
 }) {
+  const isScratch = target?.kind === 'scratch'
   return (
     <div className="px-4 py-4">
-      {target && (
+      {target && !isScratch && (
         <section className="mb-7">
           <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[#899298]">文稿操作</h3>
           <div className="grid grid-cols-2 gap-2">
@@ -968,11 +1040,16 @@ function DocumentInspector({
           </div>
         </section>
       )}
+      {isScratch && (
+        <section className="mb-7 rounded-md border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[12px] text-[#b8c0c5]">
+          输入内容后自动创建 Page
+        </section>
+      )}
       <section className="mb-7">
         <h3 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[#899298]">文档属性</h3>
         <div className="space-y-2 text-[12px]">
           <InspectorRow label="状态" value={target ? '编辑中' : '未选择'} />
-          <InspectorRow label="类型" value={target?.kind === 'draft' ? 'Draft' : target?.kind === 'document' ? 'Document' : '—'} />
+          <InspectorRow label="类型" value={target?.kind === 'scratch' ? '临时 Page' : target?.kind === 'draft' ? 'Draft' : target?.kind === 'document' ? 'Document' : '—'} />
           <InspectorRow label="路径" value={activeTab?.path ?? '—'} />
           <InspectorRow label="字数" value={String(editorDoc.content.length)} />
           <InspectorRow label="更新" value={editorDoc.updatedAt ? formatTime(editorDoc.updatedAt) : '—'} />
