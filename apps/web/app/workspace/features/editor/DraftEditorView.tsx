@@ -169,6 +169,7 @@ export default function DraftEditorView({
   const [selectedViewBlock, setSelectedViewBlock] = useState<EditorViewBlockSelection | null>(null)
   const [publishing, setPublishing] = useState(false)
   const materializingRef = useRef(false)
+  const pendingScratchVersionRef = useRef(0)
   const pendingScratchRef = useRef<{
     title: string
     contentJson: EditorContentPayload['contentJson']
@@ -178,7 +179,18 @@ export default function DraftEditorView({
     tags: string[]
     project: string | null
   } | null>(null)
+
+  const activeTab = useMemo(() => tabs.find((tab) => tab.id === activeTabId) ?? null, [activeTabId, tabs])
+  const activeTarget = activeTab?.target ?? null
+  const activeProjectName = activeTab?.projectName ?? null
+
+  const editorDoc = useEditorDocument({
+    userId,
+    target: activeTarget,
+  })
+
   const updatePendingScratch = useCallback((partial: Partial<NonNullable<typeof pendingScratchRef.current>>) => {
+    pendingScratchVersionRef.current += 1
     pendingScratchRef.current = {
       title: editorDoc.title,
       contentJson: editorDoc.contentJson,
@@ -217,17 +229,23 @@ export default function DraftEditorView({
         }
       )
       if (!created) return
-      const latest = pendingScratchRef.current ?? pending
-      const finalDraft = await updateDraft(userId, created.id, {
-        title: latest.title,
-        content: latest.plainText || latest.markdown,
-        contentJson: latest.contentJson,
-        plainText: latest.plainText,
-        html: latest.html,
-        markdown: latest.markdown,
-        tags: latest.tags,
-        project: latest.project,
-      }) ?? created
+      let finalDraft: StoredDraft = created
+      while (pendingScratchRef.current) {
+        const version = pendingScratchVersionRef.current
+        const latest = pendingScratchRef.current
+        const updated = await updateDraft(userId, created.id, {
+          title: latest.title,
+          content: latest.plainText || latest.markdown,
+          contentJson: latest.contentJson,
+          plainText: latest.plainText,
+          html: latest.html,
+          markdown: latest.markdown,
+          tags: latest.tags,
+          project: latest.project,
+        })
+        finalDraft = updated ?? finalDraft
+        if (pendingScratchVersionRef.current === version) break
+      }
       setDrafts((prev) => [finalDraft, ...prev])
       setTabs((prev) => prev.map((tab) => tab.id === scratchTab.id ? {
         ...tab,
@@ -244,15 +262,6 @@ export default function DraftEditorView({
       materializingRef.current = false
     }
   }, [userId])
-
-  const activeTab = useMemo(() => tabs.find((tab) => tab.id === activeTabId) ?? null, [activeTabId, tabs])
-  const activeTarget = activeTab?.target ?? null
-  const activeProjectName = activeTab?.projectName ?? null
-
-  const editorDoc = useEditorDocument({
-    userId,
-    target: activeTarget,
-  })
 
   const refreshWorkspaceData = useCallback(async () => {
     if (!userId) return
