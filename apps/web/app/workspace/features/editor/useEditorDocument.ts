@@ -18,7 +18,7 @@ import {
   type TiptapJSONContent,
 } from '@/lib/editorContentAdapter'
 
-export type EditorTarget = { kind: 'draft' | 'document'; id: number } | null
+export type EditorTarget = { kind: 'draft' | 'document'; id: number } | { kind: 'scratch'; id: string } | null
 export type EditorSaveStatus = 'idle' | 'saving' | 'saved' | 'failed'
 
 interface UseEditorDocumentParams {
@@ -117,6 +117,11 @@ export function useEditorDocument({
       resetEmpty()
       return
     }
+    if (target.kind === 'scratch') {
+      resetEmpty()
+      setLoaded(true)
+      return
+    }
 
     resetEmpty()
     clearTimers()
@@ -165,7 +170,7 @@ export function useEditorDocument({
           project: nextProject,
         })
         emit({ type: 'draft_updated', draftId: nextTarget.id })
-      } else {
+      } else if (nextTarget.kind === 'document') {
         await updateEditorDocument(uid, nextTarget.id, {
           title: nextTitle,
           content: payload.content,
@@ -208,10 +213,11 @@ export function useEditorDocument({
     }
   }, [targetKey])
 
-  const scheduleSave = useCallback((delay = debounceMs) => {
+  const scheduleSave = useCallback((delay = debounceMs, snapshotOverride?: SaveSnapshot | null) => {
     if (!target) return
+    if (target.kind === 'scratch') return
     if (timerRef.current) clearTimeout(timerRef.current)
-    const snapshot = captureSnapshot()
+    const snapshot = snapshotOverride ?? captureSnapshot()
     if (!snapshot) return
     timerRef.current = setTimeout(() => {
       timerRef.current = null
@@ -231,18 +237,46 @@ export function useEditorDocument({
   }, [debounceMs, persist, target, captureSnapshot])
 
   const handleTitleChange = useCallback((newTitle: string) => {
+    const latest = latestRef.current
     setTitle(newTitle)
+    const override: SaveSnapshot | null = latest.userId && latest.target && latest.target.kind !== 'scratch'
+      ? {
+        targetKey: `${latest.target.kind}:${latest.target.id}`,
+        userId: latest.userId,
+        target: latest.target,
+        title: newTitle,
+        contentJson: latest.contentJson,
+        plainText: latest.plainText,
+        markdown: latest.markdown,
+        tags: latest.tags,
+        project: latest.project,
+      }
+      : null
     setSaveStatus('idle')
-    scheduleSave()
+    scheduleSave(undefined, override)
   }, [scheduleSave])
 
   const handleContentChange = useCallback((payload: EditorContentPayload) => {
+    const latest = latestRef.current
     setContentJson(payload.contentJson)
     setPlainText(payload.plainText)
     setHtml(payload.html)
     setMarkdown(payload.markdown)
+    const override: SaveSnapshot | null = latest.userId && latest.target && latest.target.kind !== 'scratch'
+      ? {
+        targetKey: `${latest.target.kind}:${latest.target.id}`,
+        userId: latest.userId,
+        target: latest.target,
+        title: latest.title,
+        contentJson: payload.contentJson,
+        plainText: payload.plainText,
+        markdown: payload.markdown,
+        tags: latest.tags,
+        project: latest.project,
+      }
+      : null
     setSaveStatus('idle')
-    scheduleSave()
+    scheduleSave(undefined, override)
   }, [scheduleSave])
 
   const flushSave = useCallback(async () => {
@@ -266,15 +300,43 @@ export function useEditorDocument({
   }, [persist])
 
   const handleTagsChange = useCallback((newTags: string[]) => {
+    const latest = latestRef.current
     setTags(newTags)
+    const override: SaveSnapshot | null = latest.userId && latest.target && latest.target.kind !== 'scratch'
+      ? {
+        targetKey: `${latest.target.kind}:${latest.target.id}`,
+        userId: latest.userId,
+        target: latest.target,
+        title: latest.title,
+        contentJson: latest.contentJson,
+        plainText: latest.plainText,
+        markdown: latest.markdown,
+        tags: newTags,
+        project: latest.project,
+      }
+      : null
     setSaveStatus('idle')
-    scheduleSave(250)
+    scheduleSave(250, override)
   }, [scheduleSave])
 
   const handleProjectChange = useCallback((newProject: string | null) => {
+    const latest = latestRef.current
     setProject(newProject)
+    const override: SaveSnapshot | null = latest.userId && latest.target && latest.target.kind !== 'scratch'
+      ? {
+        targetKey: `${latest.target.kind}:${latest.target.id}`,
+        userId: latest.userId,
+        target: latest.target,
+        title: latest.title,
+        contentJson: latest.contentJson,
+        plainText: latest.plainText,
+        markdown: latest.markdown,
+        tags: latest.tags,
+        project: newProject,
+      }
+      : null
     setSaveStatus('idle')
-    scheduleSave(250)
+    scheduleSave(250, override)
   }, [scheduleSave])
 
   return {

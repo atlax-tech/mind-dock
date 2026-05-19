@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import {
   AlertCircle,
@@ -68,6 +68,22 @@ const EDITOR_SURFACE_WIDTH: Record<EditorWidthMode, string> = {
 }
 
 type EditorTabKind = 'project' | 'domain' | 'document' | 'draft'
+const SCRATCH_TAB_ID_PREFIX = 'scratch:'
+
+function hasNonEmptyTextNode(node: any): boolean {
+  if (!node || typeof node !== 'object') return false
+  if (typeof node.text === 'string' && node.text.trim().length > 0) return true
+  if (Array.isArray(node.content)) return node.content.some((child: any) => hasNonEmptyTextNode(child))
+  return false
+}
+
+function shouldMaterializeDraft(title: string, payload: EditorContentPayload): boolean {
+  const titleTrimmed = title.trim()
+  if (titleTrimmed && titleTrimmed !== 'Untitled') return true
+  if (payload.plainText.trim().length >= 2) return true
+  if (payload.markdown.trim().length >= 2) return true
+  return hasNonEmptyTextNode(payload.contentJson)
+}
 
 interface EditorWorkspaceTab {
   id: string
@@ -147,6 +163,7 @@ export default function DraftEditorView({
   const [outline, setOutline] = useState<EditorOutlineItem[]>([])
   const [selectedViewBlock, setSelectedViewBlock] = useState<EditorViewBlockSelection | null>(null)
   const [publishing, setPublishing] = useState(false)
+  const materializingRef = useRef(false)
 
   const activeTab = useMemo(() => tabs.find((tab) => tab.id === activeTabId) ?? null, [activeTabId, tabs])
   const activeTarget = activeTab?.target ?? null
@@ -449,14 +466,19 @@ export default function DraftEditorView({
   }, [activeTabId, drafts, tabs, userId])
 
   const handleCreateDraft = useCallback(async () => {
-    const draft = await createDraft(userId, 'Untitled', '', undefined, undefined, [], null, null)
-    if (!draft) return
-    setDrafts((prev) => [draft, ...prev])
-    openDraftTab(draft)
-    emit({ type: 'draft_created', draftId: draft.id })
+    const scratchId = `${SCRATCH_TAB_ID_PREFIX}${Date.now()}`
+    openTab({
+      id: scratchId,
+      kind: 'draft',
+      title: 'Untitled',
+      path: 'Scatter / Untitled',
+      projectName: null,
+      target: { kind: 'scratch', id: scratchId },
+      lastOpenedAt: new Date(),
+    })
     setShowOpenDialog(false)
     onToast?.('已新建散点 Page')
-  }, [onToast, openDraftTab, userId])
+  }, [onToast, openTab])
 
   const handleCreateProjectDraft = useCallback(async () => {
     const projectName = activeProjectName
@@ -464,20 +486,26 @@ export default function DraftEditorView({
       await handleCreateDraft()
       return
     }
-    const draft = await createDraft(userId, 'Untitled', '', undefined, undefined, [], projectName, null)
-    if (!draft) return
-    setDrafts((prev) => [draft, ...prev.filter((item) => item.id !== draft.id)])
+    const scratchId = `${SCRATCH_TAB_ID_PREFIX}${Date.now()}`
     setExpandedNodeIds((current) => {
       const next = new Set(current)
       if (domainTree) next.add(domainTree.id)
       next.add(projectName)
       return next
     })
-    openDraftTab(draft)
-    emit({ type: 'draft_created', draftId: draft.id })
+    openTab({
+      id: scratchId,
+      kind: 'draft',
+      title: 'Untitled',
+      path: `${projectName} / Page / Untitled`,
+      projectName,
+      rootNodeId: domainTree?.id ?? null,
+      target: { kind: 'scratch', id: scratchId },
+      lastOpenedAt: new Date(),
+    })
     setShowOpenDialog(false)
     onToast?.('已在当前 Domain 新增 Page')
-  }, [activeProjectName, domainTree, handleCreateDraft, onToast, openDraftTab, userId])
+  }, [activeProjectName, domainTree, handleCreateDraft, onToast, openTab])
 
   const handlePublish = useCallback(async () => {
     if (!activeTarget) return
@@ -527,6 +555,33 @@ export default function DraftEditorView({
   }, [activeTabId, activeTarget, closeTab, onToast, userId])
 
   const handleLocalTitleChange = useCallback((nextTitle: string) => {
+    if (!materializingRef.current && activeTarget?.kind === 'scratch' && activeTab && shouldMaterializeDraft(nextTitle, {
+      content: editorDoc.content,
+      contentJson: editorDoc.contentJson,
+      plainText: editorDoc.plainText,
+      html: editorDoc.html,
+      markdown: editorDoc.markdown,
+    })) {
+      createDraft(userId, nextTitle, editorDoc.content, undefined, undefined, editorDoc.tags, activeTab.projectName ?? null, null, {
+        contentJson: editorDoc.contentJson,
+        plainText: editorDoc.plainText,
+        html: editorDoc.html,
+        markdown: editorDoc.markdown,
+      }).then((draft) => {
+        if (!draft) return
+        setDrafts((prev) => [draft, ...prev])
+        setTabs((prev) => prev.map((tab) => tab.id === activeTab.id ? {
+          ...tab,
+          id: `draft:${draft.id}`,
+          title: normalizeTitle(draft.title),
+          path: draft.project ? `${draft.project} / Page / ${normalizeTitle(draft.title)}` : `Scatter / ${normalizeTitle(draft.title)}`,
+          target: { kind: 'draft', id: draft.id },
+        } : tab))
+        setActiveTabId(`draft:${draft.id}`)
+        emit({ type: 'draft_created', draftId: draft.id })
+      }).catch(() => {}).finally(() => { materializingRef.current = false })
+      materializingRef.current = true
+    }
     editorDoc.handleTitleChange(nextTitle)
     if (!activeTab) return
     setTabs((prev) => prev.map((tab) => tab.id === activeTab.id ? { ...tab, title: normalizeTitle(nextTitle) } : tab))
@@ -540,8 +595,29 @@ export default function DraftEditorView({
   }, [activeTab, activeTarget, editorDoc])
 
   const handleLocalContentChange = useCallback((payload: EditorContentPayload) => {
+    if (!materializingRef.current && activeTarget?.kind === 'scratch' && activeTab && shouldMaterializeDraft(editorDoc.title, payload)) {
+      createDraft(userId, editorDoc.title, payload.content, undefined, undefined, editorDoc.tags, activeTab.projectName ?? null, null, {
+        contentJson: payload.contentJson,
+        plainText: payload.plainText,
+        html: payload.html,
+        markdown: payload.markdown,
+      }).then((draft) => {
+        if (!draft) return
+        setDrafts((prev) => [draft, ...prev])
+        setTabs((prev) => prev.map((tab) => tab.id === activeTab.id ? {
+          ...tab,
+          id: `draft:${draft.id}`,
+          title: normalizeTitle(draft.title),
+          path: draft.project ? `${draft.project} / Page / ${normalizeTitle(draft.title)}` : `Scatter / ${normalizeTitle(draft.title)}`,
+          target: { kind: 'draft', id: draft.id },
+        } : tab))
+        setActiveTabId(`draft:${draft.id}`)
+        emit({ type: 'draft_created', draftId: draft.id })
+      }).catch(() => {}).finally(() => { materializingRef.current = false })
+      materializingRef.current = true
+    }
     editorDoc.handleContentChange(payload)
-  }, [editorDoc])
+  }, [activeTab, activeTarget?.kind, editorDoc, userId])
 
   const handleProjectChange = useCallback((project: string | null) => {
     editorDoc.handleProjectChange(project)
