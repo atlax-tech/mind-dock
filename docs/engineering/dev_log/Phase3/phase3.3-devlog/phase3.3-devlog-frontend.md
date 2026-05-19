@@ -4,6 +4,145 @@
 
 ---
 
+## Phase3.3 +Round 15 devlog -- P33-DOCK-001 Dock 展示方式整改
+
+**日期**: 2026-05-20
+**任务起始时间**: 09:40
+**任务结束时间**: 12:05
+**工时**: 2h25m
+
+### 任务目标
+
+只整改 Dock 展示方式，不改 Editor、全局 App shell 和非 Dock 模块：
+- Dock 默认入口切换为 `全库总览 / 数据库`
+- 左侧导航改为 Dock 内部视图导航，不再以“任务控制”为默认入口
+- 引入统一 `dockItems` 前端语义层，保证导航数字、主表和 Inspector 来自同一批过滤结果
+- 项目看板和指标条只在“项目作战室”出现
+- 归档证据默认不污染全库总览
+- Dock 内新增“打开项目或散点文档”弹窗
+
+### 分支确认
+
+按任务要求执行：
+
+```bash
+git fetch origin
+git checkout feature/local-core-phase-1
+git status
+git log --oneline -8
+```
+
+确认结果：
+- 当前开发分支：`feature/local-core-phase-1`
+- 工作区在开工前为干净状态
+- 未直接在 `feature/phase-3-3` 上开发
+- 未新建额外分支
+- 未 commit / push
+
+### 修改文件
+
+| 文件 | 说明 |
+|------|------|
+| `apps/web/app/workspace/features/dock/DockView.tsx` | 新 Dock 独立组件：左侧导航、全库总览数据库、项目作战室、Inspector、打开项目或散点文档弹窗 |
+| `apps/web/app/workspace/features/dock/dockPresentation.ts` | 统一 Dock 语义适配层：`dockItems` 派生、导航 bucket、归档语义、风险语义、war room stage、共享筛选和计数 |
+| `apps/web/app/workspace/features/dock/useDockViewModel.ts` | 重构 Dock view model：导航模式、全库/作战室 view tabs、共享筛选、视图设置，并保留旧接口兼容 |
+| `apps/web/app/workspace/page.tsx` | Dock runtime 挂载改到新 `features/dock/DockView`，保留现有跨模块 Editor / Mind 跳转回调 |
+| `apps/web/tests/dock-presentation.test.ts` | 覆盖语义映射、归档排除、计数一致性、war room stage / risk 派生 |
+| `apps/web/tests/dock-view.test.tsx` | 覆盖默认全库总览数据库、归档证据视图切换、Inspector 跟随选中切换 |
+| `docs/engineering/dev_log/Phase3/phase3.3-devlog/phase3.3-devlog-frontend.md` | 记录本轮 P33-DOCK-001 工程日志 |
+
+### Dock 布局变更摘要
+
+- Dock 主实现已迁移到 `features/dock/DockView.tsx`，`workspace/page.tsx` 运行时只挂载新组件。
+- 左侧导航改为：
+  - 全库总览
+  - 项目作战室
+  - 知识流
+  - 待整理
+  - 推荐队列
+  - 健康风险
+  - 归档证据
+  - 自定义视图
+- 全库总览默认标题为 `Dock / 全库总览`，默认 tab 为 `数据库`；`总览地图 / 看板 / 图表 / 自定义` 保留真实切换入口与轻量占位。
+- 主区域数据库表格使用紧凑行式布局，固定列为：
+  - 名称
+  - 类型
+  - 所属域 / 项目
+  - 状态
+  - 标签
+  - 最近更新
+  - 推荐动作
+- 项目作战室新增 scope tabs、指标条和 `Backlog / In Progress / Review / Done` 看板；指标与看板均由现有知识对象前端派生，不伪装成独立任务系统。
+
+### 左侧导航与计数逻辑
+
+- 新增 `dockPresentation.ts`，统一把现有真实数据派生为 `dockItems`：
+  - `Project`
+  - `Topic`
+  - `Document`
+  - `Signal`
+  - `Draft`
+  - `Mind Node`
+  - `Recommendation`
+  - `Archive Evidence`
+- `Signal` 由现有 `tip` 派生；`Archive Evidence` 由 collection/document/tag/mind 语义前端判定派生，不把 `listDocuments` / `listArchivedEntries` 直接暴露成产品文案。
+- 左侧 badge 计算顺序固定为：
+  1. 原始 `dockItems`
+  2. 应用共享搜索/筛选
+  3. 按导航 predicate 分 bucket
+  4. bucket 数量直接作为导航数字
+  5. 主区域消费同一 bucket
+- 这样保证导航数字与主表内容一致，避免出现“左侧显示 10，主区域只有 3”的问题。
+- `归档证据` 默认不进入 `全库总览` bucket，只有进入 `归档证据` 入口或显式开启包含归档时才显示。
+
+### Inspector 改动
+
+- Inspector 保持当前产品右侧暗色细边框风格，不改全局 UI 样式。
+- 未选中对象时默认收起为窄态；选中对象后自动展开。
+- 选中对象后固定分区：
+  - 标题
+  - 类型 / 状态 / 所属域或项目 / 更新时间
+  - Page 概览
+  - 文档信息
+  - 模型 / 算法推荐
+  - 快速操作
+- 快速操作最少保留：
+  - `在 Editor 中打开`
+  - `在 Mind 中查看`
+- recommendation 不再独占 Inspector 主体，改为对象关联推荐区，跟随当前对象切换。
+
+### 打开弹窗改动
+
+- Dock 新增独立“打开项目或散点文档”弹窗，复用 Editor 弹窗风格但不改 Editor 行为。
+- 弹窗结构包含：
+  - 标题与副标题
+  - 顶部大搜索框
+  - `Title only / Created by / In / Filter / More Reset / Sort by 最近打开`
+  - 左侧高密度结果列表
+  - 右侧实时预览
+  - 底部打开按钮
+- 结果来源：
+  - 项目 / topic / domain：统一 scope candidates
+  - 散点对象：`project=null` 的 document / draft
+- 打开项目会进入 `项目作战室` 并锁定 scope；打开散点对象会回到 `全库总览 / 数据库` 并高亮该对象。
+
+### 验证命令和结果
+
+| 命令 | 结果 |
+|------|------|
+| `pnpm -C apps/web typecheck` | ✅ pass |
+| `pnpm -C apps/web lint` | ✅ pass，17 warnings，0 errors |
+| `pnpm -C apps/web test` | ✅ 47 files / 1286 tests passed |
+| `pnpm -C apps/web build` | ✅ pass，Next build 完成；保留既有 lint warnings |
+
+### 风险与未完成项
+
+- `Signal`、`Archive Evidence`、项目作战室指标条 / 看板均为前端派生语义，没有新增 repository / domain 存储模型；真实数据更丰富时可继续替换派生规则。
+- `workspace/page.tsx` 运行时已切到新的 Dock 组件，但历史内嵌 Dock 代码块仍保留为不可达遗留实现，后续可以单独清理，降低页面文件体积。
+- `dock-view.test.tsx` 在 jsdom 环境下会输出 React `act(...)` warning，但测试本身通过，不影响生产构建。
+
+---
+
 ## Phase3.3 +Round 14 devlog -- P33-EDITOR-001 Editor 展示与导航整改
 
 **日期**: 2026-05-19

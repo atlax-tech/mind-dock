@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { getCurrentUser, listLocalUsers, registerUser, loginByUserId } from '@/lib/auth';
 import DraftEditorView from './features/editor/DraftEditorView';
+import WorkspaceDockView from './features/dock/DockView';
 import { useTips } from './features/tips/useTips';
 import QuickCapture from './features/tips/QuickCapture';
 import TipsPanel from './features/tips/TipsPanel';
@@ -2433,6 +2434,8 @@ const DockView = ({ userId, onOpenEditor, onToast, onFocusMindNode, initialHealt
   );
 };
 
+void DockView;
+
 
 // 4. 编辑器视图 (Editor View) — 已替换为 DraftEditorView 组件
 // 旧 mock EditorView 已移除，真实 Draft 编辑功能见 features/editor/DraftEditorView.tsx
@@ -3843,7 +3846,7 @@ export default function WorkspacePage() {
           {activeTab === 'briefing' && <DailyBriefingView brief={dailyBriefHook.data} briefLoading={dailyBriefHook.loading} onOpenDraft={(draftId) => { if (draftId) setPendingOpenDraftId(draftId); setActiveTab('editor'); }} onOpenEntry={(entryId) => { if (entryId) setPendingOpenEntryId(entryId); setActiveTab('editor'); }} onOpenDock={() => setActiveTab('dock')} onOpenMind={() => setActiveTab('mind')} onOpenReview={() => setActiveTab('review')} />}
           {activeTab === 'toolbox' && <ToolboxView />}
           {activeTab === 'mind' && <MindView userId={userId} onToast={showToast} onSelectionChange={setIsNodeSelected} initialFocusNodeId={pendingMindFocusNodeId} onFocusNodeConsumed={() => setPendingMindFocusNodeId(null)} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} />}
-          {activeTab === 'dock' && <DockView userId={userId} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} onToast={showToast} onFocusMindNode={(nodeId: string) => { setPendingMindFocusNodeId(nodeId); setActiveTab('mind'); }} initialHealthFilter={pendingDockFilter} />}
+          {activeTab === 'dock' && <WorkspaceDockView userId={userId} onOpenEditor={(documentId, sourceType) => { setShowSourcePacket(false); setShowInspector(false); if (sourceType === 'document') { setPendingOpenEntryId(documentId); setPendingOpenDraftId(null); } else { setPendingOpenDraftId(documentId); setPendingOpenEntryId(null); } setActiveTab('editor'); }} onToast={showToast} onFocusMindNode={(nodeId: string) => { setPendingMindFocusNodeId(nodeId); setActiveTab('mind'); }} initialHealthFilter={pendingDockFilter} />}
           {activeTab === 'editor' && <DraftEditorView userId={userId} showSourcePacket={showSourcePacket} showInspector={showInspector} onToggleSourcePacket={() => setShowSourcePacket(v => !v)} onToggleInspector={() => setShowInspector(v => !v)} onToast={showToast} initialDraftId={pendingOpenDraftId} initialEntryId={pendingOpenEntryId} onInitialDraftConsumed={() => setPendingOpenDraftId(null)} onInitialEntryConsumed={() => setPendingOpenEntryId(null)} onActiveDraftMetaChange={setActiveEditorMeta} />}
           {activeTab === 'review' && <ReviewView onNavigateToMind={() => setActiveTab('mind')} onNavigateToSuggestion={(target) => { setActiveTab(target.tab as any); if (target.filter) { setPendingDockFilter(target.filter); } }} />}
           {activeTab === 'settings' && <SettingsView onToast={showToast} />}
