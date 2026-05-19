@@ -27,6 +27,25 @@ interface UseEditorDocumentParams {
   debounceMs?: number
 }
 
+interface SaveSnapshot {
+  targetKey: string
+  userId: string
+  target: NonNullable<EditorTarget>
+  title: string
+  contentJson: TiptapJSONContent
+  plainText: string
+  markdown: string
+  tags: string[]
+  project: string | null
+}
+
+interface LastSavedState {
+  title: string
+  contentKey: string
+  tagsKey: string
+  projectKey: string
+}
+
 export function useEditorDocument({
   userId,
   target,
@@ -47,7 +66,7 @@ export function useEditorDocument({
   const [loaded, setLoaded] = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const projectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const lastSavedRef = useRef({ title: '', contentKey: JSON.stringify(createEmptyTiptapDoc()) })
+  const lastSavedRef = useRef<LastSavedState>({ title: '', contentKey: JSON.stringify(createEmptyTiptapDoc()), tagsKey: '[]', projectKey: '' })
   const targetKey = target ? `${target.kind}:${target.id}` : 'none'
   const latestRef = useRef({ userId, target, title, contentJson, plainText, html, markdown, tags, project })
   latestRef.current = { userId, target, title, contentJson, plainText, html, markdown, tags, project }
@@ -66,7 +85,7 @@ export function useEditorDocument({
     setUpdatedAt(null)
     setLoaded(false)
     setSaveStatus('idle')
-    lastSavedRef.current = { title: '', contentKey: JSON.stringify(createEmptyTiptapDoc()) }
+    lastSavedRef.current = { title: '', contentKey: JSON.stringify(createEmptyTiptapDoc()), tagsKey: '[]', projectKey: '' }
   }, [])
 
   const resetForRecord = useCallback((record: StoredDraft | StoredDocument, kind: 'draft' | 'document') => {
@@ -83,9 +102,14 @@ export function useEditorDocument({
     setSourceType(kind === 'draft' ? ((record as StoredDraft).sourceType ?? 'draft') : ((record as StoredDocument).type ?? 'document'))
     setCreatedAt(record.createdAt ? new Date(record.createdAt) : null)
     setUpdatedAt(kind === 'draft' ? new Date((record as StoredDraft).updatedAt) : new Date((record as StoredDocument).archivedAt ?? record.createdAt))
-    lastSavedRef.current = { title: record.title, contentKey: JSON.stringify(payload.contentJson) }
+    lastSavedRef.current = { title: record.title, contentKey: JSON.stringify(payload.contentJson), tagsKey: JSON.stringify(record.tags ?? []), projectKey: record.project ?? '' }
     setSaveStatus('saved')
     setLoaded(true)
+  }, [])
+
+  const clearTimers = useCallback(() => {
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }
+    if (projectTimerRef.current) { clearTimeout(projectTimerRef.current); projectTimerRef.current = null }
   }, [])
 
   useEffect(() => {
@@ -95,6 +119,7 @@ export function useEditorDocument({
     }
 
     resetEmpty()
+    clearTimers()
     let cancelled = false
     const load = target.kind === 'draft'
       ? getDraft(userId, target.id)
@@ -111,8 +136,12 @@ export function useEditorDocument({
       if (!cancelled) setLoaded(true)
     })
 
-    return () => { cancelled = true }
-  }, [userId, targetKey, resetEmpty, resetForRecord])
+    return () => { cancelled = true; clearTimers() }
+  }, [userId, targetKey, resetEmpty, resetForRecord, clearTimers])
+
+  useEffect(() => {
+    return () => { clearTimers() }
+  }, [clearTimers])
 
   const persist = useCallback(async (
     uid: string,
@@ -149,7 +178,12 @@ export function useEditorDocument({
         })
         emit({ type: 'document_updated', documentId: nextTarget.id } as any)
       }
-      lastSavedRef.current = { title: nextTitle, contentKey: JSON.stringify(payload.contentJson) }
+      lastSavedRef.current = {
+        title: nextTitle,
+        contentKey: JSON.stringify(payload.contentJson),
+        tagsKey: JSON.stringify(nextTags),
+        projectKey: nextProject ?? '',
+      }
       setUpdatedAt(new Date())
       setSaveStatus('saved')
     } catch (err) {
@@ -158,25 +192,43 @@ export function useEditorDocument({
     }
   }, [])
 
+  const captureSnapshot = useCallback((): SaveSnapshot | null => {
+    const latest = latestRef.current
+    if (!latest.userId || !latest.target) return null
+    return {
+      targetKey,
+      userId: latest.userId,
+      target: latest.target,
+      title: latest.title,
+      contentJson: latest.contentJson,
+      plainText: latest.plainText,
+      markdown: latest.markdown,
+      tags: latest.tags,
+      project: latest.project,
+    }
+  }, [targetKey])
+
   const scheduleSave = useCallback((delay = debounceMs) => {
     if (!target) return
     if (timerRef.current) clearTimeout(timerRef.current)
+    const snapshot = captureSnapshot()
+    if (!snapshot) return
     timerRef.current = setTimeout(() => {
       timerRef.current = null
-      const latest = latestRef.current
-      if (!latest.userId || !latest.target) return
-      if (latest.target.kind === 'draft') {
-        const tBlank = !latest.title.trim() || latest.title === 'Untitled'
-        const cBlank = !latest.plainText.trim() && !latest.markdown.trim()
+      const currentTargetKey = target ? `${target.kind}:${target.id}` : 'none'
+      if (snapshot.targetKey !== currentTargetKey) return
+      if (snapshot.target.kind === 'draft') {
+        const tBlank = !snapshot.title.trim() || snapshot.title === 'Untitled'
+        const cBlank = !snapshot.plainText.trim() && !snapshot.markdown.trim()
         if (tBlank && cBlank) {
           setSaveStatus('saved')
           return
         }
       }
-      const payload = createEditorContentPayload(latest.contentJson, latest.plainText || latest.markdown)
-      persist(latest.userId, latest.target, latest.title, payload, latest.tags, latest.project)
+      const payload = createEditorContentPayload(snapshot.contentJson, snapshot.plainText || snapshot.markdown)
+      persist(snapshot.userId, snapshot.target, snapshot.title, payload, snapshot.tags, snapshot.project)
     }, delay)
-  }, [debounceMs, persist, target])
+  }, [debounceMs, persist, target, captureSnapshot])
 
   const handleTitleChange = useCallback((newTitle: string) => {
     setTitle(newTitle)
@@ -194,14 +246,8 @@ export function useEditorDocument({
   }, [scheduleSave])
 
   const flushSave = useCallback(async () => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current)
-      timerRef.current = null
-    }
-    if (projectTimerRef.current) {
-      clearTimeout(projectTimerRef.current)
-      projectTimerRef.current = null
-    }
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }
+    if (projectTimerRef.current) { clearTimeout(projectTimerRef.current); projectTimerRef.current = null }
     const latest = latestRef.current
     if (!latest.userId || !latest.target) return
     if (latest.target.kind === 'draft') {
@@ -210,7 +256,10 @@ export function useEditorDocument({
       if (tBlank && cBlank) return
     }
     const contentKey = JSON.stringify(latest.contentJson)
-    const changed = latest.title !== lastSavedRef.current.title || contentKey !== lastSavedRef.current.contentKey
+    const tagsKey = JSON.stringify(latest.tags)
+    const projectKey = latest.project ?? ''
+    const last = lastSavedRef.current
+    const changed = latest.title !== last.title || contentKey !== last.contentKey || tagsKey !== last.tagsKey || projectKey !== last.projectKey
     if (!changed) return
     const payload = createEditorContentPayload(latest.contentJson, latest.plainText || latest.markdown)
     await persist(latest.userId, latest.target, latest.title, payload, latest.tags, latest.project)

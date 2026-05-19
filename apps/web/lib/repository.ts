@@ -1581,6 +1581,14 @@ export async function updateEditorDocument(
   await entriesTable.update(documentId, patch)
   const updated = toPersistedEntry(await entriesTable.get(documentId))
   notifyDocumentContentChanged(userId, updated, 'updated')
+
+  if (updates.title !== undefined) {
+    const nodes = await mindNodesTable.where({ userId, workspaceId: DEFAULT_WORKSPACE_ID, documentId }).toArray()
+    for (const node of nodes) {
+      await mindNodesTable.update(node.id, { label: updates.title, updatedAt: new Date() })
+    }
+  }
+
   return updated
 }
 

@@ -91,13 +91,14 @@ interface DomainTreeNode {
 
 interface OpenResult {
   id: string
-  kind: 'project' | 'domain' | 'document'
+  kind: 'project' | 'domain' | 'document' | 'draft'
   title: string
   path: string
-  typeLabel: 'project' | 'topic' | 'scatter document'
+  typeLabel: 'project' | 'topic' | 'scatter document' | 'page'
   updatedAt: Date
   node?: StoredMindNode
   document?: StoredDocument
+  draft?: StoredDraft
 }
 
 interface DraftEditorViewProps {
@@ -350,10 +351,19 @@ export default function DraftEditorView({
       updatedAt: new Date(document.archivedAt ?? document.createdAt),
       document,
     }))
-    const all = [...projectResults, ...docResults]
+    const draftResults: OpenResult[] = drafts.map((draft) => ({
+      id: `draft:${draft.id}`,
+      kind: 'draft',
+      title: normalizeTitle(draft.title),
+      path: draft.project ? `~/${draft.project}` : '~/Scatter',
+      typeLabel: 'page',
+      updatedAt: new Date(draft.updatedAt),
+      draft,
+    }))
+    const all = [...projectResults, ...docResults, ...draftResults]
     const query = openQuery.trim().toLowerCase()
     return all
-      .filter((item) => openTypeFilter === 'all' || (openTypeFilter === 'project' ? item.kind !== 'document' : item.kind === 'document'))
+      .filter((item) => openTypeFilter === 'all' || (openTypeFilter === 'project' ? item.kind !== 'document' && item.kind !== 'draft' : item.kind === 'document' || item.kind === 'draft'))
       .filter((item) => {
         if (!query) return true
         if (titleOnlyFilter) return item.title.toLowerCase().includes(query)
@@ -361,18 +371,20 @@ export default function DraftEditorView({
       })
       .sort((a, b) => sortMode === 'title' ? a.title.localeCompare(b.title) : b.updatedAt.getTime() - a.updatedAt.getTime())
       .slice(0, 40)
-  }, [documents, openQuery, openTypeFilter, projectOptions, sortMode, titleOnlyFilter])
+  }, [documents, drafts, openQuery, openTypeFilter, projectOptions, sortMode, titleOnlyFilter])
 
   const selectedOpenResult = openResults[Math.min(selectedOpenIndex, Math.max(0, openResults.length - 1))] ?? null
 
   const handleOpenResult = useCallback((result: OpenResult) => {
     if (result.kind === 'project' || result.kind === 'domain') {
       openProjectTab(result.title, result.node?.id ?? null)
+    } else if (result.kind === 'draft' && result.draft) {
+      openDraftTab(result.draft)
     } else if (result.document) {
       openDocumentTab(result.document)
     }
     setShowOpenDialog(false)
-  }, [openDocumentTab, openProjectTab])
+  }, [openDocumentTab, openDraftTab, openProjectTab])
 
   useEffect(() => {
     if (!showOpenDialog) return
@@ -415,25 +427,26 @@ export default function DraftEditorView({
   }, [documents, drafts, openDocumentTab, openDraftTab])
 
   const closeTab = useCallback((tabId: string) => {
+    const closingTab = tabs.find((tab) => tab.id === tabId)
+    if (closingTab?.kind === 'draft' && closingTab.target?.kind === 'draft') {
+      const draftId = closingTab.target.id
+      const draft = drafts.find((d) => d.id === draftId)
+      const titleBlank = !draft?.title?.trim() || draft.title === 'Untitled'
+      const contentBlank = !draft?.content?.trim() && !draft?.plainText?.trim() && !draft?.markdown?.trim()
+      if (titleBlank && contentBlank) {
+        discardDraft(userId, draftId, 'abandon_changes').catch(() => {})
+        setDrafts((prevDrafts) => prevDrafts.filter((d) => d.id !== draftId))
+      }
+    }
     setTabs((prev) => {
-      const closingTab = prev.find((tab) => tab.id === tabId)
-      if (closingTab?.kind === 'draft' && closingTab.target?.kind === 'draft') {
-        const draftId = closingTab.target.id
-        const draft = drafts.find((d) => d.id === draftId)
-        const titleBlank = !draft?.title?.trim() || draft.title === 'Untitled'
-        const contentBlank = !draft?.content?.trim() && !draft?.plainText?.trim() && !draft?.markdown?.trim()
-        if (titleBlank && contentBlank) {
-          discardDraft(userId, draftId, 'abandon_changes').catch(() => {})
-          setDrafts((prevDrafts) => prevDrafts.filter((d) => d.id !== draftId))
-        }
-      }
       const next = prev.filter((tab) => tab.id !== tabId)
-      if (activeTabId === tabId) {
-        setActiveTabId(next[next.length - 1]?.id ?? null)
-      }
       return next
     })
-  }, [activeTabId, drafts, userId])
+    if (activeTabId === tabId) {
+      const remaining = tabs.filter((tab) => tab.id !== tabId)
+      setActiveTabId(remaining[remaining.length - 1]?.id ?? null)
+    }
+  }, [activeTabId, drafts, tabs, userId])
 
   const handleCreateDraft = useCallback(async () => {
     const draft = await createDraft(userId, 'Untitled', '', undefined, undefined, [], null, null)
@@ -522,6 +535,7 @@ export default function DraftEditorView({
     }
     if (activeTarget?.kind === 'document') {
       setDocuments((prev) => prev.map((doc) => doc.id === activeTarget.id ? { ...doc, title: nextTitle, archivedAt: new Date() } : doc))
+      setMindNodes((prev) => prev.map((node) => node.documentId === activeTarget.id ? { ...node, label: nextTitle, updatedAt: new Date() } : node))
     }
   }, [activeTab, activeTarget, editorDoc])
 
@@ -1211,13 +1225,7 @@ function OpenDialog({
                 </div>
                 <div className="flex justify-end gap-2 border-t border-white/[0.07] pt-4">
                   <button onClick={() => onOpen(selected)} className="rounded-lg bg-[#86d7ff]/15 px-4 py-2 text-[12px] font-medium text-[#86d7ff] hover:bg-[#86d7ff]/24">
-                    在当前 Editor 中打开
-                  </button>
-                  <button onClick={() => onOpen(selected)} className="rounded-lg border border-white/[0.1] bg-white/[0.04] px-4 py-2 text-[12px] text-white hover:bg-white/[0.08]">
-                    在新标签页中打开
-                  </button>
-                  <button className="rounded-lg border border-white/[0.1] bg-white/[0.04] px-3 py-2 text-white hover:bg-white/[0.08]">
-                    <ChevronDown className="h-4 w-4" />
+                    打开
                   </button>
                 </div>
               </div>
