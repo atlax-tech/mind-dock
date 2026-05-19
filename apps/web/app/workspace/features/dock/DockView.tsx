@@ -796,7 +796,15 @@ export default function DockView({
             }}
           >
             {vm.navigationMode === 'warRoom' && vm.warRoomView === 'kanban' ? (
-              <WarRoomKanban items={warRoomItems} />
+              <WarRoomKanban
+                items={warRoomItems}
+                selectedItemId={selectedItemId}
+                onSelect={(item) => {
+                  setSelectedItemId(item.id)
+                  setInspectorExpanded(true)
+                }}
+                onOpen={handlePrimaryAction}
+              />
             ) : vm.navigationMode === 'libraryOverview' && vm.libraryView !== 'database' ? (
               <PlaceholderView
                 icon={LIBRARY_TABS.find((item) => item.key === vm.libraryView)?.icon ?? LayoutGrid}
@@ -979,6 +987,60 @@ function DockDatabaseTable({
 }) {
   const rowHeight = density === 'compact' ? 'h-[40px]' : 'h-[52px]'
 
+  const visibleColumns = [
+    { key: 'title', label: '名称', width: 'minmax(220px,2.2fr)' },
+    { key: 'type', label: '类型', width: '120px' },
+    columnVisibility.space && { key: 'space', label: '所属域 / 项目', width: 'minmax(130px,1.3fr)' },
+    columnVisibility.status && { key: 'status', label: '状态', width: '110px' },
+    columnVisibility.tags && { key: 'tags', label: '标签', width: 'minmax(150px,1.2fr)' },
+    columnVisibility.score && { key: 'updatedAt', label: '最近更新', width: '140px' },
+    columnVisibility.recommendations && { key: 'action', label: '推荐动作', width: '130px' },
+  ].filter(Boolean) as Array<{ key: string; label: string; width: string }>
+
+  const gridTemplateColumns = visibleColumns.map((col) => col.width).join(' ')
+
+  function renderCell(item: DockPresentationItem, columnKey: string) {
+    switch (columnKey) {
+      case 'title': {
+        const Icon = getKindIcon(item.kind)
+        return (
+          <div className="flex min-w-0 items-center gap-2 pr-3">
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/[0.07] bg-white/[0.04] text-[#86d7ff]">
+              <Icon className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <div className="truncate text-[12px] font-medium text-white">{item.title}</div>
+            </div>
+          </div>
+        )
+      }
+      case 'type':
+        return <div className="truncate text-[11px] text-[#c7d0d6]">{getDockKindLabel(item.kind)}</div>
+      case 'space':
+        return <div className="truncate text-[11px] text-[#8d989f]">{item.scopeTitle ?? '—'}</div>
+      case 'status':
+        return <span className={`rounded-full border px-2 py-0.5 text-[10px] ${statusClass(item.status)}`}>{statusLabel(item.status)}</span>
+      case 'tags':
+        return <div className="truncate text-[11px] text-[#8d989f]">{maxThreeTags(item.tags).map((tag) => `#${tag}`).join(' ') || '—'}</div>
+      case 'updatedAt':
+        return <div className="text-[11px] text-[#8d989f]">{formatRelativeTime(item.updatedAt)}</div>
+      case 'action':
+        return (
+          <button
+            onClick={(event) => {
+              event.stopPropagation()
+              void onOpen(item)
+            }}
+            className="rounded-[8px] border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 text-[11px] text-white hover:bg-white/[0.08]"
+          >
+            {getDockPrimaryActionLabel(item.primaryAction)}
+          </button>
+        )
+      default:
+        return null
+    }
+  }
+
   if (items.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center">
@@ -992,70 +1054,52 @@ function DockDatabaseTable({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="grid grid-cols-[minmax(220px,2.2fr)_120px_minmax(130px,1.3fr)_110px_minmax(150px,1.2fr)_140px_130px] border-b border-white/[0.06] bg-[#0b0f11] px-4 py-2 text-[11px] font-medium text-[#8d989f]">
-        <div>名称</div>
-        <div>类型</div>
-        <div>{columnVisibility.space ? '所属域 / 项目' : '—'}</div>
-        <div>{columnVisibility.status ? '状态' : '—'}</div>
-        <div>{columnVisibility.tags ? '标签' : '—'}</div>
-        <div>{columnVisibility.score ? '最近更新' : '—'}</div>
-        <div>{columnVisibility.recommendations ? '推荐动作' : '—'}</div>
+      <div
+        className="grid border-b border-white/[0.06] bg-[#0b0f11] px-4 py-2 text-[11px] font-medium text-[#8d989f]"
+        style={{ gridTemplateColumns }}
+      >
+        {visibleColumns.map((col) => (
+          <div key={col.key}>{col.label}</div>
+        ))}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar">
-        {items.map((item) => {
-          const Icon = getKindIcon(item.kind)
-          return (
-            <div
-              key={item.id}
-              onClick={(event) => {
-                event.stopPropagation()
-                onSelect(item)
-              }}
-              onDoubleClick={(event) => {
-                event.stopPropagation()
-                void onOpen(item)
-              }}
-              className={`grid cursor-pointer grid-cols-[minmax(220px,2.2fr)_120px_minmax(130px,1.3fr)_110px_minmax(150px,1.2fr)_140px_130px] items-center border-b border-white/[0.05] px-4 transition-colors ${
-                selectedItemId === item.id ? 'bg-[#86d7ff]/10' : 'hover:bg-white/[0.025]'
-              } ${rowHeight}`}
-            >
-              <div className="flex min-w-0 items-center gap-2 pr-3">
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/[0.07] bg-white/[0.04] text-[#86d7ff]">
-                  <Icon className="h-4 w-4" />
-                </div>
-                <div className="min-w-0">
-                  <div className="truncate text-[12px] font-medium text-white">{item.title}</div>
-                </div>
-              </div>
-              <div className="truncate text-[11px] text-[#c7d0d6]">{getDockKindLabel(item.kind)}</div>
-              <div className="truncate text-[11px] text-[#8d989f]">{columnVisibility.space ? item.scopeTitle ?? '—' : '—'}</div>
-              <div>{columnVisibility.status ? <span className={`rounded-full border px-2 py-0.5 text-[10px] ${statusClass(item.status)}`}>{statusLabel(item.status)}</span> : '—'}</div>
-              <div className="truncate text-[11px] text-[#8d989f]">{columnVisibility.tags ? maxThreeTags(item.tags).map((tag) => `#${tag}`).join(' ') || '—' : '—'}</div>
-              <div className="text-[11px] text-[#8d989f]">{columnVisibility.score ? formatRelativeTime(item.updatedAt) : '—'}</div>
-              <div>
-                {columnVisibility.recommendations ? (
-                  <button
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      void onOpen(item)
-                    }}
-                    className="rounded-[8px] border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 text-[11px] text-white hover:bg-white/[0.08]"
-                  >
-                    {getDockPrimaryActionLabel(item.primaryAction)}
-                  </button>
-                ) : (
-                  '—'
-                )}
-              </div>
-            </div>
-          )
-        })}
+        {items.map((item) => (
+          <div
+            key={item.id}
+            onClick={(event) => {
+              event.stopPropagation()
+              onSelect(item)
+            }}
+            onDoubleClick={(event) => {
+              event.stopPropagation()
+              void onOpen(item)
+            }}
+            className={`grid cursor-pointer items-center border-b border-white/[0.05] px-4 transition-colors ${
+              selectedItemId === item.id ? 'bg-[#86d7ff]/10' : 'hover:bg-white/[0.025]'
+            } ${rowHeight}`}
+            style={{ gridTemplateColumns }}
+          >
+            {visibleColumns.map((col) => (
+              <div key={col.key}>{renderCell(item, col.key)}</div>
+            ))}
+          </div>
+        ))}
       </div>
     </div>
   )
 }
 
-function WarRoomKanban({ items }: { items: DockPresentationItem[] }) {
+function WarRoomKanban({
+  items,
+  selectedItemId,
+  onSelect,
+  onOpen,
+}: {
+  items: DockPresentationItem[]
+  selectedItemId: string | null
+  onSelect: (item: DockPresentationItem) => void
+  onOpen: (item: DockPresentationItem) => void | Promise<void>
+}) {
   const groups = {
     backlog: items.filter((item) => item.warRoomStage === 'backlog'),
     inProgress: items.filter((item) => item.warRoomStage === 'inProgress'),
@@ -1097,7 +1141,22 @@ function WarRoomKanban({ items }: { items: DockPresentationItem[] }) {
             <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
               {column.items.length === 0 && <div className="rounded-[10px] border border-dashed border-white/[0.07] bg-white/[0.02] p-3 text-[11px] text-[#8d989f]">暂无项目对象</div>}
               {column.items.map((item) => (
-                <div key={item.id} className="rounded-[10px] border border-white/[0.07] bg-white/[0.03] p-3">
+                <div
+                  key={item.id}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onSelect(item)
+                  }}
+                  onDoubleClick={(event) => {
+                    event.stopPropagation()
+                    void onOpen(item)
+                  }}
+                  className={`cursor-pointer rounded-[10px] border p-3 transition-colors ${
+                    selectedItemId === item.id
+                      ? 'border-[#86d7ff]/30 bg-[#86d7ff]/10'
+                      : 'border-white/[0.07] bg-white/[0.03] hover:bg-white/[0.06]'
+                  }`}
+                >
                   <div className="text-[12px] font-medium text-white">{item.title}</div>
                   <div className="mt-1 text-[10px] text-[#8d989f]">{getDockKindLabel(item.kind)}</div>
                   <div className="mt-2 flex flex-wrap gap-1">

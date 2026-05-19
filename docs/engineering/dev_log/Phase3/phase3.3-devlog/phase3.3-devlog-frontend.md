@@ -4,6 +4,78 @@
 
 ---
 
+## Phase3.3 +Round 16 devlog -- Dock 交互修复：WarRoomKanban 卡片选中 + DockDatabaseTable 列真隐藏
+
+**日期**: 2026-05-20
+**任务起始时间**: 20:30
+**任务结束时间**: 20:50
+**工时**: 20 分钟
+
+### 任务目标
+
+修复 Dock 视图两个交互/布局问题：
+1. WarRoomKanban 看板卡片不可选中，点击不会打开 Inspector
+2. DockDatabaseTable 列隐藏是假隐藏（只显示 "—" 占位，不释放宽度）
+
+### 改动文件
+
+| 文件 | 改动行数 | 说明 |
+|------|----------|------|
+| `apps/web/app/workspace/features/dock/DockView.tsx` | ~80 行 | WarRoomKanban 组件增加交互 props 和事件处理；DockDatabaseTable 重构为动态 visibleColumns |
+
+### 改动详情
+
+#### 1. WarRoomKanban 卡片选中交互
+
+- 组件签名从 `{ items }` 扩展为 `{ items, selectedItemId, onSelect, onOpen }`
+- 调用处传入 `selectedItemId`、`onSelect`（setSelectedItemId + setInspectorExpanded）、`onOpen`（handlePrimaryAction）
+- 每张卡片添加 `onClick`（event.stopPropagation() + onSelect）、`onDoubleClick`（event.stopPropagation() + onOpen）
+- 选中态样式沿用 DockDatabaseTable 的 `border-[#86d7ff]/30 bg-[#86d7ff]/10`，未选中态 `border-white/[0.07] bg-white/[0.03] hover:bg-white/[0.06]`
+
+#### 2. DockDatabaseTable 列真隐藏
+
+- 新增 `visibleColumns` 数组，根据 `columnVisibility` 动态过滤
+- 名称和类型始终显示，其余列（space/status/tags/score/recommendations）根据 columnVisibility 决定是否存在
+- `gridTemplateColumns` 由 `visibleColumns.map(col => col.width).join(' ')` 动态生成
+- header 和 row cell 均基于同一份 `visibleColumns` 渲染
+- 抽取 `renderCell(item, columnKey)` 函数统一处理各列渲染逻辑
+- 隐藏列不再显示 "—" 占位，而是完全从 grid 中移除，释放空间
+
+### 遇到的问题及解决方式
+
+无阻塞性问题。两处修改均为纯前端逻辑调整，不涉及数据层或 API 变更。
+
+### 自动验证结果
+
+```bash
+pnpm -C apps/web typecheck  # ✅ 通过，0 错误
+pnpm -C apps/web build      # ✅ 通过，Compiled successfully，无新增 warning
+```
+
+### 手工验证步骤
+
+1. **WarRoomKanban 卡片选中**：
+   - 进入 Dock → 项目作战室 → 切换到"看板"视图
+   - 单击任意看板卡片 → 右侧 Inspector 应自动展开并显示该对象详情
+   - 单击看板卡片后，点击主区域空白处 → Inspector 应关闭（外层 section.onClick 正常触发）
+   - 再次单击看板卡片 → Inspector 应重新打开，不会被外层关闭
+   - 双击看板卡片 → 应触发 handlePrimaryAction（如跳转编辑器或切换项目）
+   - 选中卡片应有 `border-[#86d7ff]/30 bg-[#86d7ff]/10` 选中态视觉
+
+2. **DockDatabaseTable 列隐藏**：
+   - 进入 Dock → 全库总览 → 数据库视图
+   - 点击"视图设置" → 取消勾选"所属域 / 项目" → 该列应从表格中完全消失，宽度释放给其他列
+   - 逐个取消勾选"状态"、"标签"、"最近更新"、"推荐动作" → 每次取消后对应列应完全移除
+   - 重新勾选 → 列应重新出现
+   - 隐藏列时不应出现 "—" 占位符
+
+### 当前风险与影响范围
+
+- **风险**: 无。两处修改均为局部组件逻辑，不影响数据层、路由或其他视图
+- **影响范围**: 仅 `DockView.tsx` 内的 `WarRoomKanban` 和 `DockDatabaseTable` 两个子组件
+
+---
+
 ## Phase3.3 +Round 15 devlog -- P33-DOCK-001 Dock 展示方式整改
 
 **日期**: 2026-05-20
