@@ -90,7 +90,7 @@ export function jsonToPlainText(node: TiptapJSONContent | null | undefined): str
   if (node.type === 'text') return node.text ?? ''
   if (node.type === 'hardBreak') return '\n'
   const children = node.content?.map(jsonToPlainText).join('') ?? ''
-  if (['paragraph', 'heading', 'blockquote', 'codeBlock', 'listItem', 'taskItem', 'callout'].includes(node.type ?? '')) {
+  if (['paragraph', 'heading', 'blockquote', 'codeBlock', 'listItem', 'taskItem', 'callout', 'table'].includes(node.type ?? '')) {
     return `${children}\n`
   }
   return children
@@ -131,6 +131,31 @@ export function jsonToMarkdown(node: TiptapJSONContent | null | undefined, depth
       return `${'  '.repeat(Math.max(0, depth - 1))}- ${children.map((child) => jsonToMarkdown(child, depth)).join(' ').trim()}`
     case 'horizontalRule':
       return '---'
+    case 'table': {
+      const rows = children.filter((c) => c.type === 'tableRow')
+      if (rows.length === 0) return ''
+      const cellTexts = rows.map((row) =>
+        (row.content ?? []).map((cell) => jsonToMarkdown(cell, depth).replace(/\n/g, ' ')),
+      )
+      const colCount = Math.max(...cellTexts.map((r) => r.length))
+      const normalized = cellTexts.map((r) => {
+        while (r.length < colCount) r.push('')
+        return r
+      })
+      const header = normalized[0]
+      const separator = header.map(() => '---')
+      const mdLines = [
+        `| ${header.join(' | ')} |`,
+        `| ${separator.join(' | ')} |`,
+        ...normalized.slice(1).map((r) => `| ${r.join(' | ')} |`),
+      ]
+      return mdLines.join('\n')
+    }
+    case 'tableRow':
+      return children.map((child) => jsonToMarkdown(child, depth)).join('')
+    case 'tableCell':
+    case 'tableHeader':
+      return children.map((child) => jsonToMarkdown(child, depth)).join('')
     default:
       return children.map((child) => jsonToMarkdown(child, depth)).join('')
   }
@@ -171,6 +196,14 @@ export function jsonToHtml(node: TiptapJSONContent | null | undefined): string {
       return `<li>${children}</li>`
     case 'horizontalRule':
       return '<hr>'
+    case 'table':
+      return `<table>${children}</table>`
+    case 'tableRow':
+      return `<tr>${children}</tr>`
+    case 'tableHeader':
+      return `<th>${children}</th>`
+    case 'tableCell':
+      return `<td>${children}</td>`
     default:
       return children
   }

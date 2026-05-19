@@ -165,6 +165,14 @@ export function useEditorDocument({
       timerRef.current = null
       const latest = latestRef.current
       if (!latest.userId || !latest.target) return
+      if (latest.target.kind === 'draft') {
+        const tBlank = !latest.title.trim() || latest.title === 'Untitled'
+        const cBlank = !latest.plainText.trim() && !latest.markdown.trim()
+        if (tBlank && cBlank) {
+          setSaveStatus('saved')
+          return
+        }
+      }
       const payload = createEditorContentPayload(latest.contentJson, latest.plainText || latest.markdown)
       persist(latest.userId, latest.target, latest.title, payload, latest.tags, latest.project)
     }, delay)
@@ -196,6 +204,11 @@ export function useEditorDocument({
     }
     const latest = latestRef.current
     if (!latest.userId || !latest.target) return
+    if (latest.target.kind === 'draft') {
+      const tBlank = !latest.title.trim() || latest.title === 'Untitled'
+      const cBlank = !latest.plainText.trim() && !latest.markdown.trim()
+      if (tBlank && cBlank) return
+    }
     const contentKey = JSON.stringify(latest.contentJson)
     const changed = latest.title !== lastSavedRef.current.title || contentKey !== lastSavedRef.current.contentKey
     if (!changed) return

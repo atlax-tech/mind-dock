@@ -31,7 +31,10 @@ export function normalizeHtmlPaste(html: string): string {
   const doc = parser.parseFromString(html, 'text/html')
   
   const allowedTags = new Set([
-    'H1', 'H2', 'H3', 'P', 'UL', 'OL', 'LI', 'BLOCKQUOTE', 'PRE', 'CODE', 'HR', 'STRONG', 'EM', 'A', 'BR', 'B', 'I'
+    'H1', 'H2', 'H3', 'P', 'UL', 'OL', 'LI', 'BLOCKQUOTE', 'PRE', 'CODE', 'HR', 'STRONG', 'EM', 'A', 'BR', 'B', 'I',
+    'S', 'DEL', 'MARK',
+    'TABLE', 'THEAD', 'TBODY', 'TR', 'TH', 'TD',
+    'DIV',
   ])
   const dangerousTags = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'META', 'LINK'])
 
@@ -46,6 +49,19 @@ export function normalizeHtmlPaste(html: string): string {
         
         if (dangerousTags.has(tagName)) {
           node.removeChild(child)
+        } else if (tagName === 'ASIDE') {
+          const callout = doc.createElement('div')
+          callout.setAttribute('data-type', 'callout')
+          while (el.firstChild) {
+            callout.appendChild(el.firstChild)
+          }
+          node.replaceChild(callout, el)
+          clean(callout)
+        } else if (tagName === 'DIV' && el.getAttribute('data-type') !== 'callout') {
+          while (el.firstChild) {
+            el.parentNode?.insertBefore(el.firstChild, el)
+          }
+          node.removeChild(child)
         } else if (!allowedTags.has(tagName)) {
           // Unwrap: move children out and remove el
           while (el.firstChild) {
@@ -56,9 +72,8 @@ export function normalizeHtmlPaste(html: string): string {
           // Strip all attributes except href for anchors
           const attributes = Array.from(el.attributes)
           for (const attr of attributes) {
-            if (tagName === 'A' && attr.name.toLowerCase() === 'href') {
-              continue
-            }
+            if (tagName === 'A' && attr.name.toLowerCase() === 'href') continue
+            if (tagName === 'DIV' && attr.name === 'data-type') continue
             el.removeAttribute(attr.name)
           }
           // Recurse into children
@@ -78,15 +93,17 @@ export function normalizeHtmlPaste(html: string): string {
  */
 export function looksLikeMarkdown(text: string): boolean {
   const patterns = [
-    /^#\s/m,            // H1
-    /^##\s/m,           // H2
-    /^###\s/m,          // H3
-    /^\s*[-*+]\s/m,     // Bullet list
-    /^\s*\d+\.\s/m,     // Ordered list
-    /^>\s/m,            // Blockquote
-    /^```/m,            // Code block
-    /^---\s*$/m,        // HR
-    /^\*\*\*[ \t]*$/m   // HR
+    /^#\s/m,
+    /^##\s/m,
+    /^###\s/m,
+    /^\s*[-*+]\s/m,
+    /^\s*\d+\.\s/m,
+    /^>\s/m,
+    /^```/m,
+    /^---\s*$/m,
+    /^\*\*\*[ \t]*$/m,
+    /^\|.+\|$/m,
+    /~~.+~~/,
   ]
   return patterns.some(p => p.test(text))
 }
@@ -98,8 +115,11 @@ export function parseMarkdownPaste(text: string): string {
   const lines = text.split(/\r?\n/)
   let html = ''
   let inList = false
-  let listType = '' // 'ul' or 'ol'
+  let listType = ''
   let inCode = false
+  let inTable = false
+  let tableRows: string[][] = []
+  let hasHeader = false
 
   const closeList = () => {
     if (inList) {
@@ -108,59 +128,100 @@ export function parseMarkdownPaste(text: string): string {
     }
   }
 
+  const flushTable = () => {
+    if (tableRows.length === 0) return
+    html += '<table>'
+    tableRows.forEach((cells, rowIdx) => {
+      html += '<tr>'
+      cells.forEach((cell) => {
+        const tag = rowIdx === 0 && hasHeader ? 'th' : 'td'
+        html += `<${tag}>${parseInlineMarkdown(cell.trim())}</${tag}>`
+      })
+      html += '</tr>'
+    })
+    html += '</table>'
+    tableRows = []
+    hasHeader = false
+    inTable = false
+  }
+
+  const parsePipeRow = (line: string): string[] | null => {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) return null
+    const inner = trimmed.slice(1, -1)
+    return inner.split('|').map(c => c.trim())
+  }
+
+  const isSeparatorRow = (cells: string[]): boolean => {
+    return cells.every(c => /^[-:]+$/.test(c.trim()))
+  }
+
   lines.forEach(line => {
     const trimmed = line.trim()
-    
-    // Code block
+
     if (trimmed.startsWith('```')) {
+      closeList()
+      flushTable()
       if (inCode) {
         html += '</code></pre>'
         inCode = false
       } else {
-        closeList()
         html += '<pre><code>'
         inCode = true
       }
       return
     }
-    
+
     if (inCode) {
       html += escapeHtml(line) + '\n'
       return
     }
 
-    // HR
+    const pipeRow = parsePipeRow(trimmed)
+    if (pipeRow) {
+      closeList()
+      if (isSeparatorRow(pipeRow)) {
+        hasHeader = tableRows.length > 0
+        inTable = true
+        return
+      }
+      inTable = true
+      tableRows.push(pipeRow)
+      return
+    }
+
+    if (inTable) {
+      flushTable()
+    }
+
     if (/^---$|^\*\*\*$/.test(trimmed)) {
       closeList()
       html += '<hr />'
       return
     }
 
-    // Headings
     if (line.startsWith('# ')) {
       closeList()
-      html += `<h1>${escapeHtml(line.slice(2))}</h1>`
+      html += `<h1>${parseInlineMarkdown(line.slice(2))}</h1>`
       return
     }
     if (line.startsWith('## ')) {
       closeList()
-      html += `<h2>${escapeHtml(line.slice(3))}</h2>`
+      html += `<h2>${parseInlineMarkdown(line.slice(3))}</h2>`
       return
     }
     if (line.startsWith('### ')) {
       closeList()
-      html += `<h3>${escapeHtml(line.slice(4))}</h3>`
+      html += `<h3>${parseInlineMarkdown(line.slice(4))}</h3>`
       return
     }
 
-    // Blockquote
     if (line.startsWith('> ')) {
       closeList()
-      html += `<blockquote>${escapeHtml(line.slice(2))}</blockquote>`
+      html += `<blockquote>${parseInlineMarkdown(line.slice(2))}</blockquote>`
       return
     }
 
-    // Lists
     const bulletMatch = line.match(/^\s*[-*+]\s+(.*)/)
     const orderedMatch = line.match(/^\s*\d+\.\s+(.*)/)
 
@@ -171,7 +232,7 @@ export function parseMarkdownPaste(text: string): string {
         inList = true
         listType = 'ul'
       }
-      html += `<li>${escapeHtml(bulletMatch[1])}</li>`
+      html += `<li>${parseInlineMarkdown(bulletMatch[1])}</li>`
       return
     }
     if (orderedMatch) {
@@ -181,20 +242,20 @@ export function parseMarkdownPaste(text: string): string {
         inList = true
         listType = 'ol'
       }
-      html += `<li>${escapeHtml(orderedMatch[1])}</li>`
+      html += `<li>${parseInlineMarkdown(orderedMatch[1])}</li>`
       return
     }
 
-    // Regular line
     if (trimmed === '') {
       closeList()
     } else {
       closeList()
-      html += `<p>${escapeHtml(trimmed)}</p>`
+      html += `<p>${parseInlineMarkdown(trimmed)}</p>`
     }
   })
 
   closeList()
+  flushTable()
   if (inCode) html += '</code></pre>'
 
   return html
@@ -289,4 +350,15 @@ function escapeHtml(text: string): string {
     "'": '&#039;'
   }
   return text.replace(/[&<>"']/g, m => map[m] || m)
+}
+
+function parseInlineMarkdown(text: string): string {
+  let result = escapeHtml(text)
+  result = result.replace(/~~(.+?)~~/g, '<s>$1</s>')
+  result = result.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+  result = result.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  result = result.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+  result = result.replace(/==(.+?)==/g, '<mark>$1</mark>')
+  result = result.replace(/`([^`]+)`/g, '<code>$1</code>')
+  return result
 }

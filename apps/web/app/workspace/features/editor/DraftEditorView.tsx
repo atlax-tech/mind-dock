@@ -416,13 +416,24 @@ export default function DraftEditorView({
 
   const closeTab = useCallback((tabId: string) => {
     setTabs((prev) => {
+      const closingTab = prev.find((tab) => tab.id === tabId)
+      if (closingTab?.kind === 'draft' && closingTab.target?.kind === 'draft') {
+        const draftId = closingTab.target.id
+        const draft = drafts.find((d) => d.id === draftId)
+        const titleBlank = !draft?.title?.trim() || draft.title === 'Untitled'
+        const contentBlank = !draft?.content?.trim() && !draft?.plainText?.trim() && !draft?.markdown?.trim()
+        if (titleBlank && contentBlank) {
+          discardDraft(userId, draftId, 'abandon_changes').catch(() => {})
+          setDrafts((prevDrafts) => prevDrafts.filter((d) => d.id !== draftId))
+        }
+      }
       const next = prev.filter((tab) => tab.id !== tabId)
       if (activeTabId === tabId) {
         setActiveTabId(next[next.length - 1]?.id ?? null)
       }
       return next
     })
-  }, [activeTabId])
+  }, [activeTabId, drafts, userId])
 
   const handleCreateDraft = useCallback(async () => {
     const draft = await createDraft(userId, 'Untitled', '', undefined, undefined, [], null, null)
@@ -899,6 +910,7 @@ function DocumentInspector({
             placeholder="添加标签..."
             onKeyDown={(event) => {
               if (event.key !== 'Enter') return
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return
               const value = event.currentTarget.value.trim()
               if (value && !editorDoc.tags.includes(value)) onTagsChange([...editorDoc.tags, value])
               event.currentTarget.value = ''

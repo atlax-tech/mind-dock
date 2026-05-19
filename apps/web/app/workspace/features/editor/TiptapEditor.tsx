@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { BubbleMenu } from '@tiptap/react/menus'
-import { EditorContent, Extension, Node as TiptapNode, NodeViewWrapper, ReactNodeViewRenderer, mergeAttributes, type Editor, type NodeViewProps, useEditor } from '@tiptap/react'
+import { EditorContent, Extension, Node as TiptapNode, NodeViewWrapper, ReactNodeViewRenderer, mergeAttributes, wrappingInputRule, type Editor, type NodeViewProps, useEditor } from '@tiptap/react'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
@@ -12,6 +12,7 @@ import Link from '@tiptap/extension-link'
 import Highlight from '@tiptap/extension-highlight'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
+import { TableKit } from '@tiptap/extension-table'
 import {
   Plus,
   Search,
@@ -40,6 +41,9 @@ import {
   Type,
   Terminal,
   FileText,
+  Table as TableIcon,
+  ArrowLeft,
+  ArrowRight,
 } from 'lucide-react'
 import { PasteNormalizer } from './PasteNormalizer'
 import {
@@ -48,6 +52,27 @@ import {
   type EditorContentPayload,
   type TiptapJSONContent,
 } from '@/lib/editorContentAdapter'
+
+const MarkdownInputRules = Extension.create({
+  name: 'markdownInputRules',
+
+  addInputRules() {
+    const taskItemType = this.editor.schema.nodes.taskItem
+    if (!taskItemType) return []
+    return [
+      wrappingInputRule({
+        find: /^\s*-\s\[\s\]\s$/,
+        type: taskItemType,
+        getAttributes: () => ({ checked: false }),
+      }),
+      wrappingInputRule({
+        find: /^\s*-\s\[x\]\s$/i,
+        type: taskItemType,
+        getAttributes: () => ({ checked: true }),
+      }),
+    ]
+  },
+})
 
 export type EditorWidthMode = 'compact' | 'comfortable' | 'wide'
 
@@ -135,6 +160,7 @@ const SUPPORTED_BLOCK_TYPES = new Set([
   'taskItem',
   'callout',
   'viewBlock',
+  'table',
 ])
 
 function createViewBlockAttrs(
@@ -205,6 +231,11 @@ export const SLASH_COMMANDS: SlashCommandItem[] = [
     title: 'horizontalRule',
     label: 'Divider',
     command: (editor, range) => editor.chain().focus().deleteRange(range).setHorizontalRule().run(),
+  },
+  {
+    title: 'table',
+    label: 'Table',
+    command: (editor, range) => editor.chain().focus().deleteRange(range).insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(),
   },
   {
     title: 'callout',
@@ -715,6 +746,9 @@ export function TiptapEditor({
     TaskItem.configure({
       nested: true,
     }),
+    TableKit.configure({
+      table: { HTMLAttributes: { class: 'atlax-editor-table' } },
+    }),
     Placeholder.configure({
       placeholder: placeholder ?? 'Start writing, or press / for blocks.',
     }),
@@ -724,6 +758,7 @@ export function TiptapEditor({
       data: viewBlockData ?? { documents: [], recommendations: [], mindLinks: [] },
     }),
     PasteNormalizer,
+    MarkdownInputRules,
   ], [placeholder, viewBlockData])
 
   const editor = useEditor({
@@ -825,6 +860,7 @@ export function TiptapEditor({
       <ToolbarBtn icon={List} label="无序列表" onClick={() => editor?.chain().focus().toggleBulletList().run()} active={editor?.isActive('bulletList')} disabled={disabled || !editor} />
       <ToolbarBtn icon={ListOrdered} label="有序列表" onClick={() => editor?.chain().focus().toggleOrderedList().run()} active={editor?.isActive('orderedList')} disabled={disabled || !editor} />
       <ToolbarBtn icon={Minus} label="分割线" onClick={() => editor?.chain().focus().setHorizontalRule().run()} disabled={disabled || !editor} />
+      <ToolbarBtn icon={TableIcon} label="表格" onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()} active={editor?.isActive('table')} disabled={disabled || !editor} />
       <ToolbarSep />
       <ToolbarBtn icon={Eye} label="HTML 预览" onClick={() => setShowHtml((v) => !v)} active={showHtml} disabled={!editor} />
     </div>
@@ -1023,6 +1059,57 @@ export function TiptapEditor({
           margin: 1.45rem 0;
           border: none;
           border-top: 1px solid rgba(255, 255, 255, 0.12);
+        }
+        .tiptap-editor .ProseMirror table {
+          border-collapse: collapse;
+          table-layout: fixed;
+          width: 100%;
+          margin: 0 0 1rem;
+          overflow: hidden;
+        }
+        .tiptap-editor .ProseMirror table td,
+        .tiptap-editor .ProseMirror table th {
+          min-width: 80px;
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          padding: 0.45rem 0.65rem;
+          position: relative;
+          text-align: left;
+          vertical-align: top;
+          box-sizing: border-box;
+        }
+        .tiptap-editor .ProseMirror table th {
+          background: rgba(134, 215, 255, 0.06);
+          color: #fff;
+          font-weight: 600;
+          font-size: 0.82rem;
+        }
+        .tiptap-editor .ProseMirror table td {
+          color: #cfd7dc;
+          font-size: 0.85rem;
+        }
+        .tiptap-editor .ProseMirror table td p,
+        .tiptap-editor .ProseMirror table th p {
+          margin: 0;
+        }
+        .tiptap-editor .ProseMirror table .selectedCell {
+          background: rgba(134, 215, 255, 0.1);
+        }
+        .tiptap-editor .ProseMirror table .column-resize-handle {
+          position: absolute;
+          right: -2px;
+          top: 0;
+          bottom: -2px;
+          width: 4px;
+          background-color: rgba(134, 215, 255, 0.4);
+          pointer-events: none;
+        }
+        .tiptap-editor .ProseMirror .tableWrapper {
+          overflow-x: auto;
+          margin: 0 0 1rem;
+        }
+        .tiptap-editor .ProseMirror .resize-cursor {
+          cursor: ew-resize;
+          cursor: col-resize;
         }
         .tiptap-editor .ProseMirror .atlax-block-selected {
           border-radius: 0.45rem;
@@ -1250,15 +1337,8 @@ function BlockHandleController({ editor }: { editor: Editor }) {
   }, [selectedTarget])
 
   useEffect(() => {
-    const syncFromSelection = () => {
-      const target = resolveBlockHandleTargetFromSelection(editor)
-      if (target) {
-        setSelectedTarget(null)
-        setCurrentHover(target)
-      }
-    }
     const onPointerMove = (event: PointerEvent) => {
-      if (menuOpen || dragState) return
+      if (menuOpen || dragState || insertMenuOpen) return
       if (handleRef.current?.contains(event.target as Node)) {
         if (activeTarget) schedulePosition(activeTarget)
         return
@@ -1266,13 +1346,15 @@ function BlockHandleController({ editor }: { editor: Editor }) {
       const target = resolveBlockHandleTargetFromPoint(editor, event.clientX, event.clientY, event.target as Element | null)
       if (target) {
         setCurrentHover(target)
-      } else if (!selectedTarget) {
-        if (clearHoverTimerRef.current == null) {
-          clearHoverTimerRef.current = window.setTimeout(() => {
-            clearHoverTimerRef.current = null
-            setCurrentHover(null)
-          }, 450)
+      } else {
+        if (clearHoverTimerRef.current != null) {
+          window.clearTimeout(clearHoverTimerRef.current)
+          clearHoverTimerRef.current = null
         }
+        clearHoverTimerRef.current = window.setTimeout(() => {
+          clearHoverTimerRef.current = null
+          setCurrentHover(null)
+        }, 300)
       }
     }
     const onScrollOrResize = () => {
@@ -1283,12 +1365,11 @@ function BlockHandleController({ editor }: { editor: Editor }) {
       schedulePosition()
     }
     const onMouseDown = (event: MouseEvent) => {
-      if (handleRef.current && !handleRef.current.contains(event.target as any)) {
-        setMenuOpen(false)
-        setInsertMenuOpen(false)
-        setCopied(false)
-        setSelectedTarget(null)
-      }
+      if (handleRef.current && handleRef.current.contains(event.target as any)) return
+      setMenuOpen(false)
+      setInsertMenuOpen(false)
+      setCopied(false)
+      setSelectedTarget(null)
     }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -1303,19 +1384,14 @@ function BlockHandleController({ editor }: { editor: Editor }) {
     document.addEventListener('keydown', onKeyDown)
     window.addEventListener('scroll', onScrollOrResize, true)
     window.addEventListener('resize', onScrollOrResize)
-    editor.on('selectionUpdate', syncFromSelection)
-    editor.on('focus', syncFromSelection)
-    syncFromSelection()
     return () => {
       document.removeEventListener('pointermove', onPointerMove)
       document.removeEventListener('mousedown', onMouseDown)
       document.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('scroll', onScrollOrResize, true)
       window.removeEventListener('resize', onScrollOrResize)
-      editor.off('selectionUpdate', syncFromSelection)
-      editor.off('focus', syncFromSelection)
     }
-  }, [editor, menuOpen, insertMenuOpen, dragState, activeTarget, selectedTarget])
+  }, [editor, menuOpen, insertMenuOpen, dragState, activeTarget])
 
   useEffect(() => {
     if (!dragState) return
@@ -1509,6 +1585,21 @@ function BlockHandleController({ editor }: { editor: Editor }) {
                 closeMenu()
               })}
             />
+            {editor.isActive('table') && (
+              <>
+                <BlockMenuSep />
+                <BlockMenuSubmenu label="Table" icon={TableIcon}>
+                  <BlockMenuButton label="Insert row above" icon={ArrowUp} onClick={() => { editor.chain().focus().addRowBefore().run(); closeMenu() }} />
+                  <BlockMenuButton label="Insert row below" icon={ArrowDown} onClick={() => { editor.chain().focus().addRowAfter().run(); closeMenu() }} />
+                  <BlockMenuButton label="Insert column left" icon={ArrowLeft} onClick={() => { editor.chain().focus().addColumnBefore().run(); closeMenu() }} />
+                  <BlockMenuButton label="Insert column right" icon={ArrowRight} onClick={() => { editor.chain().focus().addColumnAfter().run(); closeMenu() }} />
+                  <BlockMenuSep />
+                  <BlockMenuButton label="Delete row" icon={Trash2} danger onClick={() => { editor.chain().focus().deleteRow().run(); closeMenu() }} />
+                  <BlockMenuButton label="Delete column" icon={Trash2} danger onClick={() => { editor.chain().focus().deleteColumn().run(); closeMenu() }} />
+                  <BlockMenuButton label="Delete table" icon={Trash2} danger onClick={() => { editor.chain().focus().deleteTable().run(); closeMenu() }} />
+                </BlockMenuSubmenu>
+              </>
+            )}
             <BlockMenuSep />
             <BlockMenuButton label={copied ? 'Copied block link' : 'Copy link to block'} icon={Copy} onClick={copyBlockLink} />
             <BlockMenuButton
@@ -1749,30 +1840,34 @@ function EditorOutlineRail({
   outline: EditorOutlineItem[]
   onJump: (outlineIndex: number) => void
 }) {
+  const items = outline.slice(0, 50)
+
   return (
     <div className="editor-outline-rail fixed right-8 top-1/2 z-30 hidden -translate-y-1/2 items-center md:flex" data-testid="editor-outline-rail">
-      <div className="group relative flex min-h-[220px] w-12 items-center justify-center">
-        <div className="flex flex-col items-end gap-2 opacity-45 transition-opacity group-hover:opacity-0">
-          {outline.map((item, outlineIndex) => (
+      <div className="group relative flex items-center justify-center" style={{ height: 'min(60vh, 480px)' }}>
+        <div className="flex flex-col items-end gap-[6px] opacity-30 transition-opacity group-hover:opacity-0 overflow-hidden py-3" style={{ maxHeight: '100%' }}>
+          {items.map((item, outlineIndex) => (
             <button
               key={item.id}
               type="button"
               aria-label={item.title}
               onClick={() => onJump(outlineIndex)}
-              className={`h-[3px] rounded-full bg-white/45 transition-colors hover:bg-white ${item.level === 1 ? 'w-8' : item.level === 2 ? 'w-6' : 'w-4'}`}
+              className={`h-[2.5px] rounded-full bg-white/50 transition-all hover:bg-white hover:h-[3px] ${
+                item.level === 1 ? 'w-[22px]' : item.level === 2 ? 'w-[14px]' : 'w-[8px]'
+              }`}
             />
           ))}
         </div>
-        <div className="pointer-events-none absolute right-0 max-h-[58vh] w-[260px] translate-x-2 overflow-y-auto rounded-2xl border border-white/10 bg-[#1c2023]/92 p-4 opacity-0 shadow-2xl backdrop-blur-2xl transition-all group-hover:pointer-events-auto group-hover:translate-x-0 group-hover:opacity-100">
-          <div className="mb-3 text-[10px] font-semibold uppercase text-[#899298]">Outline</div>
-          <div className="space-y-1">
+        <div className="pointer-events-none absolute right-0 w-[260px] translate-x-3 overflow-y-auto rounded-2xl border border-white/10 bg-[#1c2023]/92 p-4 opacity-0 shadow-2xl backdrop-blur-2xl transition-all group-hover:pointer-events-auto group-hover:translate-x-0 group-hover:opacity-100" style={{ maxHeight: '58vh' }}>
+          <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[#899298]">Outline</div>
+          <div className="space-y-0.5">
             {outline.map((item, outlineIndex) => (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => onJump(outlineIndex)}
-                className="block w-full truncate rounded-md px-2 py-1.5 text-left text-[12px] text-[#cfd7dc] hover:bg-white/[0.08] hover:text-white"
-                style={{ paddingLeft: `${8 + (item.level - 1) * 12}px` }}
+                className="block w-full truncate rounded-md px-2 py-1.5 text-left text-[12px] leading-relaxed text-[#cfd7dc] hover:bg-white/[0.08] hover:text-white"
+                style={{ paddingLeft: `${8 + (item.level - 1) * 14}px` }}
                 title={item.title}
               >
                 {item.title}
@@ -1840,24 +1935,6 @@ function resolveBlockHandleTargetFromPoint(
     return resolveBlockHandleTarget(editor, gutterProbe)
   }
 
-  return null
-}
-
-function resolveBlockHandleTargetFromSelection(editor: Editor): BlockHandleTarget | null {
-  const { selection, doc } = editor.state
-  const $from = selection.$from
-  for (let depth = $from.depth; depth >= 1; depth -= 1) {
-    const node = $from.node(depth)
-    if (!SUPPORTED_BLOCK_TYPES.has(node.type.name)) continue
-    const from = $from.before(depth)
-    const dom = editor.view.nodeDOM(from)
-    return createBlockHandleTarget(doc, from, dom instanceof HTMLElement ? dom : undefined)
-  }
-  const first = doc.childCount > 0 ? doc.child(0) : null
-  if (first && SUPPORTED_BLOCK_TYPES.has(first.type.name)) {
-    const dom = editor.view.nodeDOM(0)
-    return createBlockHandleTarget(doc, 0, dom instanceof HTMLElement ? dom : undefined)
-  }
   return null
 }
 
