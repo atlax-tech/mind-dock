@@ -79,6 +79,17 @@ function shouldMaterializeDraft(title: string, payload: EditorContentPayload): b
   return false
 }
 
+function hasMeaningfulNonTextBlock(contentJson: EditorContentPayload['contentJson']): boolean {
+  const meaningful = new Set(['viewBlock', 'table', 'tableRow', 'tableCell'])
+  const walk = (node: any): boolean => {
+    if (!node || typeof node !== 'object') return false
+    if (typeof node.type === 'string' && meaningful.has(node.type)) return true
+    if (Array.isArray(node.content)) return node.content.some((child: any) => walk(child))
+    return false
+  }
+  return walk(contentJson)
+}
+
 interface EditorWorkspaceTab {
   id: string
   kind: EditorTabKind
@@ -167,6 +178,72 @@ export default function DraftEditorView({
     tags: string[]
     project: string | null
   } | null>(null)
+  const updatePendingScratch = useCallback((partial: Partial<NonNullable<typeof pendingScratchRef.current>>) => {
+    pendingScratchRef.current = {
+      title: editorDoc.title,
+      contentJson: editorDoc.contentJson,
+      plainText: editorDoc.plainText,
+      html: editorDoc.html,
+      markdown: editorDoc.markdown,
+      tags: editorDoc.tags,
+      project: activeTab?.projectName ?? null,
+      ...(pendingScratchRef.current ?? {}),
+      ...partial,
+    }
+  }, [activeTab?.projectName, editorDoc.contentJson, editorDoc.html, editorDoc.markdown, editorDoc.plainText, editorDoc.tags, editorDoc.title])
+
+  const materializeScratchDraft = useCallback(async (
+    scratchTab: EditorWorkspaceTab,
+  ) => {
+    if (materializingRef.current) return
+    const pending = pendingScratchRef.current
+    if (!pending) return
+    materializingRef.current = true
+    try {
+      const created = await createDraft(
+        userId,
+        pending.title,
+        pending.plainText || pending.markdown,
+        undefined,
+        undefined,
+        pending.tags,
+        pending.project,
+        null,
+        {
+          contentJson: pending.contentJson,
+          plainText: pending.plainText,
+          html: pending.html,
+          markdown: pending.markdown,
+        }
+      )
+      if (!created) return
+      const latest = pendingScratchRef.current ?? pending
+      const finalDraft = await updateDraft(userId, created.id, {
+        title: latest.title,
+        content: latest.plainText || latest.markdown,
+        contentJson: latest.contentJson,
+        plainText: latest.plainText,
+        html: latest.html,
+        markdown: latest.markdown,
+        tags: latest.tags,
+        project: latest.project,
+      }) ?? created
+      setDrafts((prev) => [finalDraft, ...prev])
+      setTabs((prev) => prev.map((tab) => tab.id === scratchTab.id ? {
+        ...tab,
+        id: `draft:${finalDraft.id}`,
+        title: normalizeTitle(finalDraft.title),
+        path: finalDraft.project ? `${finalDraft.project} / Page / ${normalizeTitle(finalDraft.title)}` : `Scatter / ${normalizeTitle(finalDraft.title)}`,
+        projectName: finalDraft.project ?? null,
+        target: { kind: 'draft', id: finalDraft.id },
+      } : tab))
+      setActiveTabId(`draft:${finalDraft.id}`)
+      emit({ type: 'draft_created', draftId: finalDraft.id })
+      pendingScratchRef.current = null
+    } finally {
+      materializingRef.current = false
+    }
+  }, [userId])
 
   const activeTab = useMemo(() => tabs.find((tab) => tab.id === activeTabId) ?? null, [activeTabId, tabs])
   const activeTarget = activeTab?.target ?? null
@@ -567,61 +644,16 @@ export default function DraftEditorView({
   }, [activeTabId, activeTarget, closeTab, onToast, userId])
 
   const handleLocalTitleChange = useCallback((nextTitle: string) => {
-    if (activeTarget?.kind === 'scratch') {
-      pendingScratchRef.current = {
-        title: nextTitle,
-        contentJson: editorDoc.contentJson,
-        plainText: editorDoc.plainText,
-        html: editorDoc.html,
-        markdown: editorDoc.markdown,
-        tags: editorDoc.tags,
-        project: activeTab?.projectName ?? null,
-      }
-    }
-    if (!materializingRef.current && activeTarget?.kind === 'scratch' && activeTab && shouldMaterializeDraft(nextTitle, {
+    if (activeTarget?.kind === 'scratch') updatePendingScratch({ title: nextTitle })
+    if (!materializingRef.current && activeTarget?.kind === 'scratch' && activeTab && (
+      shouldMaterializeDraft(nextTitle, {
       content: editorDoc.content,
       contentJson: editorDoc.contentJson,
       plainText: editorDoc.plainText,
       html: editorDoc.html,
       markdown: editorDoc.markdown,
-    })) {
-      createDraft(userId, nextTitle, editorDoc.content, undefined, undefined, editorDoc.tags, activeTab.projectName ?? null, null, {
-        contentJson: editorDoc.contentJson,
-        plainText: editorDoc.plainText,
-        html: editorDoc.html,
-        markdown: editorDoc.markdown,
-      }).then((draft) => {
-        if (!draft) return
-        const latest = pendingScratchRef.current
-        Promise.resolve(
-          latest
-            ? updateDraft(userId, draft.id, {
-              title: latest.title,
-              content: latest.plainText || latest.markdown,
-              contentJson: latest.contentJson,
-              plainText: latest.plainText,
-              html: latest.html,
-              markdown: latest.markdown,
-              tags: latest.tags,
-              project: latest.project,
-            })
-            : draft
-        ).then((updated) => {
-          const finalDraft = (updated as StoredDraft) ?? draft
-          setDrafts((prev) => [finalDraft, ...prev])
-          setTabs((prev) => prev.map((tab) => tab.id === activeTab.id ? {
-            ...tab,
-            id: `draft:${finalDraft.id}`,
-            title: normalizeTitle(finalDraft.title),
-            path: finalDraft.project ? `${finalDraft.project} / Page / ${normalizeTitle(finalDraft.title)}` : `Scatter / ${normalizeTitle(finalDraft.title)}`,
-            target: { kind: 'draft', id: finalDraft.id },
-          } : tab))
-          setActiveTabId(`draft:${finalDraft.id}`)
-          emit({ type: 'draft_created', draftId: finalDraft.id })
-          pendingScratchRef.current = null
-        }).catch(() => {})
-      }).catch(() => {}).finally(() => { materializingRef.current = false })
-      materializingRef.current = true
+    }) || hasMeaningfulNonTextBlock(editorDoc.contentJson))) {
+      void materializeScratchDraft(activeTab)
     }
     editorDoc.handleTitleChange(nextTitle)
     if (!activeTab) return
@@ -633,63 +665,32 @@ export default function DraftEditorView({
       setDocuments((prev) => prev.map((doc) => doc.id === activeTarget.id ? { ...doc, title: nextTitle, archivedAt: new Date() } : doc))
       setMindNodes((prev) => prev.map((node) => node.documentId === activeTarget.id ? { ...node, label: nextTitle, updatedAt: new Date() } : node))
     }
-  }, [activeTab, activeTarget, editorDoc, userId])
+  }, [activeTab, activeTarget, editorDoc, materializeScratchDraft, updatePendingScratch])
 
   const handleLocalContentChange = useCallback((payload: EditorContentPayload) => {
-    if (activeTarget?.kind === 'scratch') {
-      pendingScratchRef.current = {
-        title: editorDoc.title,
-        contentJson: payload.contentJson,
-        plainText: payload.plainText,
-        html: payload.html,
-        markdown: payload.markdown,
-        tags: editorDoc.tags,
-        project: activeTab?.projectName ?? null,
-      }
-    }
-    if (!materializingRef.current && activeTarget?.kind === 'scratch' && activeTab && shouldMaterializeDraft(editorDoc.title, payload)) {
-      createDraft(userId, editorDoc.title, payload.content, undefined, undefined, editorDoc.tags, activeTab.projectName ?? null, null, {
-        contentJson: payload.contentJson,
-        plainText: payload.plainText,
-        html: payload.html,
-        markdown: payload.markdown,
-      }).then((draft) => {
-        if (!draft) return
-        const latest = pendingScratchRef.current
-        Promise.resolve(
-          latest
-            ? updateDraft(userId, draft.id, {
-              title: latest.title,
-              content: latest.plainText || latest.markdown,
-              contentJson: latest.contentJson,
-              plainText: latest.plainText,
-              html: latest.html,
-              markdown: latest.markdown,
-              tags: latest.tags,
-              project: latest.project,
-            })
-            : draft
-        ).then((updated) => {
-          const finalDraft = (updated as StoredDraft) ?? draft
-          setDrafts((prev) => [finalDraft, ...prev])
-          setTabs((prev) => prev.map((tab) => tab.id === activeTab.id ? {
-            ...tab,
-            id: `draft:${finalDraft.id}`,
-            title: normalizeTitle(finalDraft.title),
-            path: finalDraft.project ? `${finalDraft.project} / Page / ${normalizeTitle(finalDraft.title)}` : `Scatter / ${normalizeTitle(finalDraft.title)}`,
-            target: { kind: 'draft', id: finalDraft.id },
-          } : tab))
-          setActiveTabId(`draft:${finalDraft.id}`)
-          emit({ type: 'draft_created', draftId: finalDraft.id })
-          pendingScratchRef.current = null
-        }).catch(() => {})
-      }).catch(() => {}).finally(() => { materializingRef.current = false })
-      materializingRef.current = true
-    }
+    if (activeTarget?.kind === 'scratch') updatePendingScratch({
+      contentJson: payload.contentJson,
+      plainText: payload.plainText,
+      html: payload.html,
+      markdown: payload.markdown,
+    })
+    if (!materializingRef.current && activeTarget?.kind === 'scratch' && activeTab && (
+      shouldMaterializeDraft(editorDoc.title, payload) || hasMeaningfulNonTextBlock(payload.contentJson)
+    )) void materializeScratchDraft(activeTab)
     editorDoc.handleContentChange(payload)
-  }, [activeTab, activeTarget?.kind, editorDoc, userId])
+  }, [activeTab, activeTarget?.kind, editorDoc, materializeScratchDraft, updatePendingScratch])
 
   const handleProjectChange = useCallback((project: string | null) => {
+    if (activeTarget?.kind === 'scratch') {
+      updatePendingScratch({ project })
+      setTabs((prev) => prev.map((tab) => tab.id === activeTabId ? {
+        ...tab,
+        projectName: project,
+        path: project ? `${project} / Page / ${tab.title}` : `Scatter / ${tab.title}`,
+      } : tab))
+      if (project) setExpandedNodeIds((current) => new Set([...Array.from(current), project]))
+      return
+    }
     editorDoc.handleProjectChange(project)
     if (!activeTarget) return
     if (activeTarget.kind === 'draft') {
@@ -705,7 +706,7 @@ export default function DraftEditorView({
     if (project) {
       setExpandedNodeIds((current) => new Set([...Array.from(current), project]))
     }
-  }, [activeTabId, activeTarget, editorDoc])
+  }, [activeTabId, activeTarget, editorDoc, updatePendingScratch])
 
   const saveStatusLabel = () => {
     switch (editorDoc.saveStatus) {
