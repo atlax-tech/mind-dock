@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Command } from 'cmdk';
-import { Search, Zap, FileText, Network, HeartPulse, Plus } from 'lucide-react';
+import { Search, Zap, FileText, Network, HeartPulse, Plus, PanelRight, Bot, Bell, Inbox, LayoutGrid, FileSearch, StickyNote } from 'lucide-react';
 
 interface CommandPaletteProps {
   open: boolean;
@@ -8,11 +8,15 @@ interface CommandPaletteProps {
   onOpenDoc: (docPath: string) => void;
   onCreateDoc: () => void;
   onSwitchTab: (tabId: string) => void;
+  onQuickCapture: () => void;
+  onTogglePlatter: () => void;
+  onSwitchPlatterView: (view: string) => void;
+  onCreateStickyNote: () => void;
   openTabs: Array<{ id: string; title: string }>;
   docEntries: Array<{ name: string; path: string; absolute_path: string; is_dir: boolean }>;
 }
 
-export function CommandPalette({ open, onClose, onOpenDoc, onCreateDoc, onSwitchTab, openTabs, docEntries }: CommandPaletteProps) {
+export function CommandPalette({ open, onClose, onOpenDoc, onCreateDoc, onSwitchTab, onQuickCapture, onTogglePlatter, onSwitchPlatterView, onCreateStickyNote, openTabs, docEntries }: CommandPaletteProps) {
 
   // 扁平化文档列表（只取 .md 文件，不取目录）
   const flatDocs = docEntries.filter(e => !e.is_dir);
@@ -92,15 +96,33 @@ export function CommandPalette({ open, onClose, onOpenDoc, onCreateDoc, onSwitch
                 <Plus size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
                 <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">新建文档</span>
               </Command.Item>
-              {/* PHASE_PLACEHOLDER - Phase 2 Quick Capture */}
+              {/* Quick Capture */}
               <Command.Item
                 value="极速捕获 Quick Capture"
-                onSelect={() => { onClose(); }}
+                onSelect={() => { onQuickCapture(); }}
                 className="p-2 rounded cursor-pointer flex items-center gap-2 data-[selected=true]:bg-stone-100 dark:data-[selected=true]:bg-stone-800"
               >
-                <Zap size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
+                <Zap size={12} className="text-emerald-600 dark:text-emerald-400" />
                 <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">极速捕获 Quick Capture</span>
-                <span className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e] ml-auto">Phase 2</span>
+                <span className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e] ml-auto">{navigator.platform.includes('Mac') ? '\u2318\u21E7C' : 'Ctrl+Shift+C'}</span>
+              </Command.Item>
+              {/* Toggle Platter */}
+              <Command.Item
+                value="打开/关闭 Platter"
+                onSelect={() => { onTogglePlatter(); onClose(); }}
+                className="p-2 rounded cursor-pointer flex items-center gap-2 data-[selected=true]:bg-stone-100 dark:data-[selected=true]:bg-stone-800"
+              >
+                <PanelRight size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
+                <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">打开/关闭 Platter</span>
+              </Command.Item>
+              {/* New Sticky Note */}
+              <Command.Item
+                value="新建便笺"
+                onSelect={() => { onCreateStickyNote(); onClose(); }}
+                className="p-2 rounded cursor-pointer flex items-center gap-2 data-[selected=true]:bg-stone-100 dark:data-[selected=true]:bg-stone-800"
+              >
+                <StickyNote size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
+                <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">新建便笺</span>
               </Command.Item>
               {/* PHASE_PLACEHOLDER - Phase 5 MindView */}
               <Command.Item
@@ -121,6 +143,50 @@ export function CommandPalette({ open, onClose, onOpenDoc, onCreateDoc, onSwitch
                 <HeartPulse size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
                 <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">知识体检</span>
                 <span className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e] ml-auto">Phase 6</span>
+              </Command.Item>
+            </Command.Group>
+
+            {/* Platter 视图切换 */}
+            <Command.Group heading="Platter 视图" className={groupHeadingClass}>
+              <Command.Item
+                value="Platter: Mentor"
+                onSelect={() => { onSwitchPlatterView('mentor'); onClose(); }}
+                className="p-2 rounded cursor-pointer flex items-center gap-2 data-[selected=true]:bg-stone-100 dark:data-[selected=true]:bg-stone-800"
+              >
+                <Bot size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
+                <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">Platter: Mentor</span>
+              </Command.Item>
+              <Command.Item
+                value="Platter: Notifications"
+                onSelect={() => { onSwitchPlatterView('notifications'); onClose(); }}
+                className="p-2 rounded cursor-pointer flex items-center gap-2 data-[selected=true]:bg-stone-100 dark:data-[selected=true]:bg-stone-800"
+              >
+                <Bell size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
+                <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">Platter: Notifications</span>
+              </Command.Item>
+              <Command.Item
+                value="Platter: Inbox"
+                onSelect={() => { onSwitchPlatterView('inbox'); onClose(); }}
+                className="p-2 rounded cursor-pointer flex items-center gap-2 data-[selected=true]:bg-stone-100 dark:data-[selected=true]:bg-stone-800"
+              >
+                <Inbox size={12} className="text-emerald-600 dark:text-emerald-400" />
+                <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">Platter: Inbox</span>
+              </Command.Item>
+              <Command.Item
+                value="Platter: Widgets"
+                onSelect={() => { onSwitchPlatterView('widgets'); onClose(); }}
+                className="p-2 rounded cursor-pointer flex items-center gap-2 data-[selected=true]:bg-stone-100 dark:data-[selected=true]:bg-stone-800"
+              >
+                <LayoutGrid size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
+                <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">Platter: Widgets</span>
+              </Command.Item>
+              <Command.Item
+                value="Platter: Document Context"
+                onSelect={() => { onSwitchPlatterView('document-context'); onClose(); }}
+                className="p-2 rounded cursor-pointer flex items-center gap-2 data-[selected=true]:bg-stone-100 dark:data-[selected=true]:bg-stone-800"
+              >
+                <FileSearch size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
+                <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">Platter: Document Context</span>
               </Command.Item>
             </Command.Group>
           </Command.List>

@@ -1,4 +1,4 @@
-import { ChevronLeft, Search, Zap, Sun, Moon, FolderSync } from 'lucide-react';
+import { ChevronLeft, Search, Zap, Inbox, Sun, Moon, FolderSync } from 'lucide-react';
 import { useTheme } from '@/app/theme';
 import { useVault } from '@/modules/vault/VaultProvider';
 import { DocTree } from '@/modules/dock/DocTree';
@@ -12,12 +12,13 @@ interface SidebarProps {
   onToggle: () => void;
   onCmdPaletteOpen: () => void;
   onQuickCapture: () => void;
+  onOpenInbox: () => void;
   onHealthView: () => void;
   onDocDeleted?: (docPath: string) => void;
   onDocRenamed?: (oldPath: string, newPath: string) => void;
 }
 
-export function Sidebar({ open, activeDocId, docTree, onDocSelect, onToggle, onCmdPaletteOpen, onQuickCapture, onHealthView, onDocDeleted, onDocRenamed }: SidebarProps) {
+export function Sidebar({ open, activeDocId, docTree, onDocSelect, onToggle, onCmdPaletteOpen, onQuickCapture, onOpenInbox, onHealthView, onDocDeleted, onDocRenamed }: SidebarProps) {
   const { isDark, toggle } = useTheme();
   const { vault, switchVault } = useVault();
 
@@ -56,14 +57,21 @@ export function Sidebar({ open, activeDocId, docTree, onDocSelect, onToggle, onC
         </button>
       </div>
 
-      {/* PHASE_PLACEHOLDER - Phase 2 会实现 Quick Capture */}
-      <div className="p-2 pt-0">
+      {/* Quick Capture + Inbox */}
+      <div className="p-2 pt-0 space-y-1">
         <button
           onClick={onQuickCapture}
           className="w-full py-1.5 bg-emerald-600 text-stone-50 text-[11px] font-semibold rounded-md hover:bg-emerald-500 transition-colors flex items-center justify-center gap-1"
         >
           <Zap size={11} />
           极速捕获灵感
+        </button>
+        <button
+          onClick={onOpenInbox}
+          className="w-full py-1 text-[10px] text-[#5a5a56] dark:text-[#a0a0a0] hover:text-emerald-700 dark:hover:text-emerald-400 transition-colors flex items-center justify-center gap-1"
+        >
+          <Inbox size={10} />
+          查看捕获 Inbox
         </button>
       </div>
 

@@ -1,5 +1,8 @@
 import { ThemeProvider } from '@/app/theme';
 import { VaultProvider, useVault } from '@/modules/vault/VaultProvider';
+import { CaptureProvider } from '@/modules/capture/CaptureProvider';
+import { NotificationProvider } from '@/modules/notifications/NotificationProvider';
+import { StickyNotesProvider } from '@/modules/sticky-notes/StickyNotesProvider';
 import { AppShell } from '@/app/AppShell';
 import { VaultSetup } from '@/modules/vault/VaultSetup';
 
@@ -18,7 +21,15 @@ function AppContent() {
     );
   }
 
-  return <AppShell />;
+  return (
+    <CaptureProvider>
+      <NotificationProvider vaultPath={vault.path}>
+        <StickyNotesProvider>
+          <AppShell />
+        </StickyNotesProvider>
+      </NotificationProvider>
+    </CaptureProvider>
+  );
 }
 
 function App() {

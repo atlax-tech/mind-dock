@@ -1,7 +1,15 @@
 use crate::commands::vault::assert_path_inside_vault;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 use tauri::command;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DocumentMetadata {
+    pub size: u64,
+    pub modified_at: String,
+}
 
 /// 创建新 Markdown 文档
 #[command]
@@ -127,6 +135,35 @@ pub fn delete_document(vault_path: String, file_path: String) -> Result<(), Stri
 
     fs::remove_file(path)
         .map_err(|e| format!("删除文件失败: {}", e))
+}
+
+/// 获取文档元数据（文件大小和最后修改时间）
+#[command]
+pub fn get_document_metadata(vault_path: String, document_path: String) -> Result<DocumentMetadata, String> {
+    assert_path_inside_vault(&vault_path, &document_path)?;
+
+    let path = Path::new(&document_path);
+    if !path.exists() {
+        return Err(format!("文件 '{}' 不存在", document_path));
+    }
+
+    let metadata = fs::metadata(path)
+        .map_err(|e| format!("获取文件元数据失败: {}", e))?;
+
+    let size = metadata.len();
+
+    let modified_at = metadata.modified()
+        .map_err(|e| format!("获取修改时间失败: {}", e))?
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| format!("修改时间转换失败: {}", e))?;
+
+    let datetime = chrono::DateTime::from_timestamp(modified_at.as_secs() as i64, modified_at.subsec_nanos())
+        .ok_or_else(|| "修改时间转换失败".to_string())?;
+
+    Ok(DocumentMetadata {
+        size,
+        modified_at: datetime.to_rfc3339(),
+    })
 }
 
 /// 更新 Markdown 内容中 frontmatter 的 title 字段

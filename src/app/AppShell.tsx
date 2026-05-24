@@ -2,9 +2,10 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { ChevronRight } from 'lucide-react';
 
 import { useVault } from '@/modules/vault/VaultProvider';
+import { useStickyNotes } from '@/modules/sticky-notes/StickyNotesProvider';
 import { Sidebar } from '@/components/Sidebar';
 import { WorkspaceHeader, type WorkspaceView } from '@/components/WorkspaceHeader';
-import { MentorDock } from '@/components/MentorDock';
+import { MentorDock, type PlatterTab } from '@/components/MentorDock';
 import { StatusBar } from '@/components/StatusBar';
 import { PlaceholderView } from '@/components/PlaceholderView';
 import { TabBar } from '@/components/TabBar';
@@ -12,6 +13,8 @@ import { EditorToolbar, type PreviewMode } from '@/modules/editor/EditorToolbar'
 import { EditorView } from '@/modules/editor/EditorView';
 import { MarkdownPreview } from '@/modules/editor/MarkdownPreview';
 import { CommandPalette } from '@/modules/command-palette/CommandPalette';
+import { QuickCapturePanel } from '@/modules/capture/QuickCapturePanel';
+import { StickyNotesLayer } from '@/modules/sticky-notes/StickyNotesLayer';
 import { documentService } from '@/services/filesystem/documents';
 import { extractTitle } from '@/services/markdown/frontmatter';
 import type { DocEntry } from '@/types/vault';
@@ -36,6 +39,7 @@ function flattenDocTree(entries: DocEntry[]): DocEntry[] {
 
 export function AppShell() {
   const { vault, docTree, refreshDocTree } = useVault();
+  const { notes, error: stickyNotesError, addNote, updateNote, deleteNote, convertToCapture } = useStickyNotes();
 
   // Multi-tab state
   const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
@@ -51,7 +55,7 @@ export function AppShell() {
   const [currentView, setCurrentView] = useState<WorkspaceView>('editor');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mentorDockOpen, setMentorDockOpen] = useState(true);
-  const [mentorDockTab, setMentorDockTab] = useState('mentor');
+  const [mentorDockTab, setMentorDockTab] = useState<PlatterTab>('mentor');
 
   // Editor state
   const [previewMode, setPreviewMode] = useState<PreviewMode>('split');
@@ -59,12 +63,27 @@ export function AppShell() {
   // Command palette state
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
 
+  // Quick Capture state
+  const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
+
   // Cmd+K 全局键盘监听：打开/关闭 Command Palette
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
         setCmdPaletteOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // Cmd/Ctrl+Shift+C 全局键盘监听：打开/关闭 Quick Capture
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'C') {
+        e.preventDefault();
+        setQuickCaptureOpen(prev => !prev);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -334,7 +353,8 @@ export function AppShell() {
         onDocSelect={handleDocSelect}
         onToggle={() => setSidebarOpen(false)}
         onCmdPaletteOpen={() => setCmdPaletteOpen(true)}
-        onQuickCapture={() => {}}
+        onQuickCapture={() => setQuickCaptureOpen(true)}
+        onOpenInbox={() => { setMentorDockTab('inbox'); setMentorDockOpen(true); }}
         onHealthView={() => setCurrentView('health')}
         onDocDeleted={handleDocDeleted}
         onDocRenamed={handleDocRenamed}
@@ -351,14 +371,23 @@ export function AppShell() {
       )}
 
       {/* Center Workspace */}
-      <main className="flex-1 flex flex-col min-w-0 bg-transparent">
+      <main className="flex-1 flex flex-col min-w-0 bg-transparent relative">
         <WorkspaceHeader
           currentView={currentView}
           onViewChange={setCurrentView}
           onMentorDockToggle={() => setMentorDockOpen(prev => !prev)}
           onNotificationsOpen={() => { setMentorDockTab('notifications'); setMentorDockOpen(true); }}
+          onCreateStickyNote={() => addNote(activeTabId || undefined)}
         />
         {renderWorkspaceContent()}
+        <StickyNotesLayer
+          notes={notes}
+          activeDocumentPath={currentView === 'editor' ? activeTabId : ''}
+          error={stickyNotesError}
+          onUpdate={updateNote}
+          onDelete={deleteNote}
+          onConvertToCapture={convertToCapture}
+        />
       </main>
 
       {/* Right Mentor Dock */}
@@ -367,6 +396,8 @@ export function AppShell() {
         activeTab={mentorDockTab}
         onTabChange={setMentorDockTab}
         onClose={() => setMentorDockOpen(false)}
+        activeDocumentPath={activeTabId || undefined}
+        activeDocumentName={activeTab?.title || undefined}
       />
 
       {/* Command Palette Overlay */}
@@ -376,8 +407,18 @@ export function AppShell() {
         onOpenDoc={handleCmdOpenDoc}
         onCreateDoc={handleCmdCreateDoc}
         onSwitchTab={handleCmdSwitchTab}
+        onQuickCapture={() => { setCmdPaletteOpen(false); setQuickCaptureOpen(true); }}
+        onTogglePlatter={() => setMentorDockOpen(prev => !prev)}
+        onSwitchPlatterView={(view) => { setMentorDockTab(view as PlatterTab); setMentorDockOpen(true); }}
+        onCreateStickyNote={() => addNote(activeTabId || undefined)}
         openTabs={openTabs.map(t => ({ id: t.id, title: t.title }))}
         docEntries={flatDocEntries}
+      />
+
+      {/* Quick Capture Panel */}
+      <QuickCapturePanel
+        open={quickCaptureOpen}
+        onClose={() => setQuickCaptureOpen(false)}
       />
     </div>
   );

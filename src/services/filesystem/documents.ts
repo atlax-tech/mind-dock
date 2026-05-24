@@ -1,5 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
 
+export interface DocumentMetadata {
+  size: number;
+  modified_at: string;
+}
+
 export const documentService = {
   async createDocument(vaultPath: string, filePath: string): Promise<string> {
     return invoke<string>('create_document', { vaultPath, filePath });
@@ -19,5 +24,13 @@ export const documentService = {
 
   async deleteDocument(vaultPath: string, filePath: string): Promise<void> {
     return invoke('delete_document', { vaultPath, filePath });
+  },
+
+  async getDocumentMetadata(vaultPath: string, documentPath: string): Promise<DocumentMetadata | null> {
+    try {
+      return await invoke<DocumentMetadata>('get_document_metadata', { vaultPath, documentPath });
+    } catch {
+      return null;
+    }
   },
 };

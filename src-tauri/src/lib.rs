@@ -1,6 +1,6 @@
 mod commands;
 
-use commands::{vault, fs};
+use commands::{vault, fs, capture, sticky_notes, notifications};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -28,6 +28,14 @@ pub fn run() {
             fs::write_document,
             fs::rename_document,
             fs::delete_document,
+            fs::get_document_metadata,
+            capture::append_capture,
+            capture::read_captures,
+            capture::write_captures,
+            sticky_notes::read_sticky_notes,
+            sticky_notes::write_sticky_notes,
+            notifications::read_notifications,
+            notifications::write_notifications,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

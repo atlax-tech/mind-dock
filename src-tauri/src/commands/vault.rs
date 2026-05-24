@@ -185,6 +185,10 @@ pub fn create_vault(path: String) -> Result<VaultInfo, String> {
         .map_err(|e| format!("创建 documents 目录失败: {}", e))?;
     fs::create_dir_all(vault_path.join(".minddock"))
         .map_err(|e| format!("创建 .minddock 目录失败: {}", e))?;
+    fs::create_dir_all(vault_path.join("captures"))
+        .map_err(|e| format!("创建 captures 目录失败: {}", e))?;
+    fs::create_dir_all(vault_path.join("notes"))
+        .map_err(|e| format!("创建 notes 目录失败: {}", e))?;
 
     // 保存为当前 vault
     let config = AppConfig {
@@ -222,6 +226,14 @@ pub fn select_vault(path: String) -> Result<VaultInfo, String> {
     // 确保 documents 子目录存在
     fs::create_dir_all(vault_path.join("documents"))
         .map_err(|e| format!("创建 documents 目录失败: {}", e))?;
+
+    // 确保 captures 子目录存在
+    fs::create_dir_all(vault_path.join("captures"))
+        .map_err(|e| format!("创建 captures 目录失败: {}", e))?;
+
+    // 确保 notes 子目录存在
+    fs::create_dir_all(vault_path.join("notes"))
+        .map_err(|e| format!("创建 notes 目录失败: {}", e))?;
 
     // 保存为当前 vault
     let config = AppConfig {

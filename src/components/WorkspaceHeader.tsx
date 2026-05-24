@@ -7,9 +7,10 @@ interface WorkspaceHeaderProps {
   onViewChange: (view: WorkspaceView) => void;
   onMentorDockToggle: () => void;
   onNotificationsOpen: () => void;
+  onCreateStickyNote?: () => void;
 }
 
-export function WorkspaceHeader({ currentView, onViewChange, onMentorDockToggle, onNotificationsOpen }: WorkspaceHeaderProps) {
+export function WorkspaceHeader({ currentView, onViewChange, onMentorDockToggle, onNotificationsOpen, onCreateStickyNote }: WorkspaceHeaderProps) {
 
   const viewLabel = currentView === 'editor' ? '编辑器' : currentView === 'mindview' ? '知识图谱' : '库体检';
 
@@ -47,6 +48,7 @@ export function WorkspaceHeader({ currentView, onViewChange, onMentorDockToggle,
 
       <div className="flex items-center gap-1.5">
         <button
+          onClick={onCreateStickyNote}
           className={`px-2 py-1 border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-md text-[11px] text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-[#f0ece2] dark:hover:bg-[#2a2a2a] flex items-center gap-1`}
         >
           <Pin size={11} className="text-amber-500" />
