@@ -1,0 +1,20 @@
+.DS_Store
+
+# Local Codex / Trae workspace state
+.trae/
+
+# Rebuild should start from a clean workspace
+apps/
+packages/
+node_modules/
+
+# Ignore all docs by default
+docs/**
+
+# Keep docs directory skeleton local-only
+!docs/
+!docs/engineering/
+!docs/engineering/dev_log/
+
+# Track phase logs only
+!docs/engineering/dev_log/*.md
