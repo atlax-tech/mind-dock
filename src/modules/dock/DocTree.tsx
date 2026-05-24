@@ -9,6 +9,7 @@ interface DocTreeProps {
   docTree: DocEntry[];
   onDocSelect: (docId: string) => void;
   onDocDeleted?: (docPath: string) => void;
+  onDocRenamed?: (oldPath: string, newPath: string) => void;
 }
 
 function DocEntryItem({
@@ -113,7 +114,7 @@ function DocEntryItem({
         style={{ paddingLeft: `${8 + depth * 12}px` }}
       >
         <FileText size={11} className="opacity-60" />
-        <span className="truncate flex-1">{entry.name}</span>
+        <span className="truncate flex-1">{entry.title || entry.name.replace(/\.md$/, '')}</span>
       </div>
       {contextMenu && (
         <div
@@ -159,6 +160,8 @@ function RenameInput({
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // keyCode 229 = IME composing，直接忽略
+    if (e.keyCode === 229) return;
     if (e.key === 'Enter') {
       onConfirm(value);
     } else if (e.key === 'Escape') {
@@ -197,6 +200,8 @@ function NewDocInput({
   }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // keyCode 229 = IME composing，直接忽略
+    if (e.keyCode === 229) return;
     if (e.key === 'Enter' && value.trim()) {
       onConfirm(value.trim());
     } else if (e.key === 'Escape') {
@@ -219,7 +224,7 @@ function NewDocInput({
   );
 }
 
-export function DocTree({ activeDocId, docTree, onDocSelect, onDocDeleted }: DocTreeProps) {
+export function DocTree({ activeDocId, docTree, onDocSelect, onDocDeleted, onDocRenamed }: DocTreeProps) {
   const { vault, refreshDocTree } = useVault();
 
   const [renamingEntry, setRenamingEntry] = useState<DocEntry | null>(null);
@@ -238,10 +243,13 @@ export function DocTree({ activeDocId, docTree, onDocSelect, onDocDeleted }: Doc
   const handleCreateDocument = async (name: string) => {
     if (!vault) return;
     try {
-      const filePath = `${vault.path}/documents/${name}.md`;
+      const fileName = name.endsWith('.md') ? name : `${name}.md`;
+      const filePath = `${vault.path}/documents/${fileName}`;
       await documentService.createDocument(vault.path, filePath);
       setShowNewDoc(false);
       await refreshDocTree();
+      // 自动打开新建的文档
+      onDocSelect(filePath);
     } catch (err) {
       alert(`创建文档失败: ${err}`);
       setShowNewDoc(false);
@@ -255,9 +263,11 @@ export function DocTree({ activeDocId, docTree, onDocSelect, onDocDeleted }: Doc
       return;
     }
     try {
-      await documentService.renameDocument(vault.path, entry.absolute_path, newName.trim());
+      const newPath = await documentService.renameDocument(vault.path, entry.absolute_path, newName.trim());
       setRenamingEntry(null);
       await refreshDocTree();
+      // 通知 AppShell 更新 tab 的 id 和 title
+      onDocRenamed?.(entry.absolute_path, newPath);
     } catch (err) {
       alert(`重命名失败: ${err}`);
       setRenamingEntry(null);

@@ -2,6 +2,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import type { VaultInfo, DocEntry } from '@/types/vault';
 
+export interface VaultValidationResult {
+  valid: boolean;
+  error: string | null;
+}
+
 export const vaultService = {
   async createVault(path: string): Promise<VaultInfo> {
     return invoke<VaultInfo>('create_vault', { path });
@@ -21,6 +26,10 @@ export const vaultService = {
 
   async scanVaultFiles(vaultPath: string): Promise<DocEntry[]> {
     return invoke<DocEntry[]>('scan_vault_files', { vaultPath });
+  },
+
+  async validateVault(path: string): Promise<VaultValidationResult> {
+    return invoke<VaultValidationResult>('validate_vault', { path });
   },
 
   async pickDirectory(): Promise<string | null> {

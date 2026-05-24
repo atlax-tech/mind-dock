@@ -43,6 +43,10 @@ export function AppShell() {
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  // 始终保持 ref 指向最新 activeTabId，避免 handleContentChange 闭包过期
+  const activeTabIdRef = useRef(activeTabId);
+  activeTabIdRef.current = activeTabId;
+
   // Layout state
   const [currentView, setCurrentView] = useState<WorkspaceView>('editor');
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -67,8 +71,8 @@ export function AppShell() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Auto-save debounce
-  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Auto-save debounce: 每个 tab 独立的保存计时器，避免切换 tab 时取消其他 tab 的保存
+  const saveTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // 获取当前活跃标签
   const activeTab = openTabs.find(t => t.id === activeTabId);
@@ -134,19 +138,23 @@ export function AppShell() {
 
   // 编辑内容变化
   const handleContentChange = useCallback((newContent: string) => {
+    // 使用 ref 获取最新 activeTabId，避免闭包过期导致内容串写
+    const currentTabId = activeTabIdRef.current;
+    if (!currentTabId) return;
+
     setOpenTabs(prev => prev.map(tab =>
-      tab.id === activeTabId
+      tab.id === currentTabId
         ? { ...tab, content: newContent, isDirty: true }
         : tab
     ));
 
-    // 自动保存 debounce
-    if (saveTimeoutRef.current) {
-      clearTimeout(saveTimeoutRef.current);
+    // 自动保存 debounce：每个 tab 独立计时器
+    const existingTimer = saveTimeoutsRef.current.get(currentTabId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
     }
 
-    const currentTabId = activeTabId;
-    saveTimeoutRef.current = setTimeout(async () => {
+    const timer = setTimeout(async () => {
       if (!vault || !currentTabId) return;
       try {
         setIsSaving(true);
@@ -157,19 +165,80 @@ export function AppShell() {
             ? { ...tab, isDirty: false }
             : tab
         ));
+        // 保存成功后刷新文档树，以同步 frontmatter title 变更
+        refreshDocTree();
+
+        // 检测 frontmatter title 是否与文件名不同，提示用户是否同步重命名
+        const newTitle = extractTitle(newContent);
+        if (newTitle) {
+          const currentFileName = currentTabId.split('/').pop()?.replace(/\.md$/, '') || '';
+          if (currentFileName && newTitle !== currentFileName) {
+            // 延迟弹窗，避免阻塞保存流程
+            setTimeout(() => {
+              const shouldRename = window.confirm(
+                `文档标题已改为「${newTitle}」，是否同步重命名文件？\n\n当前文件名：${currentFileName}.md\n新文件名：${newTitle}.md`
+              );
+              if (shouldRename && vault) {
+                documentService.renameDocument(vault.path, currentTabId, newTitle)
+                  .then(newPath => {
+                    setOpenTabs(prev => prev.map(tab =>
+                      tab.id === currentTabId
+                        ? { ...tab, id: newPath, title: newTitle }
+                        : tab
+                    ));
+                    if (activeTabIdRef.current === currentTabId) {
+                      setActiveTabId(newPath);
+                    }
+                    refreshDocTree();
+                  })
+                  .catch(err => {
+                    alert(`重命名失败: ${err}`);
+                  });
+              }
+            }, 100);
+          }
+        }
       } catch (err) {
         console.error('自动保存失败:', err);
         setSaveError(`保存失败: ${err}`);
       } finally {
         setIsSaving(false);
+        saveTimeoutsRef.current.delete(currentTabId);
       }
     }, 1000);
-  }, [vault, activeTabId]);
+
+    saveTimeoutsRef.current.set(currentTabId, timer);
+  }, [vault, refreshDocTree]);
 
   // 文档删除时关闭对应标签
   const handleDocDeleted = useCallback((docPath: string) => {
     handleTabClose(docPath);
   }, [handleTabClose]);
+
+  // 文档重命名时更新 tab 的 id、title 和内容（Rust 端已同步更新 frontmatter title）
+  const handleDocRenamed = useCallback(async (oldPath: string, newPath: string) => {
+    const newTitle = newPath.split('/').pop()?.replace(/\.md$/, '') || '';
+    // 重新读取文件内容以获取更新后的 frontmatter title
+    let newContent: string | null = null;
+    if (vault) {
+      try {
+        newContent = await documentService.readDocument(vault.path, newPath);
+      } catch { /* 读取失败则保留原内容 */ }
+    }
+    setOpenTabs(prev => prev.map(tab =>
+      tab.id === oldPath
+        ? {
+            ...tab,
+            id: newPath,
+            title: newTitle,
+            ...(newContent !== null ? { content: newContent, isDirty: false } : {}),
+          }
+        : tab
+    ));
+    if (activeTabId === oldPath) {
+      setActiveTabId(newPath);
+    }
+  }, [activeTabId, vault]);
 
   // 扁平化文档树
   const flatDocEntries = flattenDocTree(docTree);
@@ -268,6 +337,7 @@ export function AppShell() {
         onQuickCapture={() => {}}
         onHealthView={() => setCurrentView('health')}
         onDocDeleted={handleDocDeleted}
+        onDocRenamed={handleDocRenamed}
       />
 
       {/* Sidebar reopen button */}
