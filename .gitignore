@@ -18,3 +18,9 @@ docs/**
 
 # Track phase logs only
 !docs/engineering/dev_log/*.md
+
+# Build output
+dist/
+
+# Tauri build target
+src-tauri/target/
