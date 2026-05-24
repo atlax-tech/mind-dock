@@ -30,8 +30,14 @@ pub fn create_document(vault_path: String, file_path: String) -> Result<String, 
             .map_err(|e| format!("创建父目录失败: {}", e))?;
     }
 
-    // 创建文件，写入默认 frontmatter
-    let default_content = "---\ntitle: \ncreated: \ntags: []\n---\n\n";
+    // 从文件名提取标题（去掉 .md 后缀）
+    let title = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    // 创建文件，写入默认 frontmatter（title 填入文件名）
+    let default_content = format!("---\ntitle: {}\ncreated: \ntags: []\n---\n\n", title);
     fs::write(path, default_content)
         .map_err(|e| format!("创建文件失败: {}", e))?;
 
@@ -66,7 +72,7 @@ pub fn write_document(vault_path: String, file_path: String, content: String) ->
         .map_err(|e| format!("写入文件失败: {}", e))
 }
 
-/// 重命名文档
+/// 重命名文档（同时更新 frontmatter title）
 #[command]
 pub fn rename_document(vault_path: String, old_path: String, new_name: String) -> Result<String, String> {
     assert_path_inside_vault(&vault_path, &old_path)?;
@@ -96,6 +102,13 @@ pub fn rename_document(vault_path: String, old_path: String, new_name: String) -
         return Err(format!("文件 '{}' 已存在", new_name));
     }
 
+    // 先更新文件内容中的 frontmatter title
+    let title_stem = new_name.trim_end_matches(".md");
+    if let Ok(content) = fs::read_to_string(old) {
+        let updated = update_frontmatter_title(&content, title_stem);
+        let _ = fs::write(old, updated);
+    }
+
     fs::rename(old, &new_path)
         .map_err(|e| format!("重命名失败: {}", e))?;
 
@@ -114,4 +127,48 @@ pub fn delete_document(vault_path: String, file_path: String) -> Result<(), Stri
 
     fs::remove_file(path)
         .map_err(|e| format!("删除文件失败: {}", e))
+}
+
+/// 更新 Markdown 内容中 frontmatter 的 title 字段
+fn update_frontmatter_title(content: &str, new_title: &str) -> String {
+    // 查找 frontmatter 中的 title 行并替换
+    let mut found_title = false;
+    let mut in_frontmatter = false;
+    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+
+    for i in 0..lines.len() {
+        let line = &lines[i];
+        if i == 0 && line.trim() == "---" {
+            in_frontmatter = true;
+            continue;
+        }
+        if in_frontmatter && line.trim() == "---" {
+            break;
+        }
+        if in_frontmatter && line.starts_with("title:") {
+            lines[i] = format!("title: {}", new_title);
+            found_title = true;
+            break;
+        }
+    }
+
+    if found_title {
+        // 保留原始换行符风格
+        let has_trailing_newline = content.ends_with('\n');
+        let mut result = lines.join("\n");
+        if has_trailing_newline {
+            result.push('\n');
+        }
+        result
+    } else if content.starts_with("---") {
+        // 有 frontmatter 但没有 title 行，在第一个 --- 后插入
+        let mut result = String::from("---\n");
+        result.push_str(&format!("title: {}\n", new_title));
+        // 跳过第一行 "---"
+        result.push_str(&content[3..]);
+        result
+    } else {
+        // 没有 frontmatter，添加一个
+        format!("---\ntitle: {}\n---\n\n{}", new_title, content)
+    }
 }

@@ -112,6 +112,68 @@ pub fn assert_path_inside_vault(vault_root: &str, target_path: &str) -> Result<(
     Ok(())
 }
 
+/// 校验 vault 路径是否有效（目录存在且包含 .minddock/ 和 documents/ 子目录）
+/// 返回校验结果和具体错误信息（如有）
+#[derive(Debug, Serialize)]
+pub struct VaultValidationResult {
+    pub valid: bool,
+    pub error: Option<String>,
+}
+
+#[command]
+pub fn validate_vault(path: String) -> Result<VaultValidationResult, String> {
+    let vault_path = Path::new(&path);
+
+    if !vault_path.exists() {
+        // 路径不存在，清除配置
+        write_app_config(&AppConfig::default())?;
+        return Ok(VaultValidationResult {
+            valid: false,
+            error: Some(format!("目录 '{}' 不存在", path)),
+        });
+    }
+
+    if !vault_path.is_dir() {
+        return Ok(VaultValidationResult {
+            valid: false,
+            error: Some(format!("'{}' 不是目录", path)),
+        });
+    }
+
+    if !vault_path.join(".minddock").exists() {
+        return Ok(VaultValidationResult {
+            valid: false,
+            error: Some(format!("目录 '{}' 不是有效的 Vault（缺少 .minddock/ 子目录）", path)),
+        });
+    }
+
+    if !vault_path.join("documents").exists() {
+        return Ok(VaultValidationResult {
+            valid: false,
+            error: Some(format!("目录 '{}' 不是有效的 Vault（缺少 documents/ 子目录）", path)),
+        });
+    }
+
+    // 检查写入权限
+    let test_file = vault_path.join(".minddock").join(".write_test");
+    match fs::write(&test_file, b"test") {
+        Ok(_) => {
+            let _ = fs::remove_file(&test_file);
+        }
+        Err(_) => {
+            return Ok(VaultValidationResult {
+                valid: false,
+                error: Some(format!("目录 '{}' 没有写入权限", path)),
+            });
+        }
+    }
+
+    Ok(VaultValidationResult {
+        valid: true,
+        error: None,
+    })
+}
+
 #[command]
 pub fn create_vault(path: String) -> Result<VaultInfo, String> {
     let vault_path = Path::new(&path);
@@ -156,6 +218,10 @@ pub fn select_vault(path: String) -> Result<VaultInfo, String> {
     // 确保 .minddock 子目录存在
     fs::create_dir_all(vault_path.join(".minddock"))
         .map_err(|e| format!("创建 .minddock 目录失败: {}", e))?;
+
+    // 确保 documents 子目录存在
+    fs::create_dir_all(vault_path.join("documents"))
+        .map_err(|e| format!("创建 documents 目录失败: {}", e))?;
 
     // 保存为当前 vault
     let config = AppConfig {
@@ -232,11 +298,38 @@ pub fn scan_vault_files(vault_path: String) -> Result<Vec<DocEntry>, String> {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DocEntry {
-    pub name: String,
+    pub name: String,         // 文件名（如 "test.md"）
+    pub title: Option<String>, // frontmatter 中的 title（如有）
     pub path: String,         // 相对于 vault root 的路径
     pub absolute_path: String, // 绝对路径
     pub is_dir: bool,
     pub children: Vec<DocEntry>,
+}
+
+/// 从 .md 文件内容中提取 YAML frontmatter 的 title 字段
+fn extract_frontmatter_title(content: &str) -> Option<String> {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return None;
+    }
+    // 找到第二个 ---
+    let after_first = &trimmed[3..];
+    let rest = after_first.trim_start_matches(['-', '\r', '\n']);
+    if let Some(end_idx) = rest.find("---") {
+        let yaml_block = &rest[..end_idx];
+        for line in yaml_block.lines() {
+            let line_trimmed = line.trim();
+            if let Some(rest) = line_trimmed.strip_prefix("title:") {
+                let title = rest.trim();
+                // 去除引号
+                let title = title.trim_matches('"').trim_matches('\'');
+                if !title.is_empty() {
+                    return Some(title.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn scan_dir_recursive(
@@ -278,6 +371,7 @@ fn scan_dir_recursive(
             if has_markdown_files(&path) {
                 entries.push(DocEntry {
                     name,
+                    title: None,
                     path: relative,
                     absolute_path: path.to_string_lossy().to_string(),
                     is_dir: true,
@@ -285,8 +379,13 @@ fn scan_dir_recursive(
                 });
             }
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            // 读取文件内容提取 frontmatter title
+            let title = fs::read_to_string(&path)
+                .ok()
+                .and_then(|content| extract_frontmatter_title(&content));
             entries.push(DocEntry {
                 name,
+                title,
                 path: relative,
                 absolute_path: path.to_string_lossy().to_string(),
                 is_dir: false,

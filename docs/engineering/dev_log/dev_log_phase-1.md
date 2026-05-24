@@ -1,17 +1,171 @@
 # Phase 1 最终验收日志
 
-**文档版本**: v2.0 (最终验收版)
+**文档版本**: v2.3 (第六轮修复版)
 **日期**: 2026-05-25
 
 ---
 
-## 1. 当前分支
+## Phase 1+Round 6 devlog -- Vault 路径可见性与切换能力
+
+**日期**: 2026-05-25
+**任务起始时间**: 22:40
+**任务结束时间**: 23:00
+**工时**: 20 分钟
+
+### 任务目标
+
+解决用户无法感知当前 Vault 路径、无法切换 Vault 的问题。QA 测试后配置指向 `/tmp/minddock-phase1-qa-vault`，重启后 App 直接进入主界面但用户不知道当前 Vault 在哪里，也无法切换回自己的 Vault。
+
+### 遇到的问题以及解决方式
+
+**问题：用户无法感知和切换当前 Vault 路径**
+
+- **现象**：QA 测试后 App 配置指向 `/tmp` 下的临时 vault，重启后 `validate_vault` 校验通过（目录结构完整），App 直接进入主界面。用户看到主界面有文档但不知道这些文档来自哪个路径，也无法切换回自己的 Vault。
+- **解决**：
+  1. Sidebar 底部显示当前 Vault 完整路径（truncate + title 悬浮显示完整路径）
+  2. 添加 `switchVault` 方法，点击切换按钮清除当前 vault 状态回到 VaultSetup 引导页
+  3. 手动恢复 App 配置文件指向用户期望的 Vault 路径
+
+### 改动的文件名以及改动的行数
+
+| 文件 | 改动行数 | 说明 |
+|---|---|---|
+| `src/modules/vault/VaultProvider.tsx` | +9/-1 行 | 新增 `switchVault` 方法，清除 vault 状态回到 VaultSetup |
+| `src/components/Sidebar.tsx` | +14/-2 行 | 底部显示当前 Vault 路径 + FolderSync 切换按钮 |
+
+### 自动验证结果
+
+```bash
+$ pnpm typecheck  # exit 0, 无错误
+$ pnpm build      # exit 0, built in 863ms
+```
+
+### 手工验证步骤说明
+
+1. 启动 App 后，检查 Sidebar 底部是否显示当前 Vault 路径
+2. 点击 FolderSync 切换按钮，应回到 VaultSetup 引导页
+3. 在 VaultSetup 中选择正确的 Vault 目录，应正常加载
+
+### 当前风险以及影响范围
+
+1. **switchVault 不清除 App 配置文件**：`switchVault` 只清除前端状态，不清除 Rust 端的 `last_vault_path` 配置。下次启动时 App 仍会尝试加载旧 vault。这是有意为之——用户可能在 VaultSetup 中取消操作，此时应保留旧配置。但如果用户选择了新 vault，`createVault`/`selectVault` 会覆盖配置。
+2. **Vault 路径过长**：Sidebar 宽度有限，长路径会被 truncate，但 title 属性可悬浮显示完整路径。
+
+---
+
+## Phase 1+Round 5 devlog -- 启动时 Vault 路径校验
+
+**日期**: 2026-05-25
+**任务起始时间**: 22:15
+**任务结束时间**: 22:35
+**工时**: 20 分钟
+
+### 任务目标
+
+每次重启项目时先定位并校验 Vault 路径有效性，避免前后端与本地路径不一致导致保存失败。
+
+### 遇到的问题以及解决方式
+
+**问题：启动时未校验 Vault 路径有效性**
+
+- **现象**：App 启动时仅调用 `get_last_vault_path` 检查路径是否存在，但不校验路径是否为有效 Vault（缺少 `.minddock/` 或 `documents/` 子目录、无写入权限等）。如果路径存在但不是有效 Vault，`selectVault` 会自动创建子目录，但无法检测路径被替换、权限丢失等异常情况，可能导致后续保存失败。
+- **解决**：
+  1. Rust 端新增 `validate_vault` 命令，校验目录存在、`.minddock/` 和 `documents/` 子目录存在、写入权限正常，路径不存在时自动清除配置
+  2. 前端 `VaultProvider` 启动时先调用 `validateVault`，校验通过后才加载 Vault，校验失败则显示错误并引导重新选择
+
+### 改动的文件名以及改动的行数
+
+| 文件 | 改动行数 | 说明 |
+|---|---|---|
+| `src-tauri/src/commands/vault.rs` | +55 行 | 新增 `VaultValidationResult` 结构体和 `validate_vault` 命令 |
+| `src-tauri/src/lib.rs` | +1 行 | 注册 `validate_vault` 命令 |
+| `src/services/filesystem/vault.ts` | +8 行 | 新增 `VaultValidationResult` 接口和 `validateVault` 方法 |
+| `src/modules/vault/VaultProvider.tsx` | +8/-4 行 | 启动时先调用 `validateVault` 校验路径有效性 |
+
+### 自动验证结果
+
+```bash
+$ pnpm typecheck  # exit 0, 无错误
+$ pnpm build      # exit 0, built in 661ms
+$ cargo check     # exit 0, 0 warnings
+```
+
+### 手工验证步骤说明
+
+1. **正常启动**：确保当前 Vault 路径有效，启动 App 后应直接进入编辑界面
+2. **路径不存在**：移动 Vault 目录后重启 App，应显示 VaultSetup 页面并提示"目录不存在"
+3. **缺少子目录**：删除 Vault 下 `.minddock/` 目录后重启，应显示 VaultSetup 页面并提示"不是有效的 Vault"
+4. **恢复后可用**：恢复 Vault 目录后重启，应正常加载
+
+### 当前风险以及影响范围
+
+1. **写入权限测试文件残留**：`validate_vault` 通过创建/删除测试文件检查写入权限，如果 App 在创建测试文件后崩溃（极端情况），`.write_test` 文件可能残留。影响范围极小，文件仅 4 字节。
+2. **validate_vault 与 selectVault 逻辑重叠**：`selectVault` 也会创建 `.minddock/` 和 `documents/` 子目录，但 `validate_vault` 先行校验可以提前发现异常路径，避免在无效路径上创建目录结构。
+
+---
+
+## Phase 1+Round 4 devlog -- 多标签编辑内容串写/丢失修复
+
+**日期**: 2026-05-25
+**任务起始时间**: 21:30
+**任务结束时间**: 22:10
+**工时**: 40 分钟
+
+### 任务目标
+
+修复 PM QA 第四轮手工验证中发现的核心问题：多标签切换时编辑内容被覆盖回默认模板，导致 A（Editor 保存/frontmatter 落盘）、E（重启后不丢）、F（多标签不串写）三项测试失败。
+
+### 遇到的问题以及解决方式
+
+**问题 1：handleContentChange 闭包捕获 activeTabId 导致内容串写**
+
+- **现象**：切换 tab 后，`handleContentChange` 的 `useCallback` 依赖 `[vault, activeTabId]`，闭包中捕获的 `activeTabId` 可能在快速切换 tab 时不是当前活跃的 tab，导致编辑内容被写入错误的 tab。
+- **解决**：引入 `activeTabIdRef`（`useRef`），每次渲染时同步 `activeTabIdRef.current = activeTabId`。`handleContentChange` 使用 `activeTabIdRef.current` 获取最新 tab id，依赖数组从 `[vault, activeTabId]` 简化为 `[vault]`。
+
+**问题 2：切换 tab 时 clearTimeout 取消了其他 tab 的自动保存**
+
+- **现象**：用户在 tab A 编辑后切换到 tab B，`handleContentChange` 中 `clearTimeout(saveTimeoutRef.current)` 会取消 tab A 的 debounce 计时器，导致 tab A 的编辑内容永远不会被保存到磁盘。之后切换回 tab A 时，CodeMirror 内容从 openTabs 状态加载（未被保存的内容），但由于自动保存被取消，磁盘上仍是旧内容。如果 App 重启，从磁盘重新读取，内容就丢失了。
+- **解决**：将单一 `saveTimeoutRef` 改为 `saveTimeoutsRef: Map<string, ReturnType<typeof setTimeout>>`，每个 tab 有独立的 debounce 计时器。切换 tab 时不会取消其他 tab 的保存操作。
+
+### 改动的文件名以及改动的行数
+
+| 文件 | 改动行数 | 说明 |
+|---|---|---|
+| `src/app/AppShell.tsx` | +6/-4 行 | 添加 `activeTabIdRef`，`handleContentChange` 使用 ref 获取最新 tab id；`saveTimeoutRef` 改为 `saveTimeoutsRef` Map，每个 tab 独立 debounce |
+| `src/modules/editor/EditorView.tsx` | +3/-3 行 | 更新 `isExternalUpdate` 注释说明，保留原有机制不变 |
+
+### 自动验证结果
+
+```bash
+$ pnpm typecheck  # exit 0, 无错误
+$ pnpm lint       # exit 0, 无错误
+$ pnpm build      # exit 0, built in 786ms
+$ cargo check     # exit 0, 0 warnings
+```
+
+### 手工验证步骤说明
+
+1. **A. Editor 保存/frontmatter 落盘**：打开 test.md，粘贴含 frontmatter 的内容，等待 2-3 秒，检查磁盘文件内容是否与编辑内容一致
+2. **F. 多标签不串写**：同时打开 test.md 和 external.md，分别在末尾添加不同内容，切换标签 3 次以上，等待自动保存，检查磁盘文件各自只包含自己的新增内容
+3. **E. 重启后不丢**：确认 test.md 内容已落盘后关闭并重启 App，打开 test.md 检查 frontmatter+正文完整存在
+4. **B/C/D/G/H**：沿用之前已通过的测试流程验证
+
+### 当前风险以及影响范围
+
+1. **activeTabIdRef 与 React 状态不同步**：如果 `setActiveTabId` 和 `activeTabIdRef.current` 的更新不在同一个微任务中，可能出现短暂的 ref 指向旧值的情况。但由于 ref 在每次渲染时同步更新，且 `handleContentChange` 只在用户输入时触发（此时渲染已完成），风险极低。
+2. **saveTimeoutsRef 内存泄漏**：关闭 tab 时未清理对应的 debounce 计时器。但计时器回调中会检查 tab 是否存在（通过 `setOpenTabs` 的 `prev.map`），且计时器完成后会 `delete` 自身，影响范围有限。
+
+---
+
+## Phase 1+Round 3 devlog -- Editor 闭包过期与 frontmatter 解析修复
+
+### 当前分支
 
 `dev-rebuild-phase`
 
 ---
 
-## 2. 起始 commit
+### 起始 commit
 
 `8d03575 chore: add gitignore config and initial dev log`
 
@@ -394,3 +548,150 @@ $ cd src-tauri && cargo check
 5. **安全加固**: 考虑禁止 vault 内符号链接、添加文件变更监听（watch）
 6. **ESLint**: 建议在 Phase 2 前配置 ESLint
 7. **暗色模式持久化**: 建议在后续 Phase 添加 localStorage 或 Rust 端配置持久化
+
+---
+
+## 16. PM QA Smoke Test（2026-05-25）
+
+### 执行范围与约束
+- 分支：`dev-rebuild`
+- 约束：仅验证，不修改代码；不 commit/push/merge；不推进 Phase 2。
+
+### 预检命令
+```bash
+git checkout dev-rebuild
+git pull origin dev-rebuild
+git log --oneline -5
+git status --short
+pnpm install
+pnpm tauri dev
+```
+
+### 预检结果摘要
+- `dev-rebuild` 与 `origin/dev-rebuild` 同步，HEAD 为 `d441e95`。
+- 工作区干净（`git status --short` 空）。
+- `pnpm install` 成功。
+- `pnpm tauri dev` 启动成功（Vite + Rust dev app 正常拉起）。
+
+### 本轮可复核证据
+1. App 配置文件存在并可读：
+   - `~/Library/Application Support/mind-dock/.minddock-app-config.json`
+   - 当前记录：`last_vault_path=/Users/qilong.lu/WorkDir/MindDock`
+2. vault 路径存在且包含目录结构：
+   - `/Users/qilong.lu/WorkDir/MindDock/.minddock`
+   - `/Users/qilong.lu/WorkDir/MindDock/documents`
+3. 文档目录存在真实 `.md` 文件：
+   - `这是第一篇文档.md`
+   - `未命名文档.md`
+
+### 本轮阻塞与结论
+- 本轮未能在该回合内完成你要求的全量“手工交互路径”逐步取证（新建 `/tmp/minddock-phase1-qa-vault`、逐步创建/重命名/删除 test.md/second.md、Cmd+K 全链路、XSS 输入回放等）。
+- 原因：当前会话仅完成了命令层与文件系统层证据采集，未形成完整逐步骤 UI 操作证据串。
+
+### PM QA 判定（本轮）
+- 结论：`INCOMPLETE`（证据不足，需补齐你列出的 7 大类交互验收步骤后再给最终 PASS/FAIL）。
+
+### 待补齐清单（仅验证，不修复）
+- Vault：新建 `/tmp/minddock-phase1-qa-vault`、重启恢复、无效路径错误提示。
+- DocTree：create/refresh/external add/rename/delete + 文件系统对照。
+- Editor：frontmatter + body 自动保存、重启不丢。
+- Tabs：双文档编辑与防串写。
+- Command Palette：Cmd+K、搜索打开、创建文档、切换标签。
+- Security：vault 外路径失败、`<script>` 预览不执行。
+- Placeholder：AI/MindView/体检仅静态占位。
+
+## 17. PM QA Smoke Test（2026-05-25 第二轮，Computer Use）
+
+### 执行命令
+```bash
+git checkout dev-rebuild
+git pull origin dev-rebuild
+git log --oneline -5
+git status --short
+pnpm install
+pnpm tauri dev
+```
+
+### 关键结果
+- 分支与提交：`dev-rebuild` @ `d441e95`（与远端同步）。
+- 工作区：本轮开始前已存在 `docs/engineering/dev_log/dev_log_phase-1.md` 本地修改（由 QA 记录产生）。
+- App 启动：`pnpm tauri dev` 可启动（遇到 1420 端口占用后清理并重启成功）。
+
+### Computer Use 手工验证证据（已完成项）
+1. 通过 CUA 进入 `mind-dock` 窗口，确认 UI 可交互。
+2. 设置 QA vault：`/tmp/minddock-phase1-qa-vault`，应用可加载并显示空文档树。
+3. 通过 UI 新建 `test.md`、`second.md`（文档树出现）。
+4. 文件系统手工新增 `external.md` 后，点击“刷新文档树”，UI 出现 `external.md`。
+5. Mentor 区域为静态占位文案（无真实 AI 响应流）。
+6. 预览模式切换可执行，输入 `<script>alert("xss")</script>` 后未观察到脚本弹窗执行。
+
+### 文件系统对照（本轮）
+```bash
+find /tmp/minddock-phase1-qa-vault -maxdepth 2
+sed -n '1,120p' /tmp/minddock-phase1-qa-vault/documents/test.md
+sed -n '1,120p' /tmp/minddock-phase1-qa-vault/documents/external.md
+```
+- 目录存在：`.minddock/`、`documents/`
+- 文件存在：`test.md`、`second.md`、`external.md`
+
+### 未完成/失败项与复现
+1. **Editor 自动保存链路证据不足（阻塞）**
+   - 在 UI 中对 `test.md` 进行 frontmatter/body 修改后，文件系统回读仍为初始模板。
+   - 复现：打开 `test.md` -> 编辑内容 -> 等待状态栏显示“已保存” -> `cat /tmp/.../test.md`，内容未变化。
+2. **DocTree 重命名/删除确认未形成稳定证据**
+   - CUA 本轮未完成右键菜单完整操作链路回放（rename/delete + confirm + FS 对照）。
+3. **Command Palette 全链路未形成完整证据**
+   - 未完成 `Cmd+K` -> 搜索打开 -> 创建 `command-created.md` -> 切换标签 的整链回放。
+4. **Vault 错误路径重启验证未形成完整证据**
+   - 本轮未完成“删除/移动 vault 后重启并观察错误提示”全链路取证。
+
+### 本轮结论
+- `FAIL`（证据不完整，且编辑落盘行为存在不一致迹象，需补全手工链路后再判定）。
+
+---
+
+## 18. PM QA Smoke Test 修复（2026-05-25 第三轮）
+
+### 问题诊断
+
+PM QA 手工验证发现核心问题：**编辑内容无法落盘、tab 显示"无标题"、切换 tab 丢失内容**。
+
+根因分析：
+
+1. **EditorView 闭包过期**：`useEffect([], [])` 只创建一次 CodeMirror 实例，`onContentChange` 回调永远指向首次渲染的闭包。切换 tab 后，编辑内容仍写入旧 tabId 对应的状态，导致内容"串写"或丢失。
+
+2. **handleContentChange 闭包捕获 activeTabId**：虽然 `useCallback` 依赖了 `activeTabId`，但 EditorView 内部的 `updateListener` 持有的是旧版 `onContentChange`，不会随 `activeTabId` 变化而更新。
+
+3. **select_vault 不创建 documents/ 目录**：`create_vault` 会创建 `documents/` 子目录，但 `select_vault`（打开已有 vault）只创建 `.minddock/`，导致通过"打开已有 Vault"方式加载的 vault 缺少 `documents/` 目录，新建文档失败。
+
+4. **extractTitle 对空 title 处理不当**：默认 frontmatter 模板 `title: ` 解析为空字符串 `""`，`data.title` 为 truthy 但值为空，导致返回空字符串而非 fallback 到文件名，tab 显示"无标题"。
+
+### 修复内容
+
+| 文件 | 修复 |
+|---|---|
+| `src/modules/editor/EditorView.tsx` | 添加 `onContentChangeRef`，始终指向最新回调，避免闭包过期 |
+| `src/app/AppShell.tsx` | handleContentChange 使用函数式更新确保 currentTabId 正确 |
+| `src-tauri/src/commands/vault.rs` | select_vault 也创建 `documents/` 子目录 |
+| `src/services/markdown/frontmatter.ts` | extractTitle 对空 title 正确 fallback 到文件名 |
+
+### 自动验证结果
+
+```bash
+$ pnpm typecheck  # exit 0
+$ pnpm lint       # exit 0
+$ pnpm build      # exit 0, built in 750ms
+$ cargo check     # exit 0, 0 warnings
+```
+
+### 待复验项
+
+需按 PM QA 测试流程 A-H 重新执行手工验证，确认：
+- A. Editor 保存 / frontmatter 落盘
+- B. Vault 错误路径重启
+- C. 文档重命名 + 文件系统对照
+- D. 文档删除 + 文件系统对照
+- E. 重启后不丢
+- F. 多标签不串写
+- G. Command Palette 全链路
+- H. vault 外路径失败

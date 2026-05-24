@@ -19,13 +19,17 @@ export function EditorView({ content, onContentChange }: EditorViewProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<CMEditorView | null>(null);
   const isExternalUpdate = useRef(false);
+  const onContentChangeRef = useRef(onContentChange);
+
+  // 始终保持 ref 指向最新回调，避免闭包过期
+  onContentChangeRef.current = onContentChange;
 
   useEffect(() => {
     if (!editorRef.current) return;
 
     const updateListener = CMEditorView.updateListener.of((update) => {
       if (update.docChanged && !isExternalUpdate.current) {
-        onContentChange(update.state.doc.toString());
+        onContentChangeRef.current(update.state.doc.toString());
       }
     });
 
@@ -88,6 +92,8 @@ export function EditorView({ content, onContentChange }: EditorViewProps) {
   }, []); // 只创建一次
 
   // 外部内容更新时同步到 CodeMirror
+  // isExternalUpdate 标志阻止 updateListener 在外部 dispatch 期间触发 onContentChange，
+  // 避免切换 tab 时将内容错误地写入 openTabs 状态
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;

@@ -1,4 +1,4 @@
-import { ChevronLeft, Search, Zap, Sun, Moon } from 'lucide-react';
+import { ChevronLeft, Search, Zap, Sun, Moon, FolderSync } from 'lucide-react';
 import { useTheme } from '@/app/theme';
 import { useVault } from '@/modules/vault/VaultProvider';
 import { DocTree } from '@/modules/dock/DocTree';
@@ -14,11 +14,12 @@ interface SidebarProps {
   onQuickCapture: () => void;
   onHealthView: () => void;
   onDocDeleted?: (docPath: string) => void;
+  onDocRenamed?: (oldPath: string, newPath: string) => void;
 }
 
-export function Sidebar({ open, activeDocId, docTree, onDocSelect, onToggle, onCmdPaletteOpen, onQuickCapture, onHealthView, onDocDeleted }: SidebarProps) {
+export function Sidebar({ open, activeDocId, docTree, onDocSelect, onToggle, onCmdPaletteOpen, onQuickCapture, onHealthView, onDocDeleted, onDocRenamed }: SidebarProps) {
   const { isDark, toggle } = useTheme();
-  const { vault } = useVault();
+  const { vault, switchVault } = useVault();
 
   if (!open) return null;
 
@@ -67,10 +68,25 @@ export function Sidebar({ open, activeDocId, docTree, onDocSelect, onToggle, onC
       </div>
 
       {/* Document Tree */}
-      <DocTree activeDocId={activeDocId} docTree={docTree} onDocSelect={onDocSelect} onDocDeleted={onDocDeleted} />
+      <DocTree activeDocId={activeDocId} docTree={docTree} onDocSelect={onDocSelect} onDocDeleted={onDocDeleted} onDocRenamed={onDocRenamed} />
 
       {/* Vault 统计信息 - 来自 VaultProvider */}
       <div className={`p-4 border-t border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] text-[#7e7e78] dark:text-[#8e8e8e] space-y-2`}>
+        {/* 当前 Vault 路径 + 切换按钮 */}
+        {vault && (
+          <div className="flex items-center gap-1">
+            <span className="truncate flex-1 font-mono" title={vault.path}>
+              {vault.path}
+            </span>
+            <button
+              onClick={switchVault}
+              className="p-0.5 hover:bg-stone-200 dark:hover:bg-stone-700 rounded transition-colors shrink-0"
+              title="切换 Vault"
+            >
+              <FolderSync size={11} />
+            </button>
+          </div>
+        )}
         <div className="flex justify-between font-mono">
           <span>文件: {vault?.document_count ?? 0} md</span>
           {/* PHASE_PLACEHOLDER - 节点数待 Phase 5 实现 */}

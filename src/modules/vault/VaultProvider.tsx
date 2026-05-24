@@ -12,6 +12,7 @@ interface VaultState {
   pickAndCreateVault: () => Promise<void>;
   pickAndSelectVault: () => Promise<void>;
   refreshDocTree: () => Promise<void>;
+  switchVault: () => void;
 }
 
 const VaultContext = createContext<VaultState | null>(null);
@@ -28,16 +29,23 @@ export function VaultProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // 启动时加载上次 vault
+  // 启动时加载上次 vault，先校验路径有效性
   useEffect(() => {
     (async () => {
       try {
         const lastPath = await vaultService.getLastVaultPath();
         if (lastPath) {
-          const info = await vaultService.selectVault(lastPath);
-          setVault(info);
-          const tree = await vaultService.scanVaultFiles(lastPath);
-          setDocTree(tree);
+          // 先校验 vault 路径是否有效，避免前后端路径不一致导致保存失败
+          const validation = await vaultService.validateVault(lastPath);
+          if (validation.valid) {
+            const info = await vaultService.selectVault(lastPath);
+            setVault(info);
+            const tree = await vaultService.scanVaultFiles(lastPath);
+            setDocTree(tree);
+          } else {
+            // vault 无效（路径不存在/缺少子目录/无写入权限），清除状态引导重新选择
+            setError(validation.error || 'Vault 路径无效');
+          }
         }
       } catch (err) {
         setError(String(err));
@@ -97,6 +105,13 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     }
   }, [selectVault]);
 
+  // 切换 Vault：清除当前 vault 状态，回到 VaultSetup 引导页
+  const switchVault = useCallback(() => {
+    setVault(null);
+    setDocTree([]);
+    setError(null);
+  }, []);
+
   return (
     <VaultContext.Provider
       value={{
@@ -109,6 +124,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
         pickAndCreateVault,
         pickAndSelectVault,
         refreshDocTree,
+        switchVault,
       }}
     >
       {children}

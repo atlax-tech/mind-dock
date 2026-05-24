@@ -22,6 +22,7 @@ pub fn run() {
             vault::get_last_vault_path,
             vault::set_last_vault_path,
             vault::scan_vault_files,
+            vault::validate_vault,
             fs::create_document,
             fs::read_document,
             fs::write_document,

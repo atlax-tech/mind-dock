@@ -39,13 +39,32 @@ export function stringifyFrontMatter(data: FrontMatterData, content: string): st
   return `---\n${yaml}\n---\n${content}`;
 }
 
-/** 从文档内容提取标题 */
+/** 从文档内容提取标题
+ * 优先级：frontmatter title → # 标题 → ## 标题 → ### 标题 → 正文首句
+ */
 export function extractTitle(content: string): string {
-  const { data } = parseFrontMatter(content);
-  if (data.title) return data.title as string;
-  // 从正文第一行 # 标题提取
-  const match = content.match(/^#\s+(.+)$/m);
-  return match ? match[1] : '无标题';
+  const { data, content: body } = parseFrontMatter(content);
+  if (data.title && String(data.title).trim()) return String(data.title).trim();
+
+  // 从正文中按级别查找标题：# → ## → ###
+  for (const level of [1, 2, 3]) {
+    const prefix = '#'.repeat(level);
+    const regex = new RegExp(`^${prefix}\\s+(.+)$`, 'm');
+    const match = body.match(regex);
+    if (match) return match[1].trim();
+  }
+
+  // fallback：正文首句（取第一个非空行，截取到句号或前 50 字符）
+  const firstLine = body.split('\n').map(l => l.trim()).find(l => l.length > 0);
+  if (firstLine) {
+    const sentenceEnd = firstLine.search(/[。！？.!?]/);
+    if (sentenceEnd > 0) {
+      return firstLine.slice(0, sentenceEnd + 1);
+    }
+    return firstLine.length > 50 ? firstLine.slice(0, 50) + '...' : firstLine;
+  }
+
+  return '';
 }
 
 /** 简易 YAML 解析器（仅支持 frontmatter 常见格式） */
