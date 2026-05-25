@@ -1,6 +1,6 @@
 import { Pin, MessageSquare, Layers } from 'lucide-react';
 
-export type WorkspaceView = 'editor' | 'mindview' | 'health';
+export type WorkspaceView = 'editor' | 'mindview' | 'health' | 'diff';
 
 interface WorkspaceHeaderProps {
   currentView: WorkspaceView;
@@ -12,7 +12,13 @@ interface WorkspaceHeaderProps {
 
 export function WorkspaceHeader({ currentView, onViewChange, onMentorDockToggle, onNotificationsOpen, onCreateStickyNote }: WorkspaceHeaderProps) {
 
-  const viewLabel = currentView === 'editor' ? '编辑器' : currentView === 'mindview' ? '知识图谱' : '库体检';
+  const viewLabel = currentView === 'editor'
+    ? '编辑器'
+    : currentView === 'mindview'
+      ? '知识图谱'
+      : currentView === 'health'
+        ? '库体检'
+        : '版本对比';
 
   const tabs: { id: WorkspaceView; label: string }[] = [
     { id: 'editor', label: '编辑器' },

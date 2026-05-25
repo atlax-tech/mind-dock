@@ -8,8 +8,8 @@ export interface CaptureEntry {
 }
 
 export const captureService = {
-  async appendCapture(vaultPath: string, content: string, source: string): Promise<void> {
-    return invoke('append_capture', { vaultPath, content, source });
+  async appendCapture(vaultPath: string, content: string, source: string): Promise<CaptureEntry> {
+    return invoke<CaptureEntry>('append_capture', { vaultPath, content, source });
   },
 
   async readCaptures(vaultPath: string): Promise<CaptureEntry[]> {

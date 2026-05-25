@@ -1,6 +1,6 @@
 mod commands;
 
-use commands::{vault, fs, capture, sticky_notes, notifications};
+use commands::{vault, fs, capture, sticky_notes, notifications, ai_runtime, ai_logs, ai_suggestions, git};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -36,6 +36,21 @@ pub fn run() {
             sticky_notes::write_sticky_notes,
             notifications::read_notifications,
             notifications::write_notifications,
+            ai_runtime::ollama_check_connection,
+            ai_runtime::ollama_chat,
+            ai_runtime::ollama_embed,
+            ai_runtime::read_ai_config,
+            ai_runtime::write_ai_config,
+            ai_runtime::read_onboarding_status,
+            ai_runtime::write_onboarding_status,
+            ai_logs::append_ai_log,
+            ai_logs::read_ai_logs,
+            ai_suggestions::append_ai_suggestion,
+            ai_suggestions::read_ai_suggestions,
+            ai_suggestions::update_ai_suggestion_status,
+            git::git_log,
+            git::git_diff,
+            git::git_snapshot_document,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

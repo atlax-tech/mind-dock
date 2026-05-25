@@ -1,12 +1,14 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { X, Bot, Bell, LayoutGrid, FileText, Inbox, CheckCheck, Trash2, Circle, ChevronDown, GripVertical, Pencil, Trash } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
+import { X, Bot, Bell, LayoutGrid, FileText, Inbox, CheckCheck, Trash2, Circle, ChevronDown, ChevronRight, GripVertical, Pencil, Trash, Loader2, Settings, ScrollText, Wifi, WifiOff, AlertTriangle, Zap, PencilLine, GitCommit as GitCommitIcon, List, History, Info } from 'lucide-react';
 
 import { useNotifications } from '@/modules/notifications/NotificationProvider';
 import { useCapture } from '@/modules/capture/CaptureProvider';
 import { useVault } from '@/modules/vault/VaultProvider';
+import { useAIRuntime, type AIRuntimeStatus } from '@/modules/ai/AIRuntimeProvider';
+import { useAISuggestions } from '@/modules/ai/AISuggestionsProvider';
 import { documentService, type DocumentMetadata } from '@/services/filesystem/documents';
-
-// PHASE_PLACEHOLDER - Phase 3 会实现 AI Mentor
+import { aiLogsService, type AIRuntimeLog } from '@/services/ai/logs';
+import { gitService, type GitCommit } from '@/services/filesystem/git';
 
 export type PlatterTab = 'mentor' | 'notifications' | 'inbox' | 'widgets' | 'document-context';
 
@@ -17,6 +19,14 @@ interface PlatterProps {
   onClose: () => void;
   activeDocumentPath?: string;
   activeDocumentName?: string;
+  activeDocumentContent?: string;
+  onAIConfig?: () => void;
+  onAICheckConnection?: () => void;
+  onAIRuntimeLogs?: () => void;
+  onAIOnboarding?: () => void;
+  onScrollToHeading?: (heading: string) => void;
+  onScrollToLine?: (line: number) => void;
+  onOpenVersionDiff?: (commit: GitCommit) => void;
 }
 
 const PLATTER_TABS: { id: PlatterTab; label: string; icon: typeof Bot }[] = [
@@ -27,21 +37,622 @@ const PLATTER_TABS: { id: PlatterTab; label: string; icon: typeof Bot }[] = [
   { id: 'document-context', label: 'Context', icon: FileText },
 ];
 
-/* ---------- Mentor View ---------- */
-function MentorView() {
+function ExplorerSection({
+  title,
+  icon: Icon,
+  expanded,
+  onToggle,
+  children,
+  contentClassName,
+}: {
+  title: string;
+  icon: typeof FileText;
+  expanded: boolean;
+  onToggle: () => void;
+  children?: ReactNode;
+  contentClassName?: string;
+}) {
   return (
-    <div className="space-y-4">
-      <div className={`bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl p-3.5 space-y-3`}>
-        <div className="flex items-center gap-2">
-          <Bot size={18} className="text-stone-400" />
-          <p className="text-[10px] font-mono uppercase text-emerald-600 font-bold">
-            AI Mentor 未接入
-          </p>
+    <div className="border-b border-[#e6e6dc] dark:border-[#2f2f2f] last:border-b-0">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-1.5 px-3 py-2.5 text-left hover:bg-stone-100/70 dark:hover:bg-stone-800/40 transition-colors"
+      >
+        <ChevronRight
+          size={11}
+          className={`shrink-0 text-[#7e7e78] dark:text-[#8e8e8e] transition-transform ${expanded ? 'rotate-90' : ''}`}
+        />
+        <Icon size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
+        <span className="text-[10px] font-mono uppercase font-bold tracking-wide text-[#2c2c2a] dark:text-[#e3e3e3]">
+          {title}
+        </span>
+      </button>
+      {expanded && children && <div className={contentClassName ?? 'pb-1'}>{children}</div>}
+    </div>
+  );
+}
+
+interface TocEntry {
+  level: number;
+  text: string;
+  line: number;
+  children: TocEntry[];
+}
+
+function buildTocTree(entries: Omit<TocEntry, 'children'>[]): TocEntry[] {
+  const roots: TocEntry[] = [];
+  const stack: TocEntry[] = [];
+
+  for (const item of entries) {
+    const entry: TocEntry = { ...item, children: [] };
+    while (stack.length > 0 && stack[stack.length - 1].level >= entry.level) {
+      stack.pop();
+    }
+
+    if (stack.length > 0) {
+      stack[stack.length - 1].children.push(entry);
+    } else {
+      roots.push(entry);
+    }
+
+    stack.push(entry);
+  }
+
+  return roots;
+}
+
+function extractNumberedHeading(line: string): { level: number; text: string } | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+
+  const decimalMatch = trimmed.match(/^(\d+(?:\.\d+)+)\s+(.+)$/);
+  if (decimalMatch) {
+    return {
+      level: decimalMatch[1].split('.').length,
+      text: trimmed,
+    };
+  }
+
+  const chineseMatch = trimmed.match(/^([一二三四五六七八九十]+)[、.．]\s*(.+)$/);
+  if (chineseMatch) {
+    return {
+      level: 1,
+      text: trimmed,
+    };
+  }
+
+  return null;
+}
+
+function parseMarkdownToc(content: string): TocEntry[] {
+  const flatEntries: Omit<TocEntry, 'children'>[] = [];
+  const lines = content.split('\n');
+  let minMarkdownLevel = Number.POSITIVE_INFINITY;
+
+  for (let i = 0; i < lines.length; i++) {
+    const markdownMatch = lines[i].match(/^(#{1,6})\s+(.+)$/);
+    if (markdownMatch) {
+      minMarkdownLevel = Math.min(minMarkdownLevel, markdownMatch[1].length);
+    }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const markdownMatch = lines[i].match(/^(#{1,6})\s+(.+)$/);
+    if (markdownMatch) {
+      const normalizedLevel = Number.isFinite(minMarkdownLevel)
+        ? markdownMatch[1].length - minMarkdownLevel + 1
+        : markdownMatch[1].length;
+      flatEntries.push({
+        level: normalizedLevel,
+        text: markdownMatch[2].trim(),
+        line: i + 1,
+      });
+      continue;
+    }
+
+    const numberedHeading = extractNumberedHeading(lines[i]);
+    if (numberedHeading) {
+      flatEntries.push({
+        level: numberedHeading.level,
+        text: numberedHeading.text,
+        line: i + 1,
+      });
+    }
+  }
+
+  return buildTocTree(flatEntries);
+}
+
+function TocTreeItem({
+  entry,
+  depth,
+  onHeadingClick,
+  onLineClick,
+  ancestorHasNext = [],
+  isLast = false,
+}: {
+  entry: TocEntry;
+  depth: number;
+  onHeadingClick?: (heading: string) => void;
+  onLineClick?: (line: number) => void;
+  ancestorHasNext?: boolean[];
+  isLast?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const hasChildren = entry.children.length > 0;
+  const guideWidth = depth * 18;
+
+  return (
+    <div>
+      <button
+        onClick={() => {
+          onLineClick?.(entry.line);
+          onHeadingClick?.(entry.text);
+        }}
+        className="w-full flex items-center pr-3 py-1.5 text-left text-[#5a5a56] dark:text-[#a0a0a0] hover:bg-stone-100 dark:hover:bg-stone-800/60 transition-colors"
+      >
+        <span
+          className="relative shrink-0 h-7"
+          style={{ width: `${guideWidth + 18}px` }}
+        >
+          {ancestorHasNext.map((hasNext, idx) => (
+            hasNext ? (
+              <span
+                key={idx}
+                className="absolute top-0 bottom-0 w-px bg-[#d8d5ca] dark:bg-[#343434]"
+                style={{ left: `${idx * 18 + 9}px` }}
+              />
+            ) : null
+          ))}
+          {depth > 0 && (
+            <>
+              <span
+                className="absolute w-px bg-[#d8d5ca] dark:bg-[#343434]"
+                style={{
+                  left: `${depth * 18 - 9}px`,
+                  top: 0,
+                  bottom: isLast ? '50%' : 0,
+                }}
+              />
+              <span
+                className="absolute h-px bg-[#d8d5ca] dark:bg-[#343434]"
+                style={{
+                  left: `${depth * 18 - 9}px`,
+                  top: '50%',
+                  width: '14px',
+                }}
+              />
+            </>
+          )}
+          <span
+            className="absolute top-1/2 -translate-y-1/2 flex items-center justify-center"
+            style={{ left: `${guideWidth}px`, width: '14px', height: '14px' }}
+          >
+            {hasChildren ? (
+              <ChevronRight
+                size={10}
+                className={`text-[#7e7e78] dark:text-[#8e8e8e] transition-transform ${expanded ? 'rotate-90' : ''}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setExpanded(prev => !prev);
+                }}
+              />
+            ) : (
+              <span className="w-1.5 h-1.5 rounded-full bg-[#bdb8ab] dark:bg-[#505050]" />
+            )}
+          </span>
+        </span>
+
+        <span
+          className={`truncate ${
+            entry.level === 1
+              ? 'text-[12px] font-semibold text-[#2c2c2a] dark:text-[#f1f1f1]'
+              : entry.level === 2
+                ? 'text-[11px] font-semibold text-[#3b3b38] dark:text-[#e3e3e3] pl-0.5'
+                : entry.level === 3
+                  ? 'text-[11px] font-medium text-[#4f4f4b] dark:text-[#cfcfcf] pl-1'
+                  : 'text-[10px] text-[#6a6a66] dark:text-[#aaaaaa] pl-1.5'
+          }`}
+        >
+          {entry.text}
+        </span>
+      </button>
+
+      {hasChildren && expanded && entry.children.map((child, index) => (
+        <TocTreeItem
+          key={`${child.line}-${index}`}
+          entry={child}
+          depth={depth + 1}
+          onHeadingClick={onHeadingClick}
+          onLineClick={onLineClick}
+          ancestorHasNext={[...ancestorHasNext, !isLast]}
+          isLast={index === entry.children.length - 1}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ── Version History 组件 ──
+
+function VersionHistoryView({ vaultPath, filePath, onOpenVersionDiff }: {
+  vaultPath: string;
+  filePath: string;
+  onOpenVersionDiff?: (commit: GitCommit) => void;
+}) {
+  const [commits, setCommits] = useState<GitCommit[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!vaultPath || !filePath) return;
+    setLoading(true);
+    setError(null);
+    gitService.getLog(vaultPath, filePath, 15)
+      .then(setCommits)
+      .catch(e => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, [vaultPath, filePath]);
+
+  const formatTime = (ts: number): string => {
+    try {
+      return new Date(ts * 1000).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return '';
+    }
+  };
+
+  return (
+    <div className="space-y-1">
+      {loading ? (
+        <div className="flex items-center justify-center py-3">
+          <Loader2 size={12} className="animate-spin text-stone-400" />
         </div>
-        <p className={`text-[11px] text-[#7e7e78] dark:text-[#8e8e8e] leading-normal`}>
-          AI Mentor 功能将在 Phase 3 实现
+      ) : error ? (
+        <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e] px-1">{error}</p>
+      ) : commits.length === 0 ? (
+        <p className="text-[11px] text-[#7e7e78] dark:text-[#8e8e8e] px-1">无版本记录</p>
+      ) : (
+        <div className="space-y-0.5 max-h-[300px] overflow-y-auto pr-0.5">
+          {commits.map(commit => {
+            return (
+              <div key={commit.hash}>
+                <button
+                  onClick={() => onOpenVersionDiff?.(commit)}
+                  className="w-full flex items-start gap-1.5 p-1.5 rounded hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors text-left"
+                >
+                  <GitCommitIcon size={10} className="shrink-0 mt-0.5 text-[#7e7e78] dark:text-[#8e8e8e]" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] truncate leading-tight">
+                      {commit.subject}
+                    </p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-[9px] font-mono text-stone-400 dark:text-stone-500">
+                        {commit.short_hash}
+                      </span>
+                      <span className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e]">
+                        {commit.author}
+                      </span>
+                      <span className="text-[9px] text-stone-400 dark:text-stone-500">
+                        {formatTime(commit.timestamp)}
+                      </span>
+                    </div>
+                  </div>
+                  <ChevronRight
+                    size={9}
+                    className="shrink-0 text-[#7e7e78] dark:text-[#8e8e8e] mt-1"
+                  />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Document Info 组件（折叠） ──
+
+/* ---------- Mentor View ---------- */
+const STATUS_CONFIG: Record<AIRuntimeStatus, { label: string; dotClass: string; textClass: string; icon: typeof Wifi }> = {
+  connected: { label: '已连接', dotClass: 'bg-emerald-500', textClass: 'text-emerald-600 dark:text-emerald-400', icon: Wifi },
+  disconnected: { label: '未连接', dotClass: 'bg-stone-400 dark:bg-stone-500', textClass: 'text-stone-500 dark:text-stone-400', icon: WifiOff },
+  error: { label: '连接错误', dotClass: 'bg-red-400 dark:bg-red-500', textClass: 'text-red-500 dark:text-red-400', icon: AlertTriangle },
+  running: { label: '检测中', dotClass: 'bg-amber-400 dark:bg-amber-500', textClass: 'text-amber-600 dark:text-amber-400', icon: Loader2 },
+  disabled: { label: '已禁用', dotClass: 'bg-stone-300 dark:bg-stone-600', textClass: 'text-stone-400 dark:text-stone-500', icon: WifiOff },
+};
+
+function MentorView({ onAIConfig, onAICheckConnection, onAIRuntimeLogs, onAIOnboarding }: {
+  onAIConfig?: () => void;
+  onAICheckConnection?: () => void;
+  onAIRuntimeLogs?: () => void;
+  onAIOnboarding?: () => void;
+}) {
+  const { vault } = useVault();
+  const { status, config, availableModels, error, checkConnection, updateConfig } = useAIRuntime();
+  const { suggestions, loading: suggestionsLoading } = useAISuggestions();
+
+  const [editingEndpoint, setEditingEndpoint] = useState(false);
+  const [editingModel, setEditingModel] = useState(false);
+  const [endpointDraft, setEndpointDraft] = useState(config.endpoint);
+  const [modelDraft, setModelDraft] = useState(config.default_model || '');
+
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [logs, setLogs] = useState<AIRuntimeLog[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+
+  useEffect(() => { setEndpointDraft(config.endpoint); }, [config.endpoint]);
+  useEffect(() => { setModelDraft(config.default_model || ''); }, [config.default_model]);
+
+  const saveEndpoint = useCallback(async () => {
+    setEditingEndpoint(false);
+    if (endpointDraft.trim() && endpointDraft !== config.endpoint) {
+      await updateConfig({ ...config, endpoint: endpointDraft.trim() });
+    }
+  }, [endpointDraft, config, updateConfig]);
+
+  const saveModel = useCallback(async () => {
+    setEditingModel(false);
+    const newModel = modelDraft.trim() || null;
+    if (newModel !== config.default_model) {
+      await updateConfig({ ...config, default_model: newModel });
+    }
+  }, [modelDraft, config, updateConfig]);
+
+  const loadLogs = useCallback(async () => {
+    if (!vault) return;
+    setLogsLoading(true);
+    try {
+      const entries = await aiLogsService.readLogs(vault.path, 20);
+      setLogs(entries.reverse());
+    } catch { /* ignore */ } finally {
+      setLogsLoading(false);
+    }
+  }, [vault]);
+
+  const handleOpenLogs = useCallback(() => {
+    if (onAIRuntimeLogs) {
+      onAIRuntimeLogs();
+    } else {
+      setLogsOpen(prev => {
+        if (!prev) loadLogs();
+        return !prev;
+      });
+    }
+  }, [onAIRuntimeLogs, loadLogs]);
+
+  const statusCfg = STATUS_CONFIG[status];
+  const StatusIcon = statusCfg.icon;
+
+  const recentSuggestions = [...suggestions].reverse().slice(0, 5);
+
+  const suggestionTypeLabel = (type: string): string => {
+    switch (type) {
+      case 'clarity_interview': return '结构建议';
+      case 'writing': return '写作建议';
+      case 'health': return '健康建议';
+      default: return type;
+    }
+  };
+
+  const suggestionStatusBadge = (s: string) => {
+    switch (s) {
+      case 'pending': return <span className="text-[9px] px-1 py-0.5 rounded bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400">待处理</span>;
+      case 'accepted': return <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400">已采纳</span>;
+      case 'rejected': return <span className="text-[9px] px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400">已忽略</span>;
+      case 'edited': return <span className="text-[9px] px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400">已编辑</span>;
+      default: return null;
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl p-3.5 space-y-2.5">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <StatusIcon size={14} className={`${statusCfg.textClass} ${status === 'running' ? 'animate-spin' : ''}`} />
+            <span className={`text-[10px] font-mono uppercase font-bold ${statusCfg.textClass}`}>
+              AI Runtime
+            </span>
+            <span className={`inline-block w-1.5 h-1.5 rounded-full ${statusCfg.dotClass}`} />
+          </div>
+          <button
+            onClick={() => { checkConnection(); onAICheckConnection?.(); }}
+            className="p-1 text-[#7e7e78] dark:text-[#8e8e8e] hover:text-stone-800 dark:hover:text-stone-200 transition-colors"
+            title="检测连接"
+          >
+            <Zap size={12} />
+          </button>
+        </div>
+        <p className={`text-[11px] ${statusCfg.textClass} leading-normal`}>
+          {statusCfg.label}
+          {error && <span className="block text-red-400 dark:text-red-500 mt-0.5 text-[10px]">{error}</span>}
         </p>
       </div>
+
+      <div className="bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl p-3.5 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <Settings size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
+            <p className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
+              配置
+            </p>
+          </div>
+          {onAIConfig && (
+            <button
+              onClick={onAIConfig}
+              className="text-[10px] text-emerald-600 dark:text-emerald-400 hover:underline"
+            >
+              打开配置面板
+            </button>
+          )}
+        </div>
+
+        <div>
+          <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">Endpoint</p>
+          {editingEndpoint ? (
+            <input
+              type="text"
+              value={endpointDraft}
+              onChange={(e) => setEndpointDraft(e.target.value)}
+              onBlur={saveEndpoint}
+              onKeyDown={(e) => { if (e.key === 'Enter') saveEndpoint(); if (e.key === 'Escape') { setEditingEndpoint(false); setEndpointDraft(config.endpoint); } }}
+              className="w-full text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] bg-transparent border-b border-emerald-600 dark:border-emerald-400 outline-none py-0.5"
+              autoFocus
+            />
+          ) : (
+            <p
+              onClick={() => setEditingEndpoint(true)}
+              className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors truncate"
+              title="点击编辑"
+            >
+              {config.endpoint}
+            </p>
+          )}
+        </div>
+
+        <div>
+          <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">Chat Model</p>
+          {editingModel ? (
+            availableModels.length > 0 ? (
+              <select
+                value={modelDraft}
+                onChange={(e) => { setModelDraft(e.target.value); }}
+                onBlur={saveModel}
+                className="w-full text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] bg-transparent border-b border-emerald-600 dark:border-emerald-400 outline-none py-0.5"
+                autoFocus
+              >
+                <option value="">（自动选择）</option>
+                {availableModels.map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={modelDraft}
+                onChange={(e) => setModelDraft(e.target.value)}
+                onBlur={saveModel}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveModel(); if (e.key === 'Escape') { setEditingModel(false); setModelDraft(config.default_model || ''); } }}
+                placeholder="输入模型名称"
+                className="w-full text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] bg-transparent border-b border-emerald-600 dark:border-emerald-400 outline-none py-0.5 placeholder:text-[#7e7e78]"
+                autoFocus
+              />
+            )
+          ) : (
+            <p
+              onClick={() => setEditingModel(true)}
+              className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors truncate"
+              title="点击编辑"
+            >
+              {config.default_model || '（自动选择）'}
+            </p>
+          )}
+        </div>
+
+        <div>
+          <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">Embedding Model</p>
+          <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] truncate">
+            {config.embedding_model || '（跟随 Chat Model）'}
+          </p>
+          <p className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e] mt-0.5">
+            使用 /api/embed 端点 · 索引驱动将在 Phase 4 接入
+          </p>
+        </div>
+      </div>
+
+      <div className="bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl p-3.5 space-y-2">
+        <div className="flex items-center gap-1.5">
+          <PencilLine size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
+          <p className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
+            最近建议
+          </p>
+        </div>
+        {suggestionsLoading ? (
+          <div className="flex items-center justify-center py-3">
+            <Loader2 size={12} className="animate-spin text-stone-400" />
+          </div>
+        ) : recentSuggestions.length === 0 ? (
+          <p className="text-[11px] text-[#7e7e78] dark:text-[#8e8e8e]">暂无 AI 建议</p>
+        ) : (
+          <div className="space-y-1.5">
+            {recentSuggestions.map(s => (
+              <div key={s.id} className="border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-lg p-2 space-y-1">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[9px] px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-[#5a5a56] dark:text-[#a0a0a0]">
+                    {suggestionTypeLabel(s.suggestion_type)}
+                  </span>
+                  {suggestionStatusBadge(s.status)}
+                </div>
+                <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] line-clamp-2 leading-normal">
+                  {s.content}
+                </p>
+                <p className="text-[9px] text-stone-400 dark:text-stone-500">
+                  {new Date(s.created_at).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl p-3.5 space-y-2">
+        <button
+          onClick={handleOpenLogs}
+          className="flex items-center gap-1.5 w-full text-left"
+        >
+          <ScrollText size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
+          <p className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3] flex-1">
+            Runtime 日志
+          </p>
+          <ChevronDown size={12} className={`text-[#7e7e78] dark:text-[#8e8e8e] transition-transform ${logsOpen ? 'rotate-180' : ''}`} />
+        </button>
+
+        {logsOpen && (
+          <div className="space-y-1.5 mt-1">
+            {logsLoading ? (
+              <div className="flex items-center justify-center py-3">
+                <Loader2 size={12} className="animate-spin text-stone-400" />
+              </div>
+            ) : logs.length === 0 ? (
+              <p className="text-[11px] text-[#7e7e78] dark:text-[#8e8e8e]">暂无日志记录</p>
+            ) : (
+              logs.map(log => (
+                <div key={log.id} className="border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-lg p-2 space-y-0.5">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[9px] font-mono text-[#7e7e78] dark:text-[#8e8e8e]">
+                      {log.request_type || log.prompt_type}
+                    </span>
+                    <span className={`text-[9px] ${log.success ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}`}>
+                      {log.success ? '成功' : '失败'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[9px] text-[#5a5a56] dark:text-[#a0a0a0]">{log.model}</span>
+                    <span className="text-[9px] text-stone-400 dark:text-stone-500">{log.latency_ms}ms</span>
+                  </div>
+                  {log.error_message && (
+                    <p className="text-[9px] text-red-400 dark:text-red-500 line-clamp-1">{log.error_message}</p>
+                  )}
+                  <p className="text-[8px] text-stone-400 dark:text-stone-500">
+                    {new Date(log.timestamp).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  </p>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+
+      {onAIOnboarding && (
+        <button
+          onClick={onAIOnboarding}
+          className="w-full text-[10px] text-[#7e7e78] dark:text-[#8e8e8e] hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors py-1"
+        >
+          重新运行 AI Onboarding
+        </button>
+      )}
     </div>
   );
 }
@@ -70,7 +681,6 @@ function NotificationsView() {
 
   return (
     <div className="space-y-2">
-      {/* Action bar */}
       {notifications.length > 0 && (
         <div className="flex items-center justify-between mb-2">
           <span className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
@@ -97,7 +707,6 @@ function NotificationsView() {
         </div>
       )}
 
-      {/* Notification list */}
       {notifications.length === 0 ? (
         <div className="text-center py-8">
           <Bell size={20} className="mx-auto text-stone-300 dark:text-stone-600 mb-2" />
@@ -150,9 +759,7 @@ function NotificationsView() {
 function InboxView() {
   const { captures, loading, error, deleteCapture, updateCapture } = useCapture();
 
-  // 右键菜单状态
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entryId: string } | null>(null);
-  // 内联编辑状态
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
 
@@ -186,13 +793,11 @@ function InboxView() {
     }
   };
 
-  // 右键菜单
   const handleContextMenu = useCallback((e: React.MouseEvent, entryId: string) => {
     e.preventDefault();
     setContextMenu({ x: e.clientX, y: e.clientY, entryId });
   }, []);
 
-  // 关闭右键菜单
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
@@ -200,7 +805,6 @@ function InboxView() {
     return () => document.removeEventListener('click', close);
   }, [contextMenu]);
 
-  // 开始编辑
   const startEdit = useCallback((entryId: string) => {
     const entry = captures.find(c => c.id === entryId);
     if (entry) {
@@ -210,7 +814,6 @@ function InboxView() {
     setContextMenu(null);
   }, [captures]);
 
-  // 保存编辑
   const saveEdit = useCallback(async () => {
     if (editingId && editContent.trim()) {
       await updateCapture(editingId, editContent.trim());
@@ -219,7 +822,6 @@ function InboxView() {
     setEditContent('');
   }, [editingId, editContent, updateCapture]);
 
-  // 删除
   const handleDelete = useCallback(async (entryId: string) => {
     await deleteCapture(entryId);
     setContextMenu(null);
@@ -293,7 +895,6 @@ function InboxView() {
         </div>
       )}
 
-      {/* 右键菜单 */}
       {contextMenu && (
         <div
           className="fixed bg-white dark:bg-[#2a2a2a] border border-stone-200 dark:border-stone-700 rounded-lg shadow-lg py-1 z-50 min-w-[120px]"
@@ -338,8 +939,12 @@ function WidgetsView() {
   );
 }
 
-/* ---------- Document Context View ---------- */
-function DocumentContextView({ documentPath, documentName }: { documentPath?: string; documentName?: string }) {
+// ── Document Info 内联版（底部面板用） ──
+
+function DocumentInfoSectionInline({ documentPath, documentName }: {
+  documentPath?: string;
+  documentName?: string;
+}) {
   const { vault } = useVault();
   const [metadata, setMetadata] = useState<DocumentMetadata | null>(null);
   const [metaLoading, setMetaLoading] = useState(false);
@@ -360,15 +965,6 @@ function DocumentContextView({ documentPath, documentName }: { documentPath?: st
     return () => { cancelled = true; };
   }, [vault, documentPath]);
 
-  if (!documentPath) {
-    return (
-      <div className="text-center py-8">
-        <FileText size={20} className="mx-auto text-stone-300 dark:text-stone-600 mb-2" />
-        <p className="text-[11px] text-[#7e7e78] dark:text-[#8e8e8e]">No document selected</p>
-      </div>
-    );
-  }
-
   const formatSize = (bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -387,57 +983,68 @@ function DocumentContextView({ documentPath, documentName }: { documentPath?: st
   };
 
   return (
-    <div className="space-y-3">
-      <div className={`bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl p-3.5 space-y-2.5`}>
-        <p className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
-          文档信息
+    <div className="space-y-1.5">
+      <div>
+        <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e]">文件名</p>
+        <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] truncate">{documentName || 'unavailable'}</p>
+      </div>
+      <div>
+        <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e]">路径</p>
+        <p className="text-[11px] text-stone-500 dark:text-stone-400 break-all">{documentPath}</p>
+      </div>
+      <div>
+        <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e]">大小</p>
+        <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3]">
+          {metaLoading ? '...' : (metadata ? formatSize(metadata.size) : 'unavailable')}
         </p>
-
-        <div className="space-y-2">
-          <div>
-            <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e]">文件名</p>
-            <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3]">{documentName || 'unavailable'}</p>
-          </div>
-
-          <div>
-            <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e]">路径</p>
-            <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] break-all">{documentPath}</p>
-          </div>
-
-          <div>
-            <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e]">大小</p>
-            <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3]">
-              {metaLoading ? '...' : (metadata ? formatSize(metadata.size) : 'unavailable')}
-            </p>
-          </div>
-
-          <div>
-            <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e]">修改时间</p>
-            <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3]">
-              {metaLoading ? '...' : (metadata ? formatTime(metadata.modified_at) : 'unavailable')}
-            </p>
-          </div>
-        </div>
+      </div>
+      <div>
+        <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e]">修改时间</p>
+        <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3]">
+          {metaLoading ? '...' : (metadata ? formatTime(metadata.modified_at) : 'unavailable')}
+        </p>
       </div>
     </div>
   );
 }
 
 /* ---------- Platter Main Component ---------- */
-export function MentorDock({ open, activeTab, onTabChange, onClose, activeDocumentPath, activeDocumentName }: PlatterProps) {
+
+type BottomPanel = 'none' | 'history' | 'info';
+
+export function MentorDock({
+  open,
+  activeTab,
+  onTabChange,
+  onClose,
+  activeDocumentPath,
+  activeDocumentName,
+  activeDocumentContent,
+  onAIConfig,
+  onAICheckConnection,
+  onAIRuntimeLogs,
+  onAIOnboarding,
+  onScrollToHeading,
+  onScrollToLine,
+  onOpenVersionDiff,
+}: PlatterProps) {
   const [tabOrder, setTabOrder] = useState<PlatterTab[]>(PLATTER_TABS.map(t => t.id));
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
-  const [dropIdx, setDropIdx] = useState<number | null>(null); // 插入位置：在 dropIdx 之前插入
+  const [dropIdx, setDropIdx] = useState<number | null>(null);
   const dragNodeRef = useRef<HTMLDivElement | null>(null);
+  const [tocExpanded, setTocExpanded] = useState(false);
+
+  // 底部面板状态
+  const [bottomPanel, setBottomPanel] = useState<BottomPanel>('none');
 
   const VISIBLE_COUNT = 3;
   const visibleTabs = tabOrder.slice(0, VISIBLE_COUNT);
   const overflowTabs = tabOrder.slice(VISIBLE_COUNT);
+  const isContextTab = activeTab === 'document-context';
 
   const getTabDef = (id: PlatterTab) => PLATTER_TABS.find(t => t.id === id)!;
 
-  // 拖动排序：用 mousedown/mousemove/mouseup 实现
   const handleDragStart = useCallback((idx: number, e: React.MouseEvent) => {
     e.preventDefault();
     setDragIdx(idx);
@@ -452,8 +1059,7 @@ export function MentorDock({ open, activeTab, onTabChange, onClose, activeDocume
     const handleMouseMove = (e: MouseEvent) => {
       if (!dragNodeRef.current) return;
       const elements = document.querySelectorAll('[data-tab-idx]');
-      // 计算插入位置：根据鼠标 Y 坐标判断在哪个元素的上半部还是下半部
-      let newDropIdx: number = tabOrder.length; // 默认插入末尾
+      let newDropIdx: number = tabOrder.length;
       elements.forEach((el) => {
         const rect = el.getBoundingClientRect();
         const midY = rect.top + rect.height / 2;
@@ -462,7 +1068,6 @@ export function MentorDock({ open, activeTab, onTabChange, onClose, activeDocume
           newDropIdx = idx;
         }
       });
-      // 如果拖动位置在所有元素下方，插入末尾
       if (newDropIdx === tabOrder.length) {
         let allBelow = true;
         elements.forEach((el) => {
@@ -479,7 +1084,6 @@ export function MentorDock({ open, activeTab, onTabChange, onClose, activeDocume
         setTabOrder(prev => {
           const items = [...prev];
           const [moved] = items.splice(dragIdx, 1);
-          // 调整插入位置：如果拖动元素在目标之前，目标索引需要减1
           const adjustedIdx = dragIdx < dropIdx ? dropIdx - 1 : dropIdx;
           items.splice(adjustedIdx, 0, moved);
           return items;
@@ -498,11 +1102,28 @@ export function MentorDock({ open, activeTab, onTabChange, onClose, activeDocume
     };
   }, [dragIdx, dropIdx, tabOrder.length]);
 
+  // 切换 tab 时关闭底部面板
+  useEffect(() => {
+    setBottomPanel('none');
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (!isContextTab) {
+      setTocExpanded(false);
+    }
+  }, [isContextTab]);
+
   if (!open) return null;
+
+  const toggleBottomPanel = (panel: BottomPanel) => {
+    setBottomPanel(prev => prev === panel ? 'none' : panel);
+  };
+  const showBottomContextSections = isContextTab && activeDocumentPath && tocExpanded;
+  const showTopContextSections = isContextTab && activeDocumentPath && !tocExpanded;
+  const toc = activeDocumentContent ? parseMarkdownToc(activeDocumentContent) : [];
 
   return (
     <aside className={`w-64 border-l border-[#e6e6dc] dark:border-[#2f2f2f] bg-[#f4f4ee] dark:bg-[#1f1f1f] flex flex-col min-h-0`}>
-      {/* Header */}
       <div className={`h-12 border-b border-[#e6e6dc] dark:border-[#2f2f2f] px-4 flex items-center justify-between shrink-0`}>
         <span className="text-[10px] font-mono uppercase font-bold tracking-wider">
           Platter
@@ -512,7 +1133,6 @@ export function MentorDock({ open, activeTab, onTabChange, onClose, activeDocume
         </button>
       </div>
 
-      {/* Tabs - 前3个 + 下拉抽屉按钮 */}
       <div className={`border-b border-[#e6e6dc] dark:border-[#2f2f2f] px-2 py-1 bg-transparent flex gap-0.5 items-center`}>
         {visibleTabs.map(tabId => {
           const tab = getTabDef(tabId);
@@ -546,7 +1166,6 @@ export function MentorDock({ open, activeTab, onTabChange, onClose, activeDocume
         )}
       </div>
 
-      {/* 下拉抽屉 - 显示所有标签，支持拖动排序 */}
       {drawerOpen && (
         <div className={`border-b border-[#e6e6dc] dark:border-[#2f2f2f] bg-white dark:bg-[#1a1a1a] px-2 py-1.5`}>
           {tabOrder.map((tabId, idx) => {
@@ -556,7 +1175,6 @@ export function MentorDock({ open, activeTab, onTabChange, onClose, activeDocume
             const showInsertLine = dragIdx !== null && dropIdx === idx && dragIdx !== idx;
             return (
               <div key={tab.id}>
-                {/* 插入预览线 */}
                 {showInsertLine && (
                   <div className="h-[2px] bg-emerald-500 rounded-full mx-1 mb-0.5 transition-all" />
                 )}
@@ -575,7 +1193,7 @@ export function MentorDock({ open, activeTab, onTabChange, onClose, activeDocume
                   <button
                     onClick={() => { onTabChange(tab.id); setDrawerOpen(false); }}
                     className={`flex-1 flex items-center gap-1.5 text-left ${
-                      activeTab === tab.id
+                      activeTab === tabId
                         ? 'font-semibold text-[#2c2c2a] dark:text-[#e3e3e3]'
                         : 'text-[#7e7e78] dark:text-[#8e8e8e] hover:text-stone-800 dark:hover:text-stone-200'
                     }`}
@@ -588,31 +1206,129 @@ export function MentorDock({ open, activeTab, onTabChange, onClose, activeDocume
               </div>
             );
           })}
-          {/* 末尾插入预览线 */}
           {dragIdx !== null && dropIdx === tabOrder.length && (
             <div className="h-[2px] bg-emerald-500 rounded-full mx-1 mt-0.5 transition-all" />
           )}
         </div>
       )}
 
-      {/* Content - use hidden class to preserve state across tab switches */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        <div className={activeTab === 'mentor' ? '' : 'hidden'}>
-          <MentorView />
+      {/* 主内容区 */}
+      {isContextTab ? (
+        <div className="flex-1 overflow-y-auto bg-white dark:bg-[#1a1a1a]">
+          {!activeDocumentPath ? (
+            <div className="h-full flex items-center justify-center px-4">
+              <div className="text-center">
+                <FileText size={20} className="mx-auto text-stone-300 dark:text-stone-600 mb-2" />
+                <p className="text-[11px] text-[#7e7e78] dark:text-[#8e8e8e]">No document selected</p>
+              </div>
+            </div>
+          ) : (
+            <>
+              <ExplorerSection
+                title="文档目录"
+                icon={List}
+                expanded={tocExpanded}
+                onToggle={() => setTocExpanded(prev => !prev)}
+                contentClassName="pb-1"
+              >
+                <div className="py-1">
+                  {toc.length > 0 ? (
+                    toc.map((entry, index) => (
+                      <TocTreeItem
+                        key={`${entry.line}-${index}`}
+                        entry={entry}
+                        depth={0}
+                        onHeadingClick={onScrollToHeading}
+                        onLineClick={onScrollToLine}
+                      />
+                    ))
+                  ) : (
+                    <p className="px-3 py-1 text-[11px] text-[#7e7e78] dark:text-[#8e8e8e]">
+                      当前文档没有可解析的目录结构
+                    </p>
+                  )}
+                </div>
+              </ExplorerSection>
+
+              {showTopContextSections && (
+                <>
+                  <ExplorerSection
+                    title="时间线"
+                    icon={History}
+                    expanded={bottomPanel === 'history'}
+                    onToggle={() => toggleBottomPanel('history')}
+                  >
+                    <div className="max-h-[200px] overflow-y-auto px-2 pb-2">
+                      <VersionHistoryView
+                        vaultPath={activeDocumentPath.split('/documents/')[0] || ''}
+                        filePath={activeDocumentPath}
+                        onOpenVersionDiff={onOpenVersionDiff}
+                      />
+                    </div>
+                  </ExplorerSection>
+
+                  <ExplorerSection
+                    title="文档信息"
+                    icon={Info}
+                    expanded={bottomPanel === 'info'}
+                    onToggle={() => toggleBottomPanel('info')}
+                  >
+                    <div className="max-h-[200px] overflow-y-auto px-2 pb-2">
+                      <DocumentInfoSectionInline documentPath={activeDocumentPath} documentName={activeDocumentName} />
+                    </div>
+                  </ExplorerSection>
+                </>
+              )}
+            </>
+          )}
         </div>
-        <div className={activeTab === 'notifications' ? '' : 'hidden'}>
-          <NotificationsView />
+      ) : (
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div className={activeTab === 'mentor' ? '' : 'hidden'}>
+            <MentorView onAIConfig={onAIConfig} onAICheckConnection={onAICheckConnection} onAIRuntimeLogs={onAIRuntimeLogs} onAIOnboarding={onAIOnboarding} />
+          </div>
+          <div className={activeTab === 'notifications' ? '' : 'hidden'}>
+            <NotificationsView />
+          </div>
+          <div className={activeTab === 'inbox' ? '' : 'hidden'}>
+            <InboxView />
+          </div>
+          <div className={activeTab === 'widgets' ? '' : 'hidden'}>
+            <WidgetsView />
+          </div>
         </div>
-        <div className={activeTab === 'inbox' ? '' : 'hidden'}>
-          <InboxView />
+      )}
+
+      {/* 底部面板 - 仅 Context tab 显示 */}
+      {showBottomContextSections && (
+        <div className="border-t border-[#e6e6dc] dark:border-[#2f2f2f] bg-white dark:bg-[#1a1a1a] shrink-0">
+          <ExplorerSection
+            title="时间线"
+            icon={History}
+            expanded={bottomPanel === 'history'}
+            onToggle={() => toggleBottomPanel('history')}
+          >
+            <div className="max-h-[200px] overflow-y-auto px-2 pb-2">
+              <VersionHistoryView
+                vaultPath={activeDocumentPath.split('/documents/')[0] || ''}
+                filePath={activeDocumentPath}
+                onOpenVersionDiff={onOpenVersionDiff}
+              />
+            </div>
+          </ExplorerSection>
+
+          <ExplorerSection
+            title="文档信息"
+            icon={Info}
+            expanded={bottomPanel === 'info'}
+            onToggle={() => toggleBottomPanel('info')}
+          >
+            <div className="max-h-[200px] overflow-y-auto px-2 pb-2">
+              <DocumentInfoSectionInline documentPath={activeDocumentPath} documentName={activeDocumentName} />
+            </div>
+          </ExplorerSection>
         </div>
-        <div className={activeTab === 'widgets' ? '' : 'hidden'}>
-          <WidgetsView />
-        </div>
-        <div className={activeTab === 'document-context' ? '' : 'hidden'}>
-          <DocumentContextView documentPath={activeDocumentPath} documentName={activeDocumentName} />
-        </div>
-      </div>
+      )}
     </aside>
   );
 }

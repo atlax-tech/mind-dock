@@ -15,7 +15,7 @@ pub struct CaptureEntry {
 }
 
 #[command]
-pub fn append_capture(vault_path: String, content: String, source: String) -> Result<(), String> {
+pub fn append_capture(vault_path: String, content: String, source: String) -> Result<CaptureEntry, String> {
     let vault = Path::new(&vault_path);
     let captures_dir = vault.join("captures");
     let inbox_path = captures_dir.join("inbox.jsonl");
@@ -48,7 +48,7 @@ pub fn append_capture(vault_path: String, content: String, source: String) -> Re
     writeln!(file, "{}", json_line)
         .map_err(|e| format!("写入 inbox.jsonl 失败: {}", e))?;
 
-    Ok(())
+    Ok(entry)
 }
 
 #[command]

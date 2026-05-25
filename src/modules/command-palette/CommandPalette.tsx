@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Command } from 'cmdk';
-import { Search, Zap, FileText, Network, HeartPulse, Plus, PanelRight, Bot, Bell, Inbox, LayoutGrid, FileSearch, StickyNote } from 'lucide-react';
+import { Search, Zap, FileText, Network, HeartPulse, Plus, PanelRight, Bot, Bell, Inbox, LayoutGrid, FileSearch, StickyNote, Settings, Wifi, ScrollText, RotateCcw } from 'lucide-react';
 
 interface CommandPaletteProps {
   open: boolean;
@@ -12,11 +12,15 @@ interface CommandPaletteProps {
   onTogglePlatter: () => void;
   onSwitchPlatterView: (view: string) => void;
   onCreateStickyNote: () => void;
+  onAIConfig: () => void;
+  onAICheckConnection: () => void;
+  onAIRuntimeLogs: () => void;
+  onAIOnboarding: () => void;
   openTabs: Array<{ id: string; title: string }>;
   docEntries: Array<{ name: string; path: string; absolute_path: string; is_dir: boolean }>;
 }
 
-export function CommandPalette({ open, onClose, onOpenDoc, onCreateDoc, onSwitchTab, onQuickCapture, onTogglePlatter, onSwitchPlatterView, onCreateStickyNote, openTabs, docEntries }: CommandPaletteProps) {
+export function CommandPalette({ open, onClose, onOpenDoc, onCreateDoc, onSwitchTab, onQuickCapture, onTogglePlatter, onSwitchPlatterView, onCreateStickyNote, onAIConfig, onAICheckConnection, onAIRuntimeLogs, onAIOnboarding, openTabs, docEntries }: CommandPaletteProps) {
 
   // 扁平化文档列表（只取 .md 文件，不取目录）
   const flatDocs = docEntries.filter(e => !e.is_dir);
@@ -124,6 +128,45 @@ export function CommandPalette({ open, onClose, onOpenDoc, onCreateDoc, onSwitch
                 <StickyNote size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
                 <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">新建便笺</span>
               </Command.Item>
+            </Command.Group>
+
+            {/* AI 命令 */}
+            <Command.Group heading="AI" className={groupHeadingClass}>
+              <Command.Item
+                value="AI: 配置 Runtime"
+                onSelect={() => { onAIConfig(); onClose(); }}
+                className="p-2 rounded cursor-pointer flex items-center gap-2 data-[selected=true]:bg-stone-100 dark:data-[selected=true]:bg-stone-800"
+              >
+                <Settings size={12} className="text-emerald-600 dark:text-emerald-400" />
+                <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">AI: 配置 Runtime</span>
+              </Command.Item>
+              <Command.Item
+                value="AI: 检测连接"
+                onSelect={() => { onAICheckConnection(); onClose(); }}
+                className="p-2 rounded cursor-pointer flex items-center gap-2 data-[selected=true]:bg-stone-100 dark:data-[selected=true]:bg-stone-800"
+              >
+                <Wifi size={12} className="text-emerald-600 dark:text-emerald-400" />
+                <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">AI: 检测连接</span>
+              </Command.Item>
+              <Command.Item
+                value="AI: 查看 Runtime 日志"
+                onSelect={() => { onAIRuntimeLogs(); onClose(); }}
+                className="p-2 rounded cursor-pointer flex items-center gap-2 data-[selected=true]:bg-stone-100 dark:data-[selected=true]:bg-stone-800"
+              >
+                <ScrollText size={12} className="text-emerald-600 dark:text-emerald-400" />
+                <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">AI: 查看 Runtime 日志</span>
+              </Command.Item>
+              <Command.Item
+                value="AI: 重新运行 Onboarding"
+                onSelect={() => { onAIOnboarding(); onClose(); }}
+                className="p-2 rounded cursor-pointer flex items-center gap-2 data-[selected=true]:bg-stone-100 dark:data-[selected=true]:bg-stone-800"
+              >
+                <RotateCcw size={12} className="text-emerald-600 dark:text-emerald-400" />
+                <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">AI: 重新运行 Onboarding</span>
+              </Command.Item>
+            </Command.Group>
+
+            <Command.Group heading="后续功能" className={groupHeadingClass}>
               {/* PHASE_PLACEHOLDER - Phase 5 MindView */}
               <Command.Item
                 value="打开 MindView"

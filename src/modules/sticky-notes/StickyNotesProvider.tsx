@@ -87,12 +87,15 @@ export function StickyNotesProvider({ children }: StickyNotesProviderProps) {
     // 初始位置使用哨兵值 -1，由 StickyNotesLayer 基于实际容器尺寸计算
     const count = notesRef.current.length;
 
+    // 无绑定文档时默认创建 pinned/global 便签，确保在所有视图可见
+    const isGlobal = !boundDocumentPath;
+
     const newNote: StickyNote = {
       id: crypto.randomUUID(),
       content: '',
       position: { x: -1, y: TOP_OFFSET + count * NOTE_HEIGHT },
       collapsed: false,
-      pinned: false,
+      pinned: isGlobal,
       bound_document_path: boundDocumentPath ?? null,
       captured_content: null,
       captured_entry_id: null,

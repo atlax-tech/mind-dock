@@ -30,10 +30,13 @@ export function StickyNotesLayer({ notes, activeDocumentPath, error, onUpdate, o
     });
   }, []);
 
-  // 过滤：pinned 全局展示，未 pinned 仅绑定文档可见
+  // 过滤：pinned 全局展示，未 pinned 仅绑定文档可见，无绑定文档的非 pinned 便签在无 active document 时也可见
   const visibleNotes = notes.filter(note => {
     if (note.pinned) return true;
-    return note.bound_document_path !== null && note.bound_document_path === activeDocumentPath;
+    if (note.bound_document_path !== null && note.bound_document_path === activeDocumentPath) return true;
+    // 无绑定文档且非 pinned 的便签（理论上不应存在，但作为安全兜底）
+    if (note.bound_document_path === null && !activeDocumentPath) return true;
+    return false;
   });
 
   const getZIndex = (noteId: string) => {
