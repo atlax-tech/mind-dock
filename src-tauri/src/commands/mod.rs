@@ -3,3 +3,7 @@ pub mod fs;
 pub mod capture;
 pub mod sticky_notes;
 pub mod notifications;
+pub mod ai_runtime;
+pub mod ai_logs;
+pub mod ai_suggestions;
+pub mod git;

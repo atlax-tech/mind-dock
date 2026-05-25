@@ -66,18 +66,14 @@ export function CaptureProvider({ children }: { children: ReactNode }) {
     if (!vault) return '';
     try {
       setError(null);
-      await captureService.appendCapture(vault.path, content, source);
-      await loadCaptures();
-      // 找到刚创建的条目（内容匹配 + 最新时间戳）
-      const latest = capturesRef.current
-        .filter((c: CaptureEntry) => c.content === content && c.source === source)
-        .sort((a: CaptureEntry, b: CaptureEntry) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
-      return latest?.id || '';
+      const entry = await captureService.appendCapture(vault.path, content, source);
+      setCaptures(prev => [...prev, entry]);
+      return entry.id;
     } catch (err) {
       setError(String(err));
       throw err;
     }
-  }, [vault, loadCaptures]);
+  }, [vault]);
 
   const deleteCapture = useCallback(async (id: string) => {
     const updated = captures.filter(c => c.id !== id);

@@ -10,6 +10,7 @@ interface DocTreeProps {
   onDocSelect: (docId: string) => void;
   onDocDeleted?: (docPath: string) => void;
   onDocRenamed?: (oldPath: string, newPath: string) => void;
+  onCreateDoc?: () => void;
 }
 
 function DocEntryItem({
@@ -224,7 +225,7 @@ function NewDocInput({
   );
 }
 
-export function DocTree({ activeDocId, docTree, onDocSelect, onDocDeleted, onDocRenamed }: DocTreeProps) {
+export function DocTree({ activeDocId, docTree, onDocSelect, onDocDeleted, onDocRenamed, onCreateDoc }: DocTreeProps) {
   const { vault, refreshDocTree } = useVault();
 
   const [renamingEntry, setRenamingEntry] = useState<DocEntry | null>(null);
@@ -335,7 +336,13 @@ export function DocTree({ activeDocId, docTree, onDocSelect, onDocDeleted, onDoc
       {/* New document button */}
       <div className="px-2">
         <button
-          onClick={() => setShowNewDoc(true)}
+          onClick={() => {
+            if (onCreateDoc) {
+              onCreateDoc();
+            } else {
+              setShowNewDoc(true);
+            }
+          }}
           className={`w-full py-1 border border-dashed border-[#e6e6dc] dark:border-[#2f2f2f] text-[#7e7e78] dark:text-[#8e8e8e] hover:text-stone-800 dark:hover:text-stone-200 text-[11px] rounded transition-colors flex items-center justify-center gap-1`}
         >
           <Plus size={11} />

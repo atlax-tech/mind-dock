@@ -3,6 +3,8 @@ import { VaultProvider, useVault } from '@/modules/vault/VaultProvider';
 import { CaptureProvider } from '@/modules/capture/CaptureProvider';
 import { NotificationProvider } from '@/modules/notifications/NotificationProvider';
 import { StickyNotesProvider } from '@/modules/sticky-notes/StickyNotesProvider';
+import { AIRuntimeProvider } from '@/modules/ai/AIRuntimeProvider';
+import { AISuggestionsProvider } from '@/modules/ai/AISuggestionsProvider';
 import { AppShell } from '@/app/AppShell';
 import { VaultSetup } from '@/modules/vault/VaultSetup';
 
@@ -22,13 +24,17 @@ function AppContent() {
   }
 
   return (
-    <CaptureProvider>
-      <NotificationProvider vaultPath={vault.path}>
-        <StickyNotesProvider>
-          <AppShell />
-        </StickyNotesProvider>
-      </NotificationProvider>
-    </CaptureProvider>
+    <AIRuntimeProvider>
+      <AISuggestionsProvider>
+        <CaptureProvider>
+          <NotificationProvider vaultPath={vault.path}>
+            <StickyNotesProvider>
+              <AppShell />
+            </StickyNotesProvider>
+          </NotificationProvider>
+        </CaptureProvider>
+      </AISuggestionsProvider>
+    </AIRuntimeProvider>
   );
 }
 

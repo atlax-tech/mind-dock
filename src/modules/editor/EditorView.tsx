@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
 import { EditorState } from '@codemirror/state';
 import { EditorView as CMEditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightActiveLine, drawSelection, rectangularSelection, highlightSpecialChars } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
@@ -9,19 +9,55 @@ import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } 
 import { lintKeymap } from '@codemirror/lint';
 import { useTheme } from '@/app/theme';
 
+export interface EditorViewHandle {
+  scrollToLine(lineNumber: number): void;
+  scrollToHeading(headingText: string): void;
+}
+
 interface EditorViewProps {
   content: string;
   onContentChange: (content: string) => void;
 }
 
-export function EditorView({ content, onContentChange }: EditorViewProps) {
+export const EditorView = forwardRef<EditorViewHandle, EditorViewProps>(function EditorView({ content, onContentChange }, ref) {
   const { isDark } = useTheme();
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<CMEditorView | null>(null);
   const isExternalUpdate = useRef(false);
   const onContentChangeRef = useRef(onContentChange);
 
-  // 始终保持 ref 指向最新回调，避免闭包过期
+  useImperativeHandle(ref, () => ({
+    scrollToLine(lineNumber: number) {
+      const view = viewRef.current;
+      if (!view) return;
+      const line = Math.max(1, Math.min(lineNumber, view.state.doc.lines));
+      const pos = view.state.doc.line(line).from;
+      view.dispatch({
+        selection: { anchor: pos },
+        effects: CMEditorView.scrollIntoView(pos, { y: 'center' }),
+      });
+      view.focus();
+    },
+
+    scrollToHeading(headingText: string) {
+      const view = viewRef.current;
+      if (!view) return;
+      const doc = view.state.doc;
+      for (let i = 1; i <= doc.lines; i++) {
+        const lineText = doc.line(i).text;
+        if (lineText.trim().startsWith('#') && lineText.replace(/^#+\s*/, '').trim() === headingText.trim()) {
+          const pos = doc.line(i).from;
+          view.dispatch({
+            selection: { anchor: pos },
+            effects: CMEditorView.scrollIntoView(pos, { y: 'center' }),
+          });
+          view.focus();
+          return;
+        }
+      }
+    },
+  }), []);
+
   onContentChangeRef.current = onContentChange;
 
   useEffect(() => {
@@ -91,9 +127,6 @@ export function EditorView({ content, onContentChange }: EditorViewProps) {
     };
   }, []); // 只创建一次
 
-  // 外部内容更新时同步到 CodeMirror
-  // isExternalUpdate 标志阻止 updateListener 在外部 dispatch 期间触发 onContentChange，
-  // 避免切换 tab 时将内容错误地写入 openTabs 状态
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
@@ -110,4 +143,4 @@ export function EditorView({ content, onContentChange }: EditorViewProps) {
   return (
     <div className="flex-1 flex flex-col min-w-0" ref={editorRef} />
   );
-}
+});
