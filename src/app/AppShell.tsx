@@ -18,6 +18,8 @@ import { QuickCapturePanel } from '@/modules/capture/QuickCapturePanel';
 import { StickyNotesLayer } from '@/modules/sticky-notes/StickyNotesLayer';
 import { ClarityInterviewPanel } from '@/modules/ai/ClarityInterviewPanel';
 import { OnboardingPanel } from '@/modules/ai/OnboardingPanel';
+import { OutputGenerator } from '@/modules/context-pack/OutputGenerator';
+import { SettingsPanel } from '@/modules/settings/SettingsPanel';
 import { mentorEventBus } from '@/modules/ai/MentorEventBus';
 import { onboardingService } from '@/services/ai/onboarding';
 import { documentService } from '@/services/filesystem/documents';
@@ -25,6 +27,12 @@ import { gitService, type GitCommit, type GitDiffEntry } from '@/services/filesy
 import { extractTitle } from '@/services/markdown/frontmatter';
 import type { ClarityInterviewResult } from '@/modules/ai/MentorSkills';
 import type { DocEntry } from '@/types/vault';
+import type { ContextPack } from '@/services/index/context-pack';
+import { mentorTriggersService, type TriggerResult } from '@/services/index/mentor-triggers';
+import type { SearchDocumentResult } from '@/services/index/search';
+import { useAIRuntime } from '@/modules/ai/AIRuntimeProvider';
+import { setPostReindexHook } from '@/services/filesystem/documents';
+import { chunkingService } from '@/services/index/chunking';
 
 interface OpenTab {
   id: string;           // 文档绝对路径
@@ -52,9 +60,57 @@ function flattenDocTree(entries: DocEntry[]): DocEntry[] {
   return result;
 }
 
+function PackSelectorModal({ vaultPath, docPath, onSelect, onCreateNew, onCancel }: {
+  vaultPath: string;
+  docPath: string;
+  onSelect: (packId: string) => void;
+  onCreateNew: () => void;
+  onCancel: () => void;
+}) {
+  const [packs, setPacks] = useState<{id: string; name: string; items: any[]}[]>([]);
+
+  useEffect(() => {
+    import('@/services/index/context-pack').then(({ contextPackService }) => {
+      contextPackService.listContextPacks(vaultPath).then(setPacks).catch(() => setPacks([]));
+    });
+  }, [vaultPath]);
+
+  return (
+    <div className="fixed inset-0 bg-black/40 backdrop-blur-[1px] z-[99999] flex items-start justify-center pt-[20vh]" onClick={onCancel}>
+      <div className="max-w-sm w-full bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl shadow-xl p-4 space-y-3" onClick={e => e.stopPropagation()}>
+        <p className="text-[11px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
+          选择上下文包
+        </p>
+        <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
+          将「{docPath.split('/').pop()?.replace('.md', '')}」添加到：
+        </p>
+        <div className="space-y-1 max-h-48 overflow-y-auto">
+          {packs.map(pack => (
+            <button
+              key={pack.id}
+              onClick={() => onSelect(pack.id)}
+              className="w-full text-left px-3 py-2 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+            >
+              <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3]">{pack.name}</p>
+              <p className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e]">{pack.items.filter(i => !i.is_suggestion).length} 条内容</p>
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={onCreateNew}
+          className="w-full px-3 py-2 rounded-lg border border-dashed border-[#e6e6dc] dark:border-[#2f2f2f] text-[11px] text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors"
+        >
+          + 创建新的上下文包
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function AppShell() {
   const { vault, docTree, refreshDocTree } = useVault();
   const { notes, error: stickyNotesError, addNote, updateNote, deleteNote, convertToCapture } = useStickyNotes();
+  const { status: aiStatus, embedAndStore } = useAIRuntime();
 
   // Editor ref for TOC navigation
   const editorRef = useRef<EditorViewHandle>(null);
@@ -86,6 +142,74 @@ export function AppShell() {
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
   const [clarityInterviewOpen, setClarityInterviewOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+
+  // Output Generator state
+  const [outputGeneratorPack, setOutputGeneratorPack] = useState<ContextPack | null>(null);
+
+  // Settings state
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Generate from doc state (kept for compatibility, no longer used for pack generation)
+  const [_generateFromDoc, _setGenerateFromDoc] = useState<string | null>(null);
+
+  // Mentor trigger state
+  const [triggerResults, setTriggerResults] = useState<TriggerResult[]>([]);
+
+  // Context Pack pending item state
+  const [pendingContextPackItem, _setPendingContextPackItem] = useState<{
+    documentPath: string;
+    title: string | null;
+    summary: string | null;
+    tags: string | null;
+    content: string | null;
+    heading: string | null;
+    start_line: number | null;
+    end_line: number | null;
+  } | null>(null);
+
+  // 注册 post-reindex 钩子：reindex 完成后执行 embedding + check_triggers
+  const aiStatusRef = useRef(aiStatus);
+  aiStatusRef.current = aiStatus;
+  const embedAndStoreRef = useRef(embedAndStore);
+  embedAndStoreRef.current = embedAndStore;
+
+  useEffect(() => {
+    setPostReindexHook(async (vaultPath: string, documentPath: string) => {
+      // 步骤 4: 如果 AI 已连接，对每个 chunk 生成 embedding
+      if (aiStatusRef.current === 'connected') {
+        try {
+          const chunks = await chunkingService.getDocumentChunks(vaultPath, documentPath);
+          for (const chunk of chunks) {
+            try {
+              await embedAndStoreRef.current(chunk.id, chunk.content, chunk.content_hash);
+            } catch (err) {
+              console.error(`Embedding chunk ${chunk.id} 失败:`, err);
+            }
+          }
+        } catch (err) {
+          console.error('获取文档 chunks 失败:', err);
+        }
+      }
+
+      // 步骤 7: 检查触发器
+      try {
+        const results = await mentorTriggersService.checkTriggers(vaultPath, documentPath);
+        if (results.length > 0) {
+          setTriggerResults(prev => {
+            // 去重：替换同一文档的旧触发结果
+            const filtered = prev.filter(r => !results.some(nr => nr.trigger_type === r.trigger_type));
+            return [...filtered, ...results];
+          });
+        }
+      } catch (err) {
+        console.error('触发器检查失败:', err);
+      }
+    });
+
+    return () => {
+      setPostReindexHook(null);
+    };
+  }, []);
 
   // Cmd+K 全局键盘监听：打开/关闭 Command Palette
   useEffect(() => {
@@ -142,13 +266,21 @@ export function AppShell() {
   const editorText = activeTab?.content ?? '';
   const isDirty = activeTab?.isDirty ?? false;
 
-  // 打开文档
+  // 打开文档（使用函数式更新避免 openTabs 闭包过期问题）
   const handleDocSelect = useCallback(async (docPath: string) => {
     if (!vault) return;
 
-    // 如果文档已在标签中，直接切换
-    const existingTab = openTabs.find(t => t.id === docPath);
-    if (existingTab) {
+    // 使用函数式更新检查文档是否已在标签中
+    let alreadyOpen = false;
+    setOpenTabs(prev => {
+      const existing = prev.find(t => t.id === docPath);
+      if (existing) {
+        alreadyOpen = true;
+      }
+      return prev; // 不修改，只是检查
+    });
+
+    if (alreadyOpen) {
       setActiveTabId(docPath);
       setCurrentView('editor');
       return;
@@ -167,14 +299,18 @@ export function AppShell() {
         hasEdited: false,
       };
 
-      setOpenTabs(prev => [...prev, newTab]);
+      setOpenTabs(prev => {
+        // 再次检查，避免并发添加重复标签
+        if (prev.find(t => t.id === docPath)) return prev;
+        return [...prev, newTab];
+      });
       setActiveTabId(docPath);
       setCurrentView('editor');
     } catch (err) {
       console.error('读取文档失败:', err);
       alert(`读取文档失败: ${err}`);
     }
-  }, [vault, openTabs]);
+  }, [vault]);
 
   // 切换标签
   const handleTabSelect = (tabId: string) => {
@@ -347,11 +483,25 @@ export function AppShell() {
         counter++;
       }
       const filePath = `${vault.path}/documents/${name}`;
-      await documentService.createDocument(vault.path, filePath);
-      if (result?.markdown_body?.trim()) {
-        const titleLine = result.title?.trim() ? `# ${result.title.trim()}\n\n` : '';
-        await documentService.writeDocument(vault.path, filePath, `${titleLine}${result.markdown_body.trim()}\n`);
-      }
+
+      // 构建 frontmatter
+      const frontmatter: Record<string, unknown> = {};
+      if (result?.title?.trim()) frontmatter.title = result.title.trim();
+      if (result?.source) frontmatter.source = result.source;
+      if (result?.created_at) frontmatter.created_at = result.created_at;
+
+      // 构建正文内容
+      const content = result?.markdown_body?.trim()
+        ? `${result.title?.trim() ? `# ${result.title.trim()}\n\n` : ''}${result.markdown_body.trim()}\n`
+        : '';
+
+      await documentService.createDocumentWithMetadata({
+        vaultPath: vault.path,
+        filePath,
+        content,
+        frontmatter,
+      });
+
       await refreshDocTree();
       handleDocSelect(filePath);
     } catch (err) {
@@ -367,6 +517,279 @@ export function AppShell() {
   const handleCmdSwitchTab = useCallback((tabId: string) => {
     handleTabSelect(tabId);
   }, []);
+
+  // Generate Pack from Folder callback
+  const handleGeneratePackFromFolder = useCallback(async (folderPath: string) => {
+    if (!vault) return;
+    try {
+      const { contextPackService } = await import('@/services/index/context-pack');
+      const { metadataService } = await import('@/services/index/metadata');
+
+      const folderName = folderPath.split('/').pop() || '未命名';
+      const pack = await contextPackService.createContextPack(vault.path, folderName);
+
+      // 获取文件夹下所有文档，过滤属于该文件夹的
+      const allDocs = await metadataService.listDocumentsMetadata(vault.path);
+      const folderDocs = allDocs.filter(doc => doc.path.startsWith(folderPath + '/') || doc.path === folderPath);
+
+      for (const doc of folderDocs) {
+        await contextPackService.addItem(vault.path, pack.id, {
+          document_path: doc.path,
+          title: doc.title ?? null,
+          summary: doc.summary ?? null,
+          tags: doc.tags ?? null,
+          content: null,
+          heading: null,
+          start_line: null,
+          end_line: null,
+          selected_reason: 'folder_collection',
+          is_suggestion: false,
+        });
+      }
+
+      setMentorDockTab('context-pack');
+      setMentorDockOpen(true);
+    } catch (err) {
+      console.error('生成上下文包失败:', err);
+    }
+  }, [vault]);
+
+  // Add to Pack callback
+  const handleAddToPack = useCallback(async (docPath: string) => {
+    if (!vault) return;
+    try {
+      const { contextPackService } = await import('@/services/index/context-pack');
+
+      const packs = await contextPackService.listContextPacks(vault.path);
+
+      if (packs.length === 0) {
+        // 没有 Pack，自动创建
+        const pack = await contextPackService.createContextPack(vault.path, '我的上下文包');
+        await addDocToPack(pack.id, docPath);
+        setMentorDockTab('context-pack');
+        setMentorDockOpen(true);
+      } else if (packs.length === 1) {
+        // 只有一个 Pack，直接添加
+        await addDocToPack(packs[0].id, docPath);
+        setMentorDockTab('context-pack');
+        setMentorDockOpen(true);
+      } else {
+        // 多个 Pack，显示选择器
+        setPackSelectorTarget(docPath);
+      }
+    } catch (err) {
+      console.error('加入上下文包失败:', err);
+    }
+  }, [vault]);
+
+  // 辅助函数：将文档添加到 Pack（文档级）
+  const addDocToPack = useCallback(async (packId: string, docPath: string) => {
+    if (!vault) return;
+    const { contextPackService } = await import('@/services/index/context-pack');
+    const { metadataService } = await import('@/services/index/metadata');
+
+    // 获取文档 metadata
+    const meta = await metadataService.getDocumentDbMetadata(vault.path, docPath);
+
+    await contextPackService.addItem(vault.path, packId, {
+      document_path: docPath,
+      title: meta?.title ?? null,
+      summary: meta?.summary ?? null,
+      tags: meta?.tags ?? null,
+      content: null,
+      heading: null,
+      start_line: null,
+      end_line: null,
+      selected_reason: 'user_added',
+      is_suggestion: false,
+    });
+  }, [vault]);
+
+  // 辅助函数：将选区添加到 Pack（段落/选区级）
+  const addSelectionToPack = useCallback(async (packId: string, docPath: string, selection: { text: string; from: number; to: number }) => {
+    if (!vault) return;
+    const { contextPackService } = await import('@/services/index/context-pack');
+
+    // 计算行号
+    const content = activeTab?.content ?? '';
+    const lines = content.split('\n');
+    let currentPos = 0;
+    let startLine = 1;
+    let endLine = 1;
+    for (let i = 0; i < lines.length; i++) {
+      if (currentPos + lines[i].length >= selection.from && startLine === 1) {
+        startLine = i + 1;
+      }
+      if (currentPos + lines[i].length >= selection.to) {
+        endLine = i + 1;
+        break;
+      }
+      currentPos += lines[i].length + 1; // +1 for \n
+    }
+
+    await contextPackService.addItem(vault.path, packId, {
+      document_path: docPath,
+      title: null,
+      summary: null,
+      tags: null,
+      content: selection.text,
+      heading: null,
+      start_line: startLine,
+      end_line: endLine,
+      selected_reason: 'user_added',
+      is_suggestion: false,
+    });
+  }, [vault, activeTab]);
+
+  // 辅助函数：将选区加入已有 Pack
+  const handleAddSelectionToPack = useCallback(async (docPath: string, selection: { from: number; to: number; text: string }) => {
+    if (!vault) return;
+    try {
+      const { contextPackService } = await import('@/services/index/context-pack');
+      const packs = await contextPackService.listContextPacks(vault.path);
+
+      if (packs.length === 0) {
+        const pack = await contextPackService.createContextPack(vault.path, '我的上下文包');
+        await addSelectionToPack(pack.id, docPath, selection);
+        setMentorDockTab('context-pack');
+        setMentorDockOpen(true);
+      } else if (packs.length === 1) {
+        await addSelectionToPack(packs[0].id, docPath, selection);
+        setMentorDockTab('context-pack');
+        setMentorDockOpen(true);
+      } else {
+        // 多个 Pack，暂时用第一个，后续加 PackSelectorModal
+        await addSelectionToPack(packs[0].id, docPath, selection);
+        setMentorDockTab('context-pack');
+        setMentorDockOpen(true);
+      }
+    } catch (err) {
+      console.error('加入上下文包失败:', err);
+    }
+  }, [vault, addSelectionToPack]);
+
+  // 辅助函数：从选区生成新 Pack
+  const handleGenerateFromSelection = useCallback(async (docPath: string, selection: { from: number; to: number; text: string }) => {
+    if (!vault) return;
+    try {
+      const { contextPackService } = await import('@/services/index/context-pack');
+      const docName = docPath.split('/').pop()?.replace('.md', '') || '未命名';
+      const pack = await contextPackService.createContextPack(vault.path, `来自: ${docName} 选区`);
+      await addSelectionToPack(pack.id, docPath, selection);
+      setMentorDockTab('context-pack');
+      setMentorDockOpen(true);
+    } catch (err) {
+      console.error('生成上下文包失败:', err);
+    }
+  }, [vault, addSelectionToPack]);
+
+  // 辅助函数：将搜索结果添加到 Pack
+  const handleAddSearchResultToPack = useCallback(async (result: any) => {
+    if (!vault) return;
+    try {
+      const { contextPackService } = await import('@/services/index/context-pack');
+      const packs = await contextPackService.listContextPacks(vault.path);
+
+      let packId: string;
+      if (packs.length === 0) {
+        const pack = await contextPackService.createContextPack(vault.path, '我的上下文包');
+        packId = pack.id;
+      } else {
+        packId = packs[0].id;
+      }
+
+      await contextPackService.addItem(vault.path, packId, {
+        document_path: result.document_path,
+        title: null,
+        summary: null,
+        tags: null,
+        content: result.snippet ?? result.content ?? null,
+        heading: result.heading_path ?? null,
+        start_line: result.start_line ?? null,
+        end_line: result.end_line ?? null,
+        selected_reason: 'search_result',
+        is_suggestion: false,
+      });
+
+      setMentorDockTab('context-pack');
+      setMentorDockOpen(true);
+    } catch (err) {
+      console.error('加入上下文包失败:', err);
+    }
+  }, [vault]);
+
+  // Related results state
+  const [relatedResults, setRelatedResults] = useState<any[]>([]);
+
+  // Pack selector state
+  const [packSelectorTarget, setPackSelectorTarget] = useState<string | null>(null);
+
+  // Find Related callback
+  const handleFindRelated = useCallback(async (docPath: string) => {
+    if (!vault) return;
+    try {
+      const { vectorIndexService } = await import('@/services/index/vector');
+      const { metadataService } = await import('@/services/index/metadata');
+
+      // 获取文档 embedding
+      const docEmbedding = await vectorIndexService.getDocumentEmbedding(vault.path, docPath);
+
+      if (docEmbedding && docEmbedding.embedding) {
+        // 使用文档 embedding 搜索相似 chunks
+        const results = await vectorIndexService.semanticSearch(vault.path, docEmbedding.embedding, 10);
+        // 过滤掉当前文档的结果
+        const filtered = results.filter((r: any) => r.document_path !== docPath);
+        setRelatedResults(filtered);
+      } else {
+        // fallback: 使用文档标题做 FTS 搜索
+        const meta = await metadataService.getDocumentDbMetadata(vault.path, docPath);
+        const title = meta?.title || docPath.split('/').pop()?.replace('.md', '') || '';
+        if (title) {
+          const { searchService } = await import('@/services/index/search');
+          const results = await searchService.searchDocuments(vault.path, title);
+          const filtered = results.filter((r: any) => r.document_path !== docPath);
+          setRelatedResults(filtered);
+        }
+      }
+
+      setMentorDockTab('mentor');
+      setMentorDockOpen(true);
+    } catch (err) {
+      console.error('查找相关内容失败:', err);
+      setRelatedResults([]);
+    }
+  }, [vault]);
+
+  // Summarize Doc callback
+  const handleSummarizeDoc = useCallback(async (_docPath: string) => {
+    setMentorDockTab('document-context');
+    setMentorDockOpen(true);
+  }, []);
+
+  // Editor selection action callback (from right-click context menu)
+  const handleEditorSelectionAction = useCallback((action: string, selection: { from: number; to: number; text: string }) => {
+    if (!activeTabId || !vault) return;
+
+    switch (action) {
+      case 'addToPack':
+        // 选区加入 Pack：需要先选择 Pack
+        handleAddSelectionToPack(activeTabId, selection);
+        break;
+      case 'generateFrom':
+        // 选区"从此生成"：创建新 Pack 并添加选区
+        handleGenerateFromSelection(activeTabId, selection);
+        break;
+      case 'explain':
+        handleSummarizeDoc(activeTabId);
+        break;
+      case 'findRelated':
+        handleFindRelated(activeTabId);
+        break;
+      case 'summarize':
+        handleSummarizeDoc(activeTabId);
+        break;
+    }
+  }, [activeTabId, vault, handleAddSelectionToPack, handleGenerateFromSelection, handleSummarizeDoc, handleFindRelated]);
 
   const handleOpenVersionDiff = useCallback(async (commit: GitCommit) => {
     if (!vault || !activeTabId) return;
@@ -403,6 +826,7 @@ export function AppShell() {
                   ref={editorRef}
                   content={editorText}
                   onContentChange={handleContentChange}
+                  onSelectionAction={handleEditorSelectionAction}
                 />
               )}
               {(previewMode === 'preview' || previewMode === 'split') && (
@@ -501,6 +925,10 @@ export function AppShell() {
         onHealthView={() => setCurrentView('health')}
         onDocDeleted={handleDocDeleted}
         onDocRenamed={handleDocRenamed}
+        onSummarize={handleSummarizeDoc}
+        onGeneratePackFromFolder={handleGeneratePackFromFolder}
+        onFindRelated={handleFindRelated}
+        onAddToPack={handleAddToPack}
       />
 
       {/* Sidebar reopen button */}
@@ -545,6 +973,33 @@ export function AppShell() {
         onScrollToHeading={(heading) => editorRef.current?.scrollToHeading(heading)}
         onScrollToLine={(line) => editorRef.current?.scrollToLine(line)}
         onOpenVersionDiff={handleOpenVersionDiff}
+        onGeneratePrompt={(pack) => setOutputGeneratorPack(pack)}
+        triggerResults={triggerResults}
+        onDismissTrigger={(triggerType) => {
+          setTriggerResults(prev => prev.filter(r => r.trigger_type !== triggerType));
+        }}
+        onDocumentUpdated={async () => {
+          // 摘要/标签写入后，重新读取文件内容并更新编辑器
+          if (!vault || !activeTabId) return;
+          try {
+            const newContent = await documentService.readDocument(vault.path, activeTabId);
+            setOpenTabs(prev => prev.map(tab =>
+              tab.id === activeTabId
+                ? { ...tab, content: newContent, isDirty: false }
+                : tab
+            ));
+          } catch (err) {
+            console.error('刷新文档内容失败:', err);
+          }
+        }}
+        pendingContextPackItem={pendingContextPackItem}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onFindRelated={handleFindRelated}
+        onExplain={handleSummarizeDoc}
+        onSummarize={handleSummarizeDoc}
+        relatedResults={relatedResults}
+        onClearRelatedResults={() => setRelatedResults([])}
+        onDocSelect={handleDocSelect}
       />
 
       {/* Command Palette Overlay */}
@@ -558,10 +1013,28 @@ export function AppShell() {
         onTogglePlatter={() => setMentorDockOpen(prev => !prev)}
         onSwitchPlatterView={(view) => { setMentorDockTab(view as PlatterTab); setMentorDockOpen(true); }}
         onCreateStickyNote={() => addNote(activeTabId || undefined)}
-        onAIConfig={() => setOnboardingOpen(true)}
-        onAICheckConnection={() => setOnboardingOpen(true)}
-        onAIRuntimeLogs={() => { setMentorDockTab('mentor'); setMentorDockOpen(true); }}
         onAIOnboarding={() => setOnboardingOpen(true)}
+        onOpenDocAtLine={async (docPath: string, line: number) => {
+          await handleDocSelect(docPath);
+          setTimeout(() => editorRef.current?.scrollToLine(line), 100);
+        }}
+        onGenerateSummaryTags={(_docPath: string) => {
+          setMentorDockTab('document-context');
+          setMentorDockOpen(true);
+        }}
+        onAddToContextPack={(result: SearchDocumentResult) => {
+          // 从搜索结果添加到 Pack（可能是 chunk 级别）
+          handleAddSearchResultToPack(result);
+          setCmdPaletteOpen(false);
+        }}
+        onFindSimilar={(result: SearchDocumentResult) => {
+          // 打开文档并搜索相关内容
+          handleFindRelated(result.document_path);
+        }}
+        onAddCurrentDocToPack={() => activeTabId && handleAddToPack(activeTabId)}
+        onFindRelatedContent={handleFindRelated}
+        onOpenSettings={() => setSettingsOpen(true)}
+        activeDocPath={activeTabId}
         openTabs={openTabs.map(t => ({ id: t.id, title: t.title }))}
         docEntries={flatDocEntries}
       />
@@ -582,6 +1055,43 @@ export function AppShell() {
         onClose={() => setClarityInterviewOpen(false)}
         onAccept={(result) => { createDocumentFromClarityResult(result); setClarityInterviewOpen(false); }}
         onReject={() => { createDocumentFromClarityResult(null); setClarityInterviewOpen(false); }}
+      />
+
+      {/* Output Generator Modal */}
+      {outputGeneratorPack && (
+        <OutputGenerator
+          pack={outputGeneratorPack}
+          onClose={() => setOutputGeneratorPack(null)}
+        />
+      )}
+
+      {/* Pack Selector Modal */}
+      {packSelectorTarget && (
+        <PackSelectorModal
+          vaultPath={vault!.path}
+          docPath={packSelectorTarget}
+          onSelect={async (packId) => {
+            await addDocToPack(packId, packSelectorTarget);
+            setPackSelectorTarget(null);
+            setMentorDockTab('context-pack');
+            setMentorDockOpen(true);
+          }}
+          onCreateNew={async () => {
+            const { contextPackService } = await import('@/services/index/context-pack');
+            const pack = await contextPackService.createContextPack(vault!.path, '新的上下文包');
+            await addDocToPack(pack.id, packSelectorTarget);
+            setPackSelectorTarget(null);
+            setMentorDockTab('context-pack');
+            setMentorDockOpen(true);
+          }}
+          onCancel={() => setPackSelectorTarget(null)}
+        />
+      )}
+
+      {/* Settings Panel */}
+      <SettingsPanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
       />
     </div>
   );

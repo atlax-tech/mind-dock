@@ -11,6 +11,28 @@ pub struct DocumentMetadata {
     pub modified_at: String,
 }
 
+/// 创建目录（递归创建，类似 mkdir -p）
+#[command]
+pub fn create_directory(vault_path: String, dir_path: String) -> Result<String, String> {
+    // 校验路径在 vault 内
+    assert_path_inside_vault(&vault_path, &dir_path)?;
+
+    let path = Path::new(&dir_path);
+
+    // 检查是否已存在且是目录
+    if path.exists() {
+        if path.is_dir() {
+            return Ok(dir_path);
+        }
+        return Err(format!("路径 '{}' 已存在但不是目录", dir_path));
+    }
+
+    fs::create_dir_all(path)
+        .map_err(|e| format!("创建目录失败: {}", e))?;
+
+    Ok(dir_path)
+}
+
 /// 创建新 Markdown 文档
 #[command]
 pub fn create_document(vault_path: String, file_path: String) -> Result<String, String> {

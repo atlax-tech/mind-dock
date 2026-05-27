@@ -1,16 +1,21 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
-import { X, Bot, Bell, LayoutGrid, FileText, Inbox, CheckCheck, Trash2, Circle, ChevronDown, ChevronRight, GripVertical, Pencil, Trash, Loader2, Settings, ScrollText, Wifi, WifiOff, AlertTriangle, Zap, PencilLine, GitCommit as GitCommitIcon, List, History, Info } from 'lucide-react';
+import { X, Bot, Bell, LayoutGrid, FileText, Inbox, CheckCheck, Trash2, Circle, ChevronDown, ChevronRight, GripVertical, Pencil, Trash, Loader2, Settings, AlertTriangle, Zap, PencilLine, GitCommit as GitCommitIcon, List, History, Info, RefreshCw, Search, Tags, Check, XCircle, Package, Eye } from 'lucide-react';
 
 import { useNotifications } from '@/modules/notifications/NotificationProvider';
 import { useCapture } from '@/modules/capture/CaptureProvider';
 import { useVault } from '@/modules/vault/VaultProvider';
-import { useAIRuntime, type AIRuntimeStatus } from '@/modules/ai/AIRuntimeProvider';
+import { useAIRuntime } from '@/modules/ai/AIRuntimeProvider';
 import { useAISuggestions } from '@/modules/ai/AISuggestionsProvider';
+import { ContextPackPanel } from '@/modules/context-pack/ContextPackPanel';
 import { documentService, type DocumentMetadata } from '@/services/filesystem/documents';
-import { aiLogsService, type AIRuntimeLog } from '@/services/ai/logs';
 import { gitService, type GitCommit } from '@/services/filesystem/git';
+import { metadataService } from '@/services/index/metadata';
+import { summaryTagsService, type SummaryTagsResult } from '@/services/index/summary-tags';
+import { personalizationService } from '@/services/index/personalization';
+import type { ContextPack } from '@/services/index/context-pack';
+import type { TriggerResult } from '@/services/index/mentor-triggers';
 
-export type PlatterTab = 'mentor' | 'notifications' | 'inbox' | 'widgets' | 'document-context';
+export type PlatterTab = 'mentor' | 'notifications' | 'inbox' | 'widgets' | 'document-context' | 'context-pack';
 
 interface PlatterProps {
   open: boolean;
@@ -27,6 +32,27 @@ interface PlatterProps {
   onScrollToHeading?: (heading: string) => void;
   onScrollToLine?: (line: number) => void;
   onOpenVersionDiff?: (commit: GitCommit) => void;
+  onGeneratePrompt?: (pack: ContextPack) => void;
+  triggerResults?: TriggerResult[];
+  onDismissTrigger?: (triggerType: string) => void;
+  onDocumentUpdated?: () => void;
+  pendingContextPackItem?: {
+    documentPath: string;
+    title: string | null;
+    summary: string | null;
+    tags: string | null;
+    content: string | null;
+    heading: string | null;
+    start_line: number | null;
+    end_line: number | null;
+  } | null;
+  onOpenSettings?: () => void;
+  onFindRelated?: (docPath: string) => void;
+  onExplain?: (docPath: string) => void;
+  onSummarize?: (docPath: string) => void;
+  relatedResults?: any[];
+  onClearRelatedResults?: () => void;
+  onDocSelect?: (docPath: string) => void;
 }
 
 const PLATTER_TABS: { id: PlatterTab; label: string; icon: typeof Bot }[] = [
@@ -35,6 +61,7 @@ const PLATTER_TABS: { id: PlatterTab; label: string; icon: typeof Bot }[] = [
   { id: 'inbox', label: 'Inbox', icon: Inbox },
   { id: 'widgets', label: 'Widgets', icon: LayoutGrid },
   { id: 'document-context', label: 'Context', icon: FileText },
+  { id: 'context-pack', label: '上下文包', icon: Package },
 ];
 
 function ExplorerSection({
@@ -355,77 +382,48 @@ function VersionHistoryView({ vaultPath, filePath, onOpenVersionDiff }: {
 // ── Document Info 组件（折叠） ──
 
 /* ---------- Mentor View ---------- */
-const STATUS_CONFIG: Record<AIRuntimeStatus, { label: string; dotClass: string; textClass: string; icon: typeof Wifi }> = {
-  connected: { label: '已连接', dotClass: 'bg-emerald-500', textClass: 'text-emerald-600 dark:text-emerald-400', icon: Wifi },
-  disconnected: { label: '未连接', dotClass: 'bg-stone-400 dark:bg-stone-500', textClass: 'text-stone-500 dark:text-stone-400', icon: WifiOff },
-  error: { label: '连接错误', dotClass: 'bg-red-400 dark:bg-red-500', textClass: 'text-red-500 dark:text-red-400', icon: AlertTriangle },
-  running: { label: '检测中', dotClass: 'bg-amber-400 dark:bg-amber-500', textClass: 'text-amber-600 dark:text-amber-400', icon: Loader2 },
-  disabled: { label: '已禁用', dotClass: 'bg-stone-300 dark:bg-stone-600', textClass: 'text-stone-400 dark:text-stone-500', icon: WifiOff },
-};
 
-function MentorView({ onAIConfig, onAICheckConnection, onAIRuntimeLogs, onAIOnboarding }: {
+function MentorView({
+  onOpenSettings,
+  activeDocumentPath,
+  activeDocumentName,
+  onFindRelated,
+  onExplain,
+  onSummarize,
+  onAIOnboarding,
+  relatedResults,
+  onClearRelatedResults,
+  onDocSelect,
+}: {
   onAIConfig?: () => void;
   onAICheckConnection?: () => void;
   onAIRuntimeLogs?: () => void;
   onAIOnboarding?: () => void;
+  onOpenSettings?: () => void;
+  activeDocumentPath?: string;
+  activeDocumentName?: string;
+  onFindRelated?: (docPath: string) => void;
+  onExplain?: (docPath: string) => void;
+  onSummarize?: (docPath: string) => void;
+  relatedResults?: any[];
+  onClearRelatedResults?: () => void;
+  onDocSelect?: (docPath: string) => void;
 }) {
   const { vault } = useVault();
-  const { status, config, availableModels, error, checkConnection, updateConfig } = useAIRuntime();
+  const { status } = useAIRuntime();
   const { suggestions, loading: suggestionsLoading } = useAISuggestions();
 
-  const [editingEndpoint, setEditingEndpoint] = useState(false);
-  const [editingModel, setEditingModel] = useState(false);
-  const [endpointDraft, setEndpointDraft] = useState(config.endpoint);
-  const [modelDraft, setModelDraft] = useState(config.default_model || '');
-
-  const [logsOpen, setLogsOpen] = useState(false);
-  const [logs, setLogs] = useState<AIRuntimeLog[]>([]);
-  const [logsLoading, setLogsLoading] = useState(false);
-
-  useEffect(() => { setEndpointDraft(config.endpoint); }, [config.endpoint]);
-  useEffect(() => { setModelDraft(config.default_model || ''); }, [config.default_model]);
-
-  const saveEndpoint = useCallback(async () => {
-    setEditingEndpoint(false);
-    if (endpointDraft.trim() && endpointDraft !== config.endpoint) {
-      await updateConfig({ ...config, endpoint: endpointDraft.trim() });
-    }
-  }, [endpointDraft, config, updateConfig]);
-
-  const saveModel = useCallback(async () => {
-    setEditingModel(false);
-    const newModel = modelDraft.trim() || null;
-    if (newModel !== config.default_model) {
-      await updateConfig({ ...config, default_model: newModel });
-    }
-  }, [modelDraft, config, updateConfig]);
-
-  const loadLogs = useCallback(async () => {
+  // 语义搜索可用性检测
+  const [semanticAvailable, setSemanticAvailable] = useState(false);
+  useEffect(() => {
     if (!vault) return;
-    setLogsLoading(true);
-    try {
-      const entries = await aiLogsService.readLogs(vault.path, 20);
-      setLogs(entries.reverse());
-    } catch { /* ignore */ } finally {
-      setLogsLoading(false);
-    }
+    metadataService.listDocumentsMetadata(vault.path).then(docs => {
+      setSemanticAvailable(docs.some(d => d.embedding_status === 'ready'));
+    }).catch(() => setSemanticAvailable(false));
   }, [vault]);
 
-  const handleOpenLogs = useCallback(() => {
-    if (onAIRuntimeLogs) {
-      onAIRuntimeLogs();
-    } else {
-      setLogsOpen(prev => {
-        if (!prev) loadLogs();
-        return !prev;
-      });
-    }
-  }, [onAIRuntimeLogs, loadLogs]);
-
-  const statusCfg = STATUS_CONFIG[status];
-  const StatusIcon = statusCfg.icon;
-
-  const recentSuggestions = [...suggestions].reverse().slice(0, 5);
+  // 最近建议（只显示3条）
+  const recentSuggestions = [...suggestions].reverse().slice(0, 3);
 
   const suggestionTypeLabel = (type: string): string => {
     switch (type) {
@@ -448,120 +446,98 @@ function MentorView({ onAIConfig, onAICheckConnection, onAIRuntimeLogs, onAIOnbo
 
   return (
     <div className="space-y-3">
-      <div className="bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl p-3.5 space-y-2.5">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <StatusIcon size={14} className={`${statusCfg.textClass} ${status === 'running' ? 'animate-spin' : ''}`} />
-            <span className={`text-[10px] font-mono uppercase font-bold ${statusCfg.textClass}`}>
-              AI Runtime
-            </span>
-            <span className={`inline-block w-1.5 h-1.5 rounded-full ${statusCfg.dotClass}`} />
-          </div>
-          <button
-            onClick={() => { checkConnection(); onAICheckConnection?.(); }}
-            className="p-1 text-[#7e7e78] dark:text-[#8e8e8e] hover:text-stone-800 dark:hover:text-stone-200 transition-colors"
-            title="检测连接"
-          >
-            <Zap size={12} />
-          </button>
+      {/* A. 轻量状态栏 */}
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-[#e6e6dc] dark:border-[#2f2f2f]">
+        <div className="flex items-center gap-2">
+          <span className={`w-1.5 h-1.5 rounded-full ${status === 'connected' ? 'bg-emerald-500' : 'bg-stone-300'}`} />
+          <span className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e]">
+            {status === 'connected' ? 'AI 助手已连接' : 'AI 助手未连接'}
+          </span>
+          {semanticAvailable && (
+            <span className="text-[9px] text-emerald-600 dark:text-emerald-400">· 语义搜索已开启</span>
+          )}
         </div>
-        <p className={`text-[11px] ${statusCfg.textClass} leading-normal`}>
-          {statusCfg.label}
-          {error && <span className="block text-red-400 dark:text-red-500 mt-0.5 text-[10px]">{error}</span>}
-        </p>
+        <button onClick={onOpenSettings} className="p-0.5 text-[#7e7e78] hover:text-stone-800 dark:hover:text-stone-200">
+          <Settings size={10} />
+        </button>
       </div>
 
-      <div className="bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl p-3.5 space-y-2">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
-            <Settings size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
-            <p className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
-              配置
-            </p>
-          </div>
-          {onAIConfig && (
-            <button
-              onClick={onAIConfig}
-              className="text-[10px] text-emerald-600 dark:text-emerald-400 hover:underline"
-            >
-              打开配置面板
-            </button>
-          )}
-        </div>
-
-        <div>
-          <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">Endpoint</p>
-          {editingEndpoint ? (
-            <input
-              type="text"
-              value={endpointDraft}
-              onChange={(e) => setEndpointDraft(e.target.value)}
-              onBlur={saveEndpoint}
-              onKeyDown={(e) => { if (e.key === 'Enter') saveEndpoint(); if (e.key === 'Escape') { setEditingEndpoint(false); setEndpointDraft(config.endpoint); } }}
-              className="w-full text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] bg-transparent border-b border-emerald-600 dark:border-emerald-400 outline-none py-0.5"
-              autoFocus
-            />
-          ) : (
-            <p
-              onClick={() => setEditingEndpoint(true)}
-              className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors truncate"
-              title="点击编辑"
-            >
-              {config.endpoint}
-            </p>
-          )}
-        </div>
-
-        <div>
-          <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">Chat Model</p>
-          {editingModel ? (
-            availableModels.length > 0 ? (
-              <select
-                value={modelDraft}
-                onChange={(e) => { setModelDraft(e.target.value); }}
-                onBlur={saveModel}
-                className="w-full text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] bg-transparent border-b border-emerald-600 dark:border-emerald-400 outline-none py-0.5"
-                autoFocus
-              >
-                <option value="">（自动选择）</option>
-                {availableModels.map(m => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-            ) : (
-              <input
-                type="text"
-                value={modelDraft}
-                onChange={(e) => setModelDraft(e.target.value)}
-                onBlur={saveModel}
-                onKeyDown={(e) => { if (e.key === 'Enter') saveModel(); if (e.key === 'Escape') { setEditingModel(false); setModelDraft(config.default_model || ''); } }}
-                placeholder="输入模型名称"
-                className="w-full text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] bg-transparent border-b border-emerald-600 dark:border-emerald-400 outline-none py-0.5 placeholder:text-[#7e7e78]"
-                autoFocus
-              />
-            )
-          ) : (
-            <p
-              onClick={() => setEditingModel(true)}
-              className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors truncate"
-              title="点击编辑"
-            >
-              {config.default_model || '（自动选择）'}
-            </p>
-          )}
-        </div>
-
-        <div>
-          <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">Embedding Model</p>
+      {/* B. 当前文档上下文 / C. Empty State */}
+      {activeDocumentName ? (
+        <div className="p-3 space-y-2">
+          <p className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
+            当前文档
+          </p>
           <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] truncate">
-            {config.embedding_model || '（跟随 Chat Model）'}
+            {activeDocumentName}
           </p>
-          <p className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e] mt-0.5">
-            使用 /api/embed 端点 · 索引驱动将在 Phase 4 接入
+
+          <div className="grid grid-cols-2 gap-1.5">
+            <button
+              onClick={() => activeDocumentPath && onSummarize?.(activeDocumentPath)}
+              className="flex items-center justify-center gap-1 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+            >
+              <Tags size={10} /> 总结文档
+            </button>
+            <button
+              onClick={() => activeDocumentPath && onFindRelated?.(activeDocumentPath)}
+              className="flex items-center justify-center gap-1 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+            >
+              <Search size={10} /> 查找相关内容
+            </button>
+            <button
+              onClick={() => activeDocumentPath && onExplain?.(activeDocumentPath)}
+              className="flex items-center justify-center gap-1 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+            >
+              <Bot size={10} /> 解释内容
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="p-6 text-center space-y-2">
+          <Bot size={24} className="mx-auto text-stone-300 dark:text-stone-600" />
+          <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3]">AI 知识助手</p>
+          <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
+            打开文档后，我可以帮你总结内容、查找相关知识、生成上下文包。
+          </p>
+          <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
+            你也可以在文档上右键，直接使用各项功能。
           </p>
         </div>
-      </div>
+      )}
 
+      {/* D. 相关内容 */}
+      {relatedResults && relatedResults.length > 0 && (
+        <div className="p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
+              相关内容
+            </p>
+            <button onClick={onClearRelatedResults} className="p-0.5 text-[#7e7e78] hover:text-stone-800">
+              <X size={10} />
+            </button>
+          </div>
+          <div className="space-y-1">
+            {relatedResults.slice(0, 5).map((result, idx) => (
+              <button
+                key={idx}
+                onClick={() => onDocSelect?.(result.document_path)}
+                className="w-full text-left px-2 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+              >
+                <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] truncate">
+                  {result.heading_path || result.document_path}
+                </p>
+                <p className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e] truncate">
+                  {result.document_path}
+                  {result.similarity_score && ` · 相关度 ${(result.similarity_score * 100).toFixed(0)}%`}
+                </p>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* E. 最近建议（简化为3条） */}
       <div className="bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl p-3.5 space-y-2">
         <div className="flex items-center gap-1.5">
           <PencilLine size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
@@ -593,54 +569,6 @@ function MentorView({ onAIConfig, onAICheckConnection, onAIRuntimeLogs, onAIOnbo
                 </p>
               </div>
             ))}
-          </div>
-        )}
-      </div>
-
-      <div className="bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl p-3.5 space-y-2">
-        <button
-          onClick={handleOpenLogs}
-          className="flex items-center gap-1.5 w-full text-left"
-        >
-          <ScrollText size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
-          <p className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3] flex-1">
-            Runtime 日志
-          </p>
-          <ChevronDown size={12} className={`text-[#7e7e78] dark:text-[#8e8e8e] transition-transform ${logsOpen ? 'rotate-180' : ''}`} />
-        </button>
-
-        {logsOpen && (
-          <div className="space-y-1.5 mt-1">
-            {logsLoading ? (
-              <div className="flex items-center justify-center py-3">
-                <Loader2 size={12} className="animate-spin text-stone-400" />
-              </div>
-            ) : logs.length === 0 ? (
-              <p className="text-[11px] text-[#7e7e78] dark:text-[#8e8e8e]">暂无日志记录</p>
-            ) : (
-              logs.map(log => (
-                <div key={log.id} className="border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-lg p-2 space-y-0.5">
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="text-[9px] font-mono text-[#7e7e78] dark:text-[#8e8e8e]">
-                      {log.request_type || log.prompt_type}
-                    </span>
-                    <span className={`text-[9px] ${log.success ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}`}>
-                      {log.success ? '成功' : '失败'}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="text-[9px] text-[#5a5a56] dark:text-[#a0a0a0]">{log.model}</span>
-                    <span className="text-[9px] text-stone-400 dark:text-stone-500">{log.latency_ms}ms</span>
-                  </div>
-                  {log.error_message && (
-                    <p className="text-[9px] text-red-400 dark:text-red-500 line-clamp-1">{log.error_message}</p>
-                  )}
-                  <p className="text-[8px] text-stone-400 dark:text-stone-500">
-                    {new Date(log.timestamp).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                  </p>
-                </div>
-              ))
-            )}
           </div>
         )}
       </div>
@@ -1008,9 +936,238 @@ function DocumentInfoSectionInline({ documentPath, documentName }: {
   );
 }
 
+// ── Summary/Tags 生成组件 ──
+
+const SOURCE_LABELS: Record<string, { label: string; colorClass: string }> = {
+  deterministic: { label: '规则', colorClass: 'bg-stone-100 dark:bg-stone-800 text-[#5a5a56] dark:text-[#a0a0a0]' },
+  embedding_signal: { label: '向量', colorClass: 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' },
+  local_llm: { label: 'LLM', colorClass: 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400' },
+  reasoning: { label: '推理', colorClass: 'bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400' },
+};
+
+function SummaryTagsSection({ documentPath, onDocumentUpdated }: { documentPath: string; onDocumentUpdated?: () => void }) {
+  const { vault } = useVault();
+  const [generating, setGenerating] = useState(false);
+  const [result, setResult] = useState<SummaryTagsResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // 编辑状态
+  const [editing, setEditing] = useState(false);
+  const [editSummary, setEditSummary] = useState('');
+  const [editTags, setEditTags] = useState('');
+
+  // 生成摘要/标签
+  const handleGenerate = useCallback(async () => {
+    if (!vault || generating) return;
+    setGenerating(true);
+    setError(null);
+    setResult(null);
+    setEditing(false);
+    try {
+      const res = await summaryTagsService.generateSummaryTags(vault.path, documentPath);
+      setResult(res);
+      // 预填编辑字段
+      const mergedSummary = res.layers.map(l => l.summary).filter(Boolean).join('\n');
+      const mergedTags = [...new Set(res.layers.flatMap(l => l.tags ?? []))];
+      setEditSummary(mergedSummary);
+      setEditTags(mergedTags.join(', '));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setGenerating(false);
+    }
+  }, [vault, documentPath, generating]);
+
+  // 接受：写入 metadata 和 frontmatter
+  const handleAccept = useCallback(async (summary: string, tags: string[]) => {
+    if (!vault) return;
+    try {
+      await summaryTagsService.updateDocumentSummaryTags(
+        vault.path,
+        documentPath,
+        summary,
+        tags,
+        'user_accepted',
+      );
+      setResult(null);
+      setEditing(false);
+
+      // 通知父组件刷新编辑器内容
+      onDocumentUpdated?.();
+
+      // 记录 summary_tag_accepted 信号
+      personalizationService.recordSignal(vault.path, {
+        action_type: 'summary_tag_accepted',
+        document_path: documentPath,
+        chunk_id: null,
+        search_query: null,
+      }).catch(() => { /* 信号记录失败不影响操作 */ });
+    } catch (err) {
+      setError(`写入失败: ${err}`);
+    }
+  }, [vault, documentPath, onDocumentUpdated]);
+
+  // 拒绝：保持原值
+  const handleReject = useCallback(() => {
+    setResult(null);
+    setEditing(false);
+
+    // 记录 summary_tag_rejected 信号
+    if (vault) {
+      personalizationService.recordSignal(vault.path, {
+        action_type: 'summary_tag_rejected',
+        document_path: documentPath,
+        chunk_id: null,
+        search_query: null,
+      }).catch(() => { /* 信号记录失败不影响操作 */ });
+    }
+  }, [vault, documentPath]);
+
+  // 合并后的摘要和标签
+  const mergedSummary = result ? result.layers.map(l => l.summary).filter(Boolean).join('\n') : '';
+  const mergedTags = result ? [...new Set(result.layers.flatMap(l => l.tags ?? []))] : [];
+
+  return (
+    <div className="space-y-2">
+      {!result && !generating && (
+        <button
+          onClick={handleGenerate}
+          className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+        >
+          <Tags size={10} />
+          生成摘要/标签
+        </button>
+      )}
+
+      {generating && (
+        <div className="flex items-center justify-center gap-1.5 py-2">
+          <Loader2 size={12} className="animate-spin text-stone-400" />
+          <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">正在生成...</p>
+        </div>
+      )}
+
+      {error && (
+        <p className="text-[10px] text-red-500 px-1">{error}</p>
+      )}
+
+      {result && !generating && (
+        <div className="space-y-2">
+          {/* 各层来源标记 */}
+          <div className="flex flex-wrap gap-1">
+            {result.layers.map((layer, idx) => {
+              const src = SOURCE_LABELS[layer.source] ?? { label: layer.source, colorClass: 'bg-stone-100 dark:bg-stone-800 text-[#5a5a56] dark:text-[#a0a0a0]' };
+              return (
+                <span key={idx} className={`text-[9px] px-1 py-0.5 rounded ${src.colorClass}`}>
+                  {src.label}
+                  {layer.error ? ' ⚠' : ''}
+                </span>
+              );
+            })}
+          </div>
+
+          {/* 摘要展示/编辑 */}
+          {editing ? (
+            <div className="space-y-1.5">
+              <div>
+                <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">摘要</p>
+                <textarea
+                  value={editSummary}
+                  onChange={(e) => setEditSummary(e.target.value)}
+                  className="w-full text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] bg-transparent border border-[#e6e6dc] dark:border-[#2f2f2f] rounded p-1.5 resize-none outline-none focus:border-emerald-500"
+                  rows={3}
+                />
+              </div>
+              <div>
+                <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">标签</p>
+                <input
+                  type="text"
+                  value={editTags}
+                  onChange={(e) => setEditTags(e.target.value)}
+                  className="w-full text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] bg-transparent border border-[#e6e6dc] dark:border-[#2f2f2f] rounded p-1.5 outline-none focus:border-emerald-500"
+                  placeholder="用逗号分隔标签"
+                />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => {
+                    const tags = editTags.split(/[,，]/).map(t => t.trim()).filter(Boolean);
+                    handleAccept(editSummary.trim(), tags);
+                  }}
+                  className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors"
+                >
+                  <Check size={10} />
+                  确认写入
+                </button>
+                <button
+                  onClick={handleReject}
+                  className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+                >
+                  <XCircle size={10} />
+                  取消
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {mergedSummary && (
+                <div>
+                  <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">摘要</p>
+                  <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] leading-normal">{mergedSummary}</p>
+                </div>
+              )}
+              {mergedTags.length > 0 && (
+                <div>
+                  <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">标签</p>
+                  <div className="flex flex-wrap gap-1">
+                    {mergedTags.map((tag, idx) => (
+                      <span key={idx} className="text-[9px] px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-[#5a5a56] dark:text-[#a0a0a0]">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="flex items-center gap-1.5 pt-1">
+                <button
+                  onClick={() => handleAccept(mergedSummary, mergedTags)}
+                  className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors"
+                >
+                  <Check size={10} />
+                  采纳
+                </button>
+                <button
+                  onClick={() => setEditing(true)}
+                  className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+                >
+                  <Pencil size={10} />
+                  修改
+                </button>
+                <button
+                  onClick={handleReject}
+                  className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+                >
+                  <XCircle size={10} />
+                  拒绝
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------- Platter Main Component ---------- */
 
-type BottomPanel = 'none' | 'history' | 'info';
+type BottomPanel = 'none' | 'history' | 'info' | 'summary-tags';
+
+const TRIGGER_TYPE_CONFIG: Record<string, { label: string; icon: typeof AlertTriangle; colorClass: string }> = {
+  semantic_repeat: { label: '语义重复', icon: CheckCheck, colorClass: 'text-blue-600 dark:text-blue-400' },
+  new_topic: { label: '新方向', icon: Zap, colorClass: 'text-emerald-600 dark:text-emerald-400' },
+  context_drift: { label: '主题偏移', icon: AlertTriangle, colorClass: 'text-amber-600 dark:text-amber-400' },
+  review: { label: '复查建议', icon: RefreshCw, colorClass: 'text-purple-600 dark:text-purple-400' },
+};
 
 export function MentorDock({
   open,
@@ -1027,6 +1184,18 @@ export function MentorDock({
   onScrollToHeading,
   onScrollToLine,
   onOpenVersionDiff,
+  onGeneratePrompt,
+  triggerResults,
+  onDismissTrigger,
+  onDocumentUpdated,
+  pendingContextPackItem,
+  onOpenSettings,
+  onFindRelated,
+  onExplain,
+  onSummarize,
+  relatedResults,
+  onClearRelatedResults,
+  onDocSelect,
 }: PlatterProps) {
   const [tabOrder, setTabOrder] = useState<PlatterTab[]>(PLATTER_TABS.map(t => t.id));
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -1253,6 +1422,17 @@ export function MentorDock({
               {showTopContextSections && (
                 <>
                   <ExplorerSection
+                    title="摘要/标签"
+                    icon={Tags}
+                    expanded={bottomPanel === 'summary-tags'}
+                    onToggle={() => toggleBottomPanel('summary-tags')}
+                  >
+                    <div className="px-2 pb-2">
+                      <SummaryTagsSection documentPath={activeDocumentPath} onDocumentUpdated={onDocumentUpdated} />
+                    </div>
+                  </ExplorerSection>
+
+                  <ExplorerSection
                     title="时间线"
                     icon={History}
                     expanded={bottomPanel === 'history'}
@@ -1285,7 +1465,82 @@ export function MentorDock({
       ) : (
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           <div className={activeTab === 'mentor' ? '' : 'hidden'}>
-            <MentorView onAIConfig={onAIConfig} onAICheckConnection={onAICheckConnection} onAIRuntimeLogs={onAIRuntimeLogs} onAIOnboarding={onAIOnboarding} />
+            {/* Trigger Notifications */}
+            {triggerResults && triggerResults.length > 0 && (
+              <div className="space-y-2 mb-4">
+                {triggerResults.map((trigger, idx) => {
+                  const triggerConfig = TRIGGER_TYPE_CONFIG[trigger.trigger_type] ?? { label: trigger.trigger_type, icon: AlertTriangle, colorClass: 'text-amber-600 dark:text-amber-400' };
+                  const TriggerIcon = triggerConfig.icon;
+                  return (
+                    <div
+                      key={`${trigger.trigger_type}-${idx}`}
+                      className={`bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl p-3 space-y-1.5 ${
+                        trigger.status === 'threshold_exceeded' ? 'border-l-2 border-l-amber-500' : ''
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <TriggerIcon size={12} className={triggerConfig.colorClass} />
+                          <span className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
+                            {triggerConfig.label}
+                          </span>
+                          {trigger.status === 'threshold_exceeded' && (
+                            <span className="text-[9px] px-1 py-0.5 rounded bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400">
+                              阈值已超
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => onDismissTrigger?.(trigger.trigger_type)}
+                          className="p-0.5 text-stone-300 dark:text-stone-600 hover:text-stone-500 dark:hover:text-stone-400 shrink-0"
+                          title="忽略"
+                        >
+                          <X size={10} />
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] leading-normal">
+                        {trigger.reason}
+                      </p>
+                      {trigger.theme && (
+                        <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
+                          主题: {trigger.theme}
+                        </p>
+                      )}
+                      <div className="flex items-center gap-1.5 pt-1">
+                        <button
+                          className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors"
+                          title="帮我判断"
+                        >
+                          <Eye size={10} />
+                          帮我判断
+                        </button>
+                        <button
+                          onClick={() => onDismissTrigger?.(trigger.trigger_type)}
+                          className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+                        >
+                          忽略
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <MentorView
+              onAIConfig={onAIConfig}
+              onAICheckConnection={onAICheckConnection}
+              onAIRuntimeLogs={onAIRuntimeLogs}
+              onAIOnboarding={onAIOnboarding}
+              onOpenSettings={onOpenSettings}
+              activeDocumentPath={activeDocumentPath}
+              activeDocumentName={activeDocumentName}
+              onFindRelated={onFindRelated}
+              onExplain={onExplain}
+              onSummarize={onSummarize}
+              relatedResults={relatedResults}
+              onClearRelatedResults={onClearRelatedResults}
+              onDocSelect={onDocSelect}
+            />
           </div>
           <div className={activeTab === 'notifications' ? '' : 'hidden'}>
             <NotificationsView />
@@ -1296,12 +1551,26 @@ export function MentorDock({
           <div className={activeTab === 'widgets' ? '' : 'hidden'}>
             <WidgetsView />
           </div>
+          <div className={activeTab === 'context-pack' ? '' : 'hidden'}>
+            <ContextPackPanel onGeneratePrompt={onGeneratePrompt} pendingItem={pendingContextPackItem} />
+          </div>
         </div>
       )}
 
       {/* 底部面板 - 仅 Context tab 显示 */}
       {showBottomContextSections && (
         <div className="border-t border-[#e6e6dc] dark:border-[#2f2f2f] bg-white dark:bg-[#1a1a1a] shrink-0">
+          <ExplorerSection
+            title="摘要/标签"
+            icon={Tags}
+            expanded={bottomPanel === 'summary-tags'}
+            onToggle={() => toggleBottomPanel('summary-tags')}
+          >
+            <div className="px-2 pb-2">
+              <SummaryTagsSection documentPath={activeDocumentPath} />
+            </div>
+          </ExplorerSection>
+
           <ExplorerSection
             title="时间线"
             icon={History}

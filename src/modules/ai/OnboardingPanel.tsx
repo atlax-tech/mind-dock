@@ -70,6 +70,7 @@ export function OnboardingPanel({ open, onClose }: OnboardingPanelProps) {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [creatingStructure, setCreatingStructure] = useState(false);
+  const [structureError, setStructureError] = useState<string | null>(null);
   const [aiEnhancing, setAiEnhancing] = useState(false);
 
   // Escape 关闭
@@ -97,6 +98,7 @@ export function OnboardingPanel({ open, onClose }: OnboardingPanelProps) {
       setConnectionResult(null);
       setConnectionError(null);
       setCreatingStructure(false);
+      setStructureError(null);
       setAiEnhancing(false);
     }
   }, [open, config.endpoint, config.default_model]);
@@ -216,12 +218,15 @@ export function OnboardingPanel({ open, onClose }: OnboardingPanelProps) {
       // 创建知识库结构（如果用户接受了推荐）
       if (structureAccepted && recommendedStructure) {
         setCreatingStructure(true);
+        setStructureError(null);
         try {
-          // 创建文件夹（通过创建 .keep 文件）
+          // 创建文件夹
           for (const folder of recommendedStructure.folders) {
             const folderPath = `${vault.path}/documents/${folder}`;
-            // 创建文件夹下的 .keep 文件以确保文件夹存在
-            await documentService.createDocument(vault.path, `${folderPath}/.keep`);
+            await documentService.createDirectory(vault.path, folderPath);
+            // 创建 .keep.md 占位文件
+            await documentService.createDocument(vault.path, `${folderPath}/.keep.md`);
+            await documentService.writeDocument(vault.path, `${folderPath}/.keep.md`, '# 目录占位');
           }
 
           // 创建 README 文档
@@ -231,7 +236,10 @@ export function OnboardingPanel({ open, onClose }: OnboardingPanelProps) {
             await documentService.writeDocument(vault.path, docPath, doc.content);
           }
         } catch (err) {
-          console.error('创建知识库结构失败:', err);
+          const errMsg = err instanceof Error ? err.message : String(err);
+          setStructureError(`创建知识库结构失败: ${errMsg}`);
+          setCreatingStructure(false);
+          return;
         }
         setCreatingStructure(false);
       }
@@ -528,6 +536,14 @@ export function OnboardingPanel({ open, onClose }: OnboardingPanelProps) {
               <div className="flex items-center gap-1.5 text-[11px] text-red-500 dark:text-red-400">
                 <XCircle size={12} />
                 <span>{connectionError || '连接失败，请检查 Endpoint 和 Ollama 状态'}</span>
+              </div>
+            )}
+
+            {/* 结构创建错误 */}
+            {structureError && (
+              <div className="flex items-center gap-1.5 text-[11px] text-red-500 dark:text-red-400">
+                <XCircle size={12} />
+                <span>{structureError}</span>
               </div>
             )}
 

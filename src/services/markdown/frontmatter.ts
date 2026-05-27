@@ -39,6 +39,17 @@ export function stringifyFrontMatter(data: FrontMatterData, content: string): st
   return `---\n${yaml}\n---\n${content}`;
 }
 
+/** 向 Markdown 内容注入 frontmatter 字段
+ *  - 如果内容已有 frontmatter，合并新字段（已有字段不被覆盖）
+ *  - 如果没有 frontmatter，在顶部插入
+ */
+export function injectFrontmatter(content: string, frontmatter: Record<string, unknown>): string {
+  const { data: existingData, content: body } = parseFrontMatter(content);
+  // 合并：新字段补充，已有字段保留（不覆盖用户已有内容）
+  const mergedData: FrontMatterData = { ...frontmatter, ...existingData };
+  return stringifyFrontMatter(mergedData, body);
+}
+
 /** 从文档内容提取标题
  * 优先级：frontmatter title → # 标题 → ## 标题 → ### 标题 → 正文首句
  */

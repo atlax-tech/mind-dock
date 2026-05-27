@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect, useCallback, useRef, ty
 import { useVault } from '@/modules/vault/VaultProvider';
 import { aiRuntimeService, type AIConfig, type OllamaConnectionResult, type ChatMessage, type OllamaChatResult, type OllamaEmbedResult } from '@/services/ai/runtime';
 import { aiLogsService } from '@/services/ai/logs';
+import { vectorIndexService } from '@/services/index/vector';
 import { mentorEventBus } from '@/modules/ai/MentorEventBus';
 
 export type AIRuntimeStatus = 'disconnected' | 'connected' | 'error' | 'disabled' | 'running';
@@ -19,6 +20,7 @@ interface AIRuntimeState {
   checkConnection: () => Promise<void>;
   chat: (messages: ChatMessage[], promptType: string) => Promise<OllamaChatResult>;
   embed: (input: string) => Promise<OllamaEmbedResult>;
+  embedAndStore: (chunkId: number, content: string, contentHash: string) => Promise<void>;
   updateConfig: (config: AIConfig) => Promise<void>;
   cancelCurrentOperation: () => void;
 }
@@ -226,6 +228,32 @@ export function AIRuntimeProvider({ children }: { children: ReactNode }) {
     }
   }, [vault, config, availableModels, startPhaseProgression, clearPhaseTimers]);
 
+  // embedAndStore: 生成 embedding 并存储到 vector index
+  const embedAndStore = useCallback(async (chunkId: number, content: string, contentHash: string): Promise<void> => {
+    if (!vault) throw new Error('Vault 未就绪');
+    const model = config.embedding_model || config.default_model || availableModels[0];
+    if (!model) throw new Error('未选择模型，请先配置 AI Runtime');
+
+    // 1. 调用 embed 获取 embedding 向量
+    const embedResult = await aiRuntimeService.embed(config.endpoint, model, content);
+    if (!embedResult.embeddings || embedResult.embeddings.length === 0) {
+      throw new Error('Embedding 返回为空');
+    }
+    const embedding = embedResult.embeddings[0];
+    const dimension = embedding.length;
+
+    // 2. 存储到 vector index
+    await vectorIndexService.storeChunkEmbedding({
+      vaultPath: vault.path,
+      chunkId,
+      embedding,
+      embeddingModel: model,
+      embeddingDimension: dimension,
+      embeddingProvider: 'ollama',
+      embeddingContentHash: contentHash,
+    });
+  }, [vault, config, availableModels]);
+
   // 取消当前操作
   const cancelCurrentOperation = useCallback(() => {
     cancelledRef.current = true;
@@ -260,6 +288,7 @@ export function AIRuntimeProvider({ children }: { children: ReactNode }) {
         checkConnection,
         chat,
         embed,
+        embedAndStore,
         updateConfig,
         cancelCurrentOperation,
       }}

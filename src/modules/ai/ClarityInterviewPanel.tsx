@@ -100,12 +100,22 @@ export function ClarityInterviewPanel({ open, onClose, onAccept, onReject }: Cla
     if (suggestionId) {
       await updateSuggestionStatus(suggestionId, 'accepted');
     }
-    // 使用解析后的结构化结果
+    // 使用解析后的结构化结果，附带 frontmatter 字段
     if (parsedResult) {
-      onAccept(parsedResult);
+      onAccept({
+        ...parsedResult,
+        source: 'clarity-interview',
+        created_at: new Date().toISOString(),
+      });
     } else {
       // fallback：如果解析失败，使用原始建议
-      onAccept({ title: '', filename: '', markdown_body: suggestion });
+      onAccept({
+        title: '',
+        filename: '',
+        markdown_body: suggestion,
+        source: 'clarity-interview',
+        created_at: new Date().toISOString(),
+      });
     }
     onClose();
   };
@@ -122,7 +132,11 @@ export function ClarityInterviewPanel({ open, onClose, onAccept, onReject }: Cla
     if (suggestionId) {
       await updateSuggestionStatus(suggestionId, 'edited', editedSuggestion);
     }
-    onAccept(reparsed);
+    onAccept({
+      ...reparsed,
+      source: 'clarity-interview',
+      created_at: new Date().toISOString(),
+    });
     onClose();
   };
 

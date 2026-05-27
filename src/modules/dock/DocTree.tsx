@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Folder, FileText, RefreshCw, Plus, Pencil, Trash2 } from 'lucide-react';
+import { Folder, FileText, RefreshCw, Plus, Pencil, Trash2, Tags, Package, Search } from 'lucide-react';
 import { useVault } from '@/modules/vault/VaultProvider';
 import { documentService } from '@/services/filesystem/documents';
 import type { DocEntry } from '@/types/vault';
@@ -11,6 +11,10 @@ interface DocTreeProps {
   onDocDeleted?: (docPath: string) => void;
   onDocRenamed?: (oldPath: string, newPath: string) => void;
   onCreateDoc?: () => void;
+  onSummarize?: (docPath: string) => void;
+  onGeneratePack?: (docPath: string) => void;
+  onFindRelated?: (docPath: string) => void;
+  onAddToPack?: (docPath: string) => void;
 }
 
 function DocEntryItem({
@@ -23,6 +27,10 @@ function DocEntryItem({
   renamingEntry,
   onRenameConfirm,
   onRenameCancel,
+  onSummarize,
+  onGeneratePack,
+  onFindRelated,
+  onAddToPack,
 }: {
   entry: DocEntry;
   activeDocId: string;
@@ -33,6 +41,10 @@ function DocEntryItem({
   renamingEntry: DocEntry | null;
   onRenameConfirm: (entry: DocEntry, newName: string) => void;
   onRenameCancel: () => void;
+  onSummarize?: (docPath: string) => void;
+  onGeneratePack?: (docPath: string) => void;
+  onFindRelated?: (docPath: string) => void;
+  onAddToPack?: (docPath: string) => void;
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
@@ -83,6 +95,10 @@ function DocEntryItem({
               renamingEntry={renamingEntry}
               onRenameConfirm={onRenameConfirm}
               onRenameCancel={onRenameCancel}
+              onSummarize={onSummarize}
+              onGeneratePack={onGeneratePack}
+              onFindRelated={onFindRelated}
+              onAddToPack={onAddToPack}
             />
           );
         })}
@@ -119,12 +135,41 @@ function DocEntryItem({
       </div>
       {contextMenu && (
         <div
-          className={`fixed z-50 bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded shadow-lg py-1 text-[11px] min-w-[120px]`}
+          className={`fixed z-50 bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-lg shadow-lg py-1 text-[11px] min-w-[140px]`}
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onClick={(e) => e.stopPropagation()}
         >
+          {!entry.is_dir && (
+            <>
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-stone-50 dark:hover:bg-stone-800/50 flex items-center gap-2"
+                onClick={() => { onSummarize?.(entry.absolute_path); setContextMenu(null); }}
+              >
+                <Tags size={11} /> 总结文档
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-stone-50 dark:hover:bg-stone-800/50 flex items-center gap-2"
+                onClick={() => { onGeneratePack?.(entry.absolute_path); setContextMenu(null); }}
+              >
+                <Package size={11} /> 生成上下文包
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-stone-50 dark:hover:bg-stone-800/50 flex items-center gap-2"
+                onClick={() => { onFindRelated?.(entry.absolute_path); setContextMenu(null); }}
+              >
+                <Search size={11} /> 查找相关内容
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-stone-50 dark:hover:bg-stone-800/50 flex items-center gap-2"
+                onClick={() => { onAddToPack?.(entry.absolute_path); setContextMenu(null); }}
+              >
+                <Plus size={11} /> 加入上下文包
+              </button>
+              <div className="border-t border-[#e6e6dc] dark:border-[#2f2f2f] my-1" />
+            </>
+          )}
           <button
-            className={`w-full text-left px-3 py-1.5 hover:bg-[#f0ece2] dark:hover:bg-[#2a2a2a] flex items-center gap-2`}
+            className="w-full text-left px-3 py-1.5 hover:bg-stone-50 dark:hover:bg-stone-800/50 flex items-center gap-2"
             onClick={() => { onRename(entry); setContextMenu(null); }}
           >
             <Pencil size={11} /> 重命名
@@ -225,7 +270,7 @@ function NewDocInput({
   );
 }
 
-export function DocTree({ activeDocId, docTree, onDocSelect, onDocDeleted, onDocRenamed, onCreateDoc }: DocTreeProps) {
+export function DocTree({ activeDocId, docTree, onDocSelect, onDocDeleted, onDocRenamed, onCreateDoc, onSummarize, onGeneratePack, onFindRelated, onAddToPack }: DocTreeProps) {
   const { vault, refreshDocTree } = useVault();
 
   const [renamingEntry, setRenamingEntry] = useState<DocEntry | null>(null);
@@ -246,7 +291,14 @@ export function DocTree({ activeDocId, docTree, onDocSelect, onDocDeleted, onDoc
     try {
       const fileName = name.endsWith('.md') ? name : `${name}.md`;
       const filePath = `${vault.path}/documents/${fileName}`;
-      await documentService.createDocument(vault.path, filePath);
+      await documentService.createDocumentWithMetadata({
+        vaultPath: vault.path,
+        filePath,
+        frontmatter: {
+          title: name.replace(/\.md$/, ''),
+          created_at: new Date().toISOString(),
+        },
+      });
       setShowNewDoc(false);
       await refreshDocTree();
       // 自动打开新建的文档
@@ -320,6 +372,10 @@ export function DocTree({ activeDocId, docTree, onDocSelect, onDocDeleted, onDoc
             renamingEntry={renamingEntry}
             onRenameConfirm={handleRename}
             onRenameCancel={() => setRenamingEntry(null)}
+            onSummarize={onSummarize}
+            onGeneratePack={onGeneratePack}
+            onFindRelated={onFindRelated}
+            onAddToPack={onAddToPack}
           />
         ))
       )}

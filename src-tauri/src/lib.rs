@@ -1,6 +1,6 @@
 mod commands;
 
-use commands::{vault, fs, capture, sticky_notes, notifications, ai_runtime, ai_logs, ai_suggestions, git};
+use commands::{vault, fs, capture, sticky_notes, notifications, ai_runtime, ai_logs, ai_suggestions, git, metadata, chunking, search, vector_index, summary_tags, personalization, context_pack, mentor_memory, mentor_triggers};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -23,6 +23,7 @@ pub fn run() {
             vault::set_last_vault_path,
             vault::scan_vault_files,
             vault::validate_vault,
+            fs::create_directory,
             fs::create_document,
             fs::read_document,
             fs::write_document,
@@ -51,6 +52,50 @@ pub fn run() {
             git::git_log,
             git::git_diff,
             git::git_snapshot_document,
+            metadata::init_metadata_db,
+            metadata::upsert_document_metadata,
+            metadata::delete_document_metadata,
+            metadata::rename_document_metadata,
+            metadata::get_document_db_metadata,
+            metadata::list_documents_metadata,
+            metadata::run_verify_index,
+            chunking::chunk_document,
+            chunking::reindex_document,
+            chunking::get_document_chunks,
+            search::fts_search,
+            search::search_documents,
+            vector_index::store_chunk_embedding,
+            vector_index::semantic_search,
+            vector_index::find_similar_chunks,
+            vector_index::suggest_context_pack_candidates,
+            vector_index::mark_embedding_stale,
+            vector_index::mark_embeddings_unavailable,
+            vector_index::mark_embedding_error,
+            vector_index::get_document_embedding,
+            vector_index::detect_stale_embeddings,
+            summary_tags::generate_deterministic_summary_tags,
+            summary_tags::generate_embedding_signal_tags,
+            summary_tags::generate_llm_summary,
+            summary_tags::generate_summary_tags,
+            summary_tags::update_document_summary_tags,
+            context_pack::create_context_pack,
+            context_pack::update_context_pack,
+            context_pack::delete_context_pack,
+            context_pack::list_context_packs,
+            context_pack::get_context_pack,
+            context_pack::export_context_pack_markdown,
+            personalization::record_signal,
+            personalization::read_signals,
+            personalization::count_signals,
+            mentor_memory::create_mentor_memory,
+            mentor_memory::list_mentor_memories,
+            mentor_memory::update_mentor_memory_status,
+            mentor_memory::delete_mentor_memory,
+            mentor_memory::find_relevant_memories,
+            mentor_memory::record_reasoning_result,
+            mentor_triggers::check_triggers,
+            mentor_triggers::get_trigger_state,
+            mentor_triggers::update_trigger_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

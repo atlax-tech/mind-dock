@@ -8,6 +8,7 @@ import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { lintKeymap } from '@codemirror/lint';
 import { useTheme } from '@/app/theme';
+import { editorContextMenu } from './editorContextMenu';
 
 export interface EditorViewHandle {
   scrollToLine(lineNumber: number): void;
@@ -17,14 +18,17 @@ export interface EditorViewHandle {
 interface EditorViewProps {
   content: string;
   onContentChange: (content: string) => void;
+  onSelectionAction?: (action: string, selection: { from: number; to: number; text: string }) => void;
 }
 
-export const EditorView = forwardRef<EditorViewHandle, EditorViewProps>(function EditorView({ content, onContentChange }, ref) {
+export const EditorView = forwardRef<EditorViewHandle, EditorViewProps>(function EditorView({ content, onContentChange, onSelectionAction }, ref) {
   const { isDark } = useTheme();
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<CMEditorView | null>(null);
   const isExternalUpdate = useRef(false);
   const onContentChangeRef = useRef(onContentChange);
+  const onSelectionActionRef = useRef(onSelectionAction);
+  onSelectionActionRef.current = onSelectionAction;
 
   useImperativeHandle(ref, () => ({
     scrollToLine(lineNumber: number) {
@@ -110,6 +114,16 @@ export const EditorView = forwardRef<EditorViewHandle, EditorViewProps>(function
             backgroundColor: isDark ? 'rgba(163,230,53,0.15)' : 'rgba(5,150,105,0.1)',
           },
         }),
+        ...(onSelectionActionRef.current ? [
+          editorContextMenu([
+            { label: '加入上下文包', action: (_view, sel) => onSelectionActionRef.current?.('addToPack', sel) },
+            { label: '从此生成...', action: (_view, sel) => onSelectionActionRef.current?.('generateFrom', sel) },
+            { label: '解释选区', action: (_view, sel) => onSelectionActionRef.current?.('explain', sel) },
+            { separator: true },
+            { label: '查找相关内容', action: (_view, sel) => onSelectionActionRef.current?.('findRelated', sel) },
+            { label: '总结选区', action: (_view, sel) => onSelectionActionRef.current?.('summarize', sel) },
+          ])
+        ] : []),
         CMEditorView.lineWrapping,
       ],
     });

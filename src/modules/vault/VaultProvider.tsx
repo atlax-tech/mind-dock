@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { vaultService } from '@/services/filesystem/vault';
+import { metadataService } from '@/services/index/metadata';
 import type { VaultInfo, DocEntry } from '@/types/vault';
 
 interface VaultState {
@@ -40,6 +41,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
           if (validation.valid) {
             const info = await vaultService.selectVault(lastPath);
             setVault(info);
+            await metadataService.initMetadataDb(lastPath);
             const tree = await vaultService.scanVaultFiles(lastPath);
             setDocTree(tree);
           } else {
@@ -70,6 +72,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       setError(null);
       const info = await vaultService.createVault(path);
       setVault(info);
+      await metadataService.initMetadataDb(info.path);
       const tree = await vaultService.scanVaultFiles(info.path);
       setDocTree(tree);
     } catch (err) {
@@ -83,6 +86,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
       setError(null);
       const info = await vaultService.selectVault(path);
       setVault(info);
+      await metadataService.initMetadataDb(info.path);
       const tree = await vaultService.scanVaultFiles(info.path);
       setDocTree(tree);
     } catch (err) {

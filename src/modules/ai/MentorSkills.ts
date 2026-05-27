@@ -124,6 +124,8 @@ export interface ClarityInterviewResult {
   title: string;
   filename: string;
   markdown_body: string;
+  source?: 'clarity-interview';
+  created_at?: string;
 }
 
 /**

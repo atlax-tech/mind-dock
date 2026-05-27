@@ -17,9 +17,13 @@ interface SidebarProps {
   onDocDeleted?: (docPath: string) => void;
   onDocRenamed?: (oldPath: string, newPath: string) => void;
   onCreateDoc?: () => void;
+  onSummarize?: (docPath: string) => void;
+  onGeneratePack?: (docPath: string) => void;
+  onFindRelated?: (docPath: string) => void;
+  onAddToPack?: (docPath: string) => void;
 }
 
-export function Sidebar({ open, activeDocId, docTree, onDocSelect, onToggle, onCmdPaletteOpen, onQuickCapture, onOpenInbox, onHealthView, onDocDeleted, onDocRenamed, onCreateDoc }: SidebarProps) {
+export function Sidebar({ open, activeDocId, docTree, onDocSelect, onToggle, onCmdPaletteOpen, onQuickCapture, onOpenInbox, onHealthView, onDocDeleted, onDocRenamed, onCreateDoc, onSummarize, onGeneratePack, onFindRelated, onAddToPack }: SidebarProps) {
   const { isDark, toggle } = useTheme();
   const { vault, switchVault } = useVault();
 
@@ -77,7 +81,7 @@ export function Sidebar({ open, activeDocId, docTree, onDocSelect, onToggle, onC
       </div>
 
       {/* Document Tree */}
-      <DocTree activeDocId={activeDocId} docTree={docTree} onDocSelect={onDocSelect} onDocDeleted={onDocDeleted} onDocRenamed={onDocRenamed} onCreateDoc={onCreateDoc} />
+      <DocTree activeDocId={activeDocId} docTree={docTree} onDocSelect={onDocSelect} onDocDeleted={onDocDeleted} onDocRenamed={onDocRenamed} onCreateDoc={onCreateDoc} onSummarize={onSummarize} onGeneratePack={onGeneratePack} onFindRelated={onFindRelated} onAddToPack={onAddToPack} />
 
       {/* Vault 统计信息 - 来自 VaultProvider */}
       <div className={`p-4 border-t border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] text-[#7e7e78] dark:text-[#8e8e8e] space-y-2`}>
