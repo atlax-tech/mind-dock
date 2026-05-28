@@ -48,6 +48,10 @@ pub struct AIConfig {
     pub endpoint: String,
     pub default_model: Option<String>,
     pub embedding_model: Option<String>,
+    pub provider: Option<String>,
+    pub spark_base_url: Option<String>,
+    pub spark_api_key: Option<String>,
+    pub spark_model: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -86,6 +90,13 @@ fn is_remote_endpoint(endpoint: &str) -> bool {
         .trim_start_matches("https://");
     let host = without_scheme.split(':').next().unwrap_or("");
     host != "localhost" && host != "127.0.0.1"
+}
+
+fn validate_non_empty(name: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("{} 不能为空", name));
+    }
+    Ok(())
 }
 
 fn ensure_minddock_dir(vault_path: &str) -> Result<(), String> {
@@ -386,6 +397,183 @@ pub fn ollama_embed(
     })
 }
 
+#[command]
+pub fn spark_check_connection(base_url: String, api_key: String) -> OllamaConnectionResult {
+    if let Err(e) = validate_endpoint_url(&base_url) {
+        return OllamaConnectionResult {
+            connected: false,
+            models: vec![],
+            error: Some(e),
+            is_remote: true,
+        };
+    }
+    if let Err(e) = validate_non_empty("API Key", &api_key) {
+        return OllamaConnectionResult {
+            connected: false,
+            models: vec![],
+            error: Some(e),
+            is_remote: true,
+        };
+    }
+
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let resp = reqwest::blocking::Client::new()
+        .get(&url)
+        .bearer_auth(api_key)
+        .timeout(std::time::Duration::from_secs(15))
+        .send();
+
+    match resp {
+        Ok(response) => {
+            if !response.status().is_success() {
+                let status = response.status();
+                let body_text = response.text().unwrap_or_default();
+                return OllamaConnectionResult {
+                    connected: false,
+                    models: vec![],
+                    error: Some(format!(
+                        "自定义 API 鉴权或服务异常，状态码: {}，响应: {}",
+                        status, body_text
+                    )),
+                    is_remote: true,
+                };
+            }
+
+            #[derive(Deserialize)]
+            struct ModelsResponse {
+                data: Option<Vec<ModelItem>>,
+            }
+            #[derive(Deserialize)]
+            struct ModelItem {
+                id: Option<String>,
+            }
+
+            match response.json::<ModelsResponse>() {
+                Ok(parsed) => {
+                    let mut models: Vec<OllamaModel> = parsed
+                        .data
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter_map(|m| m.id)
+                        .map(|id| OllamaModel {
+                            name: id,
+                            size: None,
+                            modified_at: None,
+                        })
+                        .collect();
+
+                    if models.is_empty() {
+                        models.push(OllamaModel {
+                            name: "astron-code-latest".to_string(),
+                            size: None,
+                            modified_at: None,
+                        });
+                    }
+
+                    OllamaConnectionResult {
+                        connected: true,
+                        models,
+                        error: None,
+                        is_remote: true,
+                    }
+                }
+                Err(e) => OllamaConnectionResult {
+                    connected: false,
+                    models: vec![],
+                    error: Some(format!("解析自定义 API /models 响应失败: {}", e)),
+                    is_remote: true,
+                },
+            }
+        }
+        Err(e) => OllamaConnectionResult {
+            connected: false,
+            models: vec![],
+            error: Some(format!("连接自定义 API 失败: {}", e)),
+            is_remote: true,
+        },
+    }
+}
+
+#[command]
+pub fn spark_chat(
+    base_url: String,
+    api_key: String,
+    model: String,
+    messages: Vec<ChatMessage>,
+    prompt_type: String,
+) -> Result<OllamaChatResult, String> {
+    validate_endpoint_url(&base_url)?;
+    validate_non_empty("API Key", &api_key)?;
+    validate_non_empty("Model", &model)?;
+
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let messages_json: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "role": m.role,
+                "content": m.content,
+            })
+        })
+        .collect();
+    let body = serde_json::json!({
+        "model": model,
+        "messages": messages_json,
+        "stream": false,
+    });
+
+    let start = Instant::now();
+    let resp = reqwest::blocking::Client::new()
+        .post(&url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .map_err(|e| format!("请求自定义 API chat 失败: {}", e))?;
+    let latency_ms = start.elapsed().as_millis() as u64;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().unwrap_or_default();
+        return Err(format!(
+            "自定义 API chat 请求失败，状态码: {}，响应: {}",
+            status, body_text
+        ));
+    }
+
+    #[derive(Deserialize)]
+    struct ChatResponse {
+        choices: Option<Vec<Choice>>,
+        model: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Choice {
+        message: Option<ChatMessageResponse>,
+    }
+    #[derive(Deserialize)]
+    struct ChatMessageResponse {
+        content: Option<String>,
+    }
+
+    let chat_resp: ChatResponse = resp
+        .json()
+        .map_err(|e| format!("解析自定义 API chat 响应失败: {}", e))?;
+    let content = chat_resp
+        .choices
+        .and_then(|mut c| c.drain(..).next())
+        .and_then(|c| c.message)
+        .and_then(|m| m.content)
+        .ok_or_else(|| "自定义 API chat 响应中缺少 choices[0].message.content".to_string())?;
+    let resp_model = chat_resp.model.unwrap_or(model);
+    let _ = prompt_type;
+
+    Ok(OllamaChatResult {
+        content,
+        model: resp_model,
+        latency_ms,
+    })
+}
+
 // ── AI Config Commands ──
 
 #[command]
@@ -406,6 +594,10 @@ pub fn read_ai_config(vault_path: String) -> Result<AIConfig, String> {
             endpoint: "http://localhost:11434".to_string(),
             default_model: None,
             embedding_model: None,
+            provider: Some("ollama".to_string()),
+            spark_base_url: Some("https://maas-coding-api.cn-huabei-1.xf-yun.com/v2".to_string()),
+            spark_api_key: None,
+            spark_model: Some("astron-code-latest".to_string()),
         });
     }
 

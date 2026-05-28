@@ -2,10 +2,12 @@ import { invoke } from '@tauri-apps/api/core';
 
 /** 语义搜索结果（对应 Rust SemanticSearchResult） */
 export interface SemanticSearchResult {
+  chunk_id: number;
   document_path: string;
   heading_path: string | null;
   start_line: number;
   end_line: number;
+  content: string;
   similarity_score: number;
 }
 
@@ -26,6 +28,7 @@ export interface CandidateResult {
   heading_path: string | null;
   start_line: number;
   end_line: number;
+  content: string;
   similarity_score: number;
   selected_reason: string;
 }

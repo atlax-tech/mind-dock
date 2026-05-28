@@ -23,10 +23,12 @@ use tauri::command;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SemanticSearchResult {
+    pub chunk_id: i64,
     pub document_path: String,
     pub heading_path: Option<String>,
     pub start_line: i64,
     pub end_line: i64,
+    pub content: String,
     pub similarity_score: f32,
 }
 
@@ -47,6 +49,7 @@ pub struct ContextPackCandidate {
     pub heading_path: Option<String>,
     pub start_line: i64,
     pub end_line: i64,
+    pub content: String,
     pub similarity_score: f32,
     pub selected_reason: String,
 }
@@ -76,10 +79,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 
 /// Serialize Vec<f32> to bytes (little-endian) for BLOB storage
 fn embedding_to_bytes(embedding: &[f32]) -> Vec<u8> {
-    embedding
-        .iter()
-        .flat_map(|f| f.to_le_bytes())
-        .collect()
+    embedding.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
 
 /// Deserialize bytes to Vec<f32> from BLOB storage
@@ -131,13 +131,14 @@ pub struct EmbeddingRow {
     pub heading_path: Option<String>,
     pub start_line: i64,
     pub end_line: i64,
+    pub content: String,
     pub embedding: Vec<f32>,
 }
 
 pub fn read_all_ready_embeddings(conn: &Connection) -> Result<Vec<EmbeddingRow>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT ce.chunk_id, c.document_path, c.heading_path, c.start_line, c.end_line, ce.embedding \
+            "SELECT ce.chunk_id, c.document_path, c.heading_path, c.start_line, c.end_line, c.content, ce.embedding \
              FROM chunk_embeddings ce \
              JOIN chunks c ON ce.chunk_id = c.id \
              WHERE ce.embedding_status = 'ready'",
@@ -151,14 +152,23 @@ pub fn read_all_ready_embeddings(conn: &Connection) -> Result<Vec<EmbeddingRow>,
             let heading_path: Option<String> = row.get(2)?;
             let start_line: i64 = row.get(3)?;
             let end_line: i64 = row.get(4)?;
-            let embedding_bytes: Vec<u8> = row.get(5)?;
-            Ok((chunk_id, document_path, heading_path, start_line, end_line, embedding_bytes))
+            let content: String = row.get(5)?;
+            let embedding_bytes: Vec<u8> = row.get(6)?;
+            Ok((
+                chunk_id,
+                document_path,
+                heading_path,
+                start_line,
+                end_line,
+                content,
+                embedding_bytes,
+            ))
         })
         .map_err(|e| format!("查询 embeddings 失败: {}", e))?;
 
     let mut results = Vec::new();
     for row in rows {
-        let (chunk_id, document_path, heading_path, start_line, end_line, embedding_bytes) =
+        let (chunk_id, document_path, heading_path, start_line, end_line, content, embedding_bytes) =
             row.map_err(|e| format!("读取 embedding 行失败: {}", e))?;
 
         if embedding_bytes.is_empty() {
@@ -172,11 +182,94 @@ pub fn read_all_ready_embeddings(conn: &Connection) -> Result<Vec<EmbeddingRow>,
             heading_path,
             start_line,
             end_line,
+            content,
             embedding,
         });
     }
 
     Ok(results)
+}
+
+fn refresh_document_embedding_status(conn: &Connection, chunk_id: i64) -> Result<(), String> {
+    let document_path: String = conn
+        .query_row(
+            "SELECT document_path FROM chunks WHERE id = ?1",
+            params![chunk_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("查询 chunk 所属文档失败: {}", e))?;
+
+    let total_chunks: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM chunks WHERE document_path = ?1",
+            params![document_path],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("查询文档 chunk 数失败: {}", e))?;
+
+    let ready_chunks: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) \
+             FROM chunks c \
+             JOIN chunk_embeddings ce ON c.id = ce.chunk_id \
+             WHERE c.document_path = ?1 AND ce.embedding_status = 'ready'",
+            params![document_path],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("查询 ready embedding 数失败: {}", e))?;
+
+    let error_chunks: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) \
+             FROM chunks c \
+             JOIN chunk_embeddings ce ON c.id = ce.chunk_id \
+             WHERE c.document_path = ?1 AND ce.embedding_status = 'error'",
+            params![document_path],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("查询 error embedding 数失败: {}", e))?;
+
+    let stale_chunks: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) \
+             FROM chunks c \
+             JOIN chunk_embeddings ce ON c.id = ce.chunk_id \
+             WHERE c.document_path = ?1 AND ce.embedding_status = 'stale'",
+            params![document_path],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("查询 stale embedding 数失败: {}", e))?;
+
+    let unavailable_chunks: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) \
+             FROM chunks c \
+             JOIN chunk_embeddings ce ON c.id = ce.chunk_id \
+             WHERE c.document_path = ?1 AND ce.embedding_status = 'unavailable'",
+            params![document_path],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("查询 unavailable embedding 数失败: {}", e))?;
+
+    let status = if total_chunks > 0 && ready_chunks == total_chunks {
+        "ready"
+    } else if error_chunks > 0 {
+        "error"
+    } else if stale_chunks > 0 {
+        "stale"
+    } else if unavailable_chunks > 0 {
+        "unavailable"
+    } else {
+        "pending"
+    };
+
+    conn.execute(
+        "UPDATE documents SET embedding_status = ?1 WHERE path = ?2",
+        params![status, document_path],
+    )
+    .map_err(|e| format!("更新文档 embedding_status 失败: {}", e))?;
+
+    Ok(())
 }
 
 // ── Commands ──
@@ -232,6 +325,8 @@ pub fn store_chunk_embedding(
     )
     .map_err(|e| format!("存储 chunk embedding 失败: {}", e))?;
 
+    refresh_document_embedding_status(&conn, chunk_id)?;
+
     Ok(())
 }
 
@@ -256,17 +351,23 @@ pub fn semantic_search(
         .map(|row| {
             let score = cosine_similarity(&query_embedding, &row.embedding);
             SemanticSearchResult {
+                chunk_id: row.chunk_id,
                 document_path: row.document_path,
                 heading_path: row.heading_path,
                 start_line: row.start_line,
                 end_line: row.end_line,
+                content: row.content,
                 similarity_score: score,
             }
         })
         .collect();
 
     // Sort by similarity descending
-    scored.sort_by(|a, b| b.similarity_score.partial_cmp(&a.similarity_score).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| {
+        b.similarity_score
+            .partial_cmp(&a.similarity_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     scored.truncate(limit as usize);
 
     Ok(scored)
@@ -307,7 +408,11 @@ pub fn find_similar_chunks(
         })
         .collect();
 
-    scored.sort_by(|a, b| b.similarity_score.partial_cmp(&a.similarity_score).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| {
+        b.similarity_score
+            .partial_cmp(&a.similarity_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     scored.truncate(limit as usize);
 
     Ok(scored)
@@ -376,13 +481,18 @@ pub fn suggest_context_pack_candidates(
                 heading_path: row.heading_path,
                 start_line: row.start_line,
                 end_line: row.end_line,
+                content: row.content,
                 similarity_score: score,
                 selected_reason: "semantic_similarity".to_string(),
             }
         })
         .collect();
 
-    scored.sort_by(|a, b| b.similarity_score.partial_cmp(&a.similarity_score).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| {
+        b.similarity_score
+            .partial_cmp(&a.similarity_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     scored.truncate(limit as usize);
 
     Ok(scored)
@@ -410,6 +520,8 @@ pub fn mark_embedding_stale(vault_path: String, chunk_id: i64) -> Result<(), Str
             chunk_id
         ));
     }
+
+    refresh_document_embedding_status(&conn, chunk_id)?;
 
     Ok(())
 }
@@ -455,6 +567,8 @@ pub fn mark_embedding_error(vault_path: String, chunk_id: i64) -> Result<(), Str
             chunk_id
         ));
     }
+
+    refresh_document_embedding_status(&conn, chunk_id)?;
 
     Ok(())
 }

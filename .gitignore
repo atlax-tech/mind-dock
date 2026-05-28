@@ -2,6 +2,8 @@
 
 # Local Codex / Trae workspace state
 .trae/
+.claude/
+CLAUDE.md
 
 # Rebuild should start from a clean workspace
 apps/

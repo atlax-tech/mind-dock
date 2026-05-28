@@ -40,6 +40,8 @@ pub fn run() {
             ai_runtime::ollama_check_connection,
             ai_runtime::ollama_chat,
             ai_runtime::ollama_embed,
+            ai_runtime::spark_check_connection,
+            ai_runtime::spark_chat,
             ai_runtime::read_ai_config,
             ai_runtime::write_ai_config,
             ai_runtime::read_onboarding_status,

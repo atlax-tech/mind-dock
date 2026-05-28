@@ -2,21 +2,25 @@ import { invoke } from '@tauri-apps/api/core';
 
 /** FTS 全文搜索结果（对应 Rust SearchResult） */
 export interface SearchResult {
+  chunk_id: number;
   document_path: string;
   heading_path: string | null;
   start_line: number;
   end_line: number;
+  content: string;
   snippet: string;
   rank: number;
 }
 
 /** 混合搜索结果（对应 Rust SearchDocumentResult） */
 export interface SearchDocumentResult {
+  chunk_id: number;
   document_title: string | null;
   document_path: string;
   heading_path: string | null;
   start_line: number;
   end_line: number;
+  content: string;
   snippet: string;
   source: string; // "fts" or "semantic"
   rank: number;

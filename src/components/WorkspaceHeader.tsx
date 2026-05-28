@@ -1,4 +1,4 @@
-import { Pin, MessageSquare, Layers } from 'lucide-react';
+import { Pin, MessageSquare, Layers, Settings } from 'lucide-react';
 
 export type WorkspaceView = 'editor' | 'mindview' | 'health' | 'diff';
 
@@ -8,9 +8,10 @@ interface WorkspaceHeaderProps {
   onMentorDockToggle: () => void;
   onNotificationsOpen: () => void;
   onCreateStickyNote?: () => void;
+  onOpenSettings?: () => void;
 }
 
-export function WorkspaceHeader({ currentView, onViewChange, onMentorDockToggle, onNotificationsOpen, onCreateStickyNote }: WorkspaceHeaderProps) {
+export function WorkspaceHeader({ currentView, onViewChange, onMentorDockToggle, onNotificationsOpen, onCreateStickyNote, onOpenSettings }: WorkspaceHeaderProps) {
 
   const viewLabel = currentView === 'editor'
     ? '编辑器'
@@ -73,6 +74,14 @@ export function WorkspaceHeader({ currentView, onViewChange, onMentorDockToggle,
           className={`p-1 border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-md text-stone-400 hover:bg-[#f0ece2] dark:hover:bg-[#2a2a2a]`}
         >
           <Layers size={12} />
+        </button>
+
+        <button
+          onClick={onOpenSettings}
+          className={`p-1 border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-md text-stone-400 hover:bg-[#f0ece2] dark:hover:bg-[#2a2a2a]`}
+          title="设置"
+        >
+          <Settings size={12} />
         </button>
       </div>
     </header>

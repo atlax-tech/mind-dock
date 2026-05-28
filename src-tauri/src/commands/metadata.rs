@@ -28,8 +28,7 @@ fn get_db_path(vault_path: &str) -> Result<std::path::PathBuf, String> {
     let minddock_dir = vault.join(".minddock");
 
     // 确保 .minddock 目录存在
-    fs::create_dir_all(&minddock_dir)
-        .map_err(|e| format!("创建 .minddock 目录失败: {}", e))?;
+    fs::create_dir_all(&minddock_dir).map_err(|e| format!("创建 .minddock 目录失败: {}", e))?;
 
     Ok(minddock_dir.join("metadata.db"))
 }
@@ -42,8 +41,7 @@ pub fn open_db(vault_path: &str) -> Result<Connection, String> {
     let db_path_str = db_path.to_string_lossy().to_string();
     assert_path_inside_vault(vault_path, &db_path_str)?;
 
-    let conn = Connection::open(&db_path)
-        .map_err(|e| format!("打开数据库失败: {}", e))?;
+    let conn = Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
 
     // 启用外键约束
     conn.execute_batch("PRAGMA foreign_keys = ON;")
@@ -136,12 +134,7 @@ pub fn upsert_document_metadata(
         .query_row(
             "SELECT content_hash, created_at FROM documents WHERE path = ?1",
             params![document_path],
-            |row| {
-                Ok((
-                    row.get::<_, Option<String>>(0)?,
-                    row.get::<_, String>(1)?,
-                ))
-            },
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
         )
         .ok();
 
@@ -185,10 +178,7 @@ pub fn upsert_document_metadata(
 
 /// 删除文档元数据及其所有关联数据
 #[command]
-pub fn delete_document_metadata(
-    vault_path: String,
-    document_path: String,
-) -> Result<(), String> {
+pub fn delete_document_metadata(vault_path: String, document_path: String) -> Result<(), String> {
     assert_path_inside_vault(&vault_path, &document_path)?;
 
     let conn = open_db(&vault_path)?;
@@ -365,9 +355,26 @@ pub fn list_documents_metadata(vault_path: String) -> Result<Vec<DocumentRecord>
 /// 运行 verify-index.sh 脚本验证索引完整性
 #[command]
 pub fn run_verify_index(vault_path: String) -> Result<String, String> {
-    let script_path = std::env::current_dir()
-        .map(|p| p.join("scripts/verify-index.sh"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("scripts/verify-index.sh"));
+    let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let candidates = [
+        current_dir.join("scripts/verify-index.sh"),
+        current_dir.join("../scripts/verify-index.sh"),
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/verify-index.sh"),
+    ];
+    let script_path = candidates
+        .iter()
+        .find(|path| path.exists())
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "未找到 verify-index.sh，已检查路径: {}",
+                candidates
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
 
     let output = std::process::Command::new("bash")
         .arg(&script_path)

@@ -186,7 +186,7 @@ export function OnboardingPanel({ open, onClose }: OnboardingPanelProps) {
     setConnectionResult(null);
     setConnectionError(null);
     try {
-      const nextConfig = { endpoint, default_model: config.default_model, embedding_model: config.embedding_model };
+      const nextConfig = { ...config, endpoint, default_model: config.default_model, embedding_model: config.embedding_model };
       await updateConfig(nextConfig);
       const result = await aiRuntimeService.checkConnection(endpoint);
       if (!result.connected) {
@@ -212,7 +212,7 @@ export function OnboardingPanel({ open, onClose }: OnboardingPanelProps) {
     try {
       // 保存 AI 配置（如果有模型选择）
       if (model) {
-        await updateConfig({ endpoint, default_model: model, embedding_model: null });
+        await updateConfig({ ...config, endpoint, default_model: model });
       }
 
       // 创建知识库结构（如果用户接受了推荐）

@@ -1,4 +1,4 @@
-use crate::commands::metadata::{open_db, create_tables};
+use crate::commands::metadata::{create_tables, open_db};
 use crate::commands::vault::assert_path_inside_vault;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -197,12 +197,12 @@ fn write_chunks_to_db(
         .map_err(|e| format!("插入 FTS 记录失败: {}", e))?;
     }
 
-    // 更新 documents.index_status
+    // 更新 documents.index_status，并在重建 chunks 后重置语义索引状态。
     conn.execute(
-        "UPDATE documents SET index_status = 'indexed' WHERE path = ?1",
+        "UPDATE documents SET index_status = 'indexed', embedding_status = 'pending' WHERE path = ?1",
         params![document_path],
     )
-    .map_err(|e| format!("更新 index_status 失败: {}", e))?;
+    .map_err(|e| format!("更新 index_status/embedding_status 失败: {}", e))?;
 
     Ok(chunks.len())
 }

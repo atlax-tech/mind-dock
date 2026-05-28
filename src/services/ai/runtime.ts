@@ -1,5 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 
+export type AIProvider = 'ollama' | 'custom_api' | 'spark_codingplan';
+
 export interface OllamaModel {
   name: string;
   size: number | null;
@@ -35,6 +37,10 @@ export interface AIConfig {
   endpoint: string;
   default_model: string | null;
   embedding_model: string | null;
+  provider?: AIProvider;
+  spark_base_url?: string | null;
+  spark_api_key?: string | null;
+  spark_model?: string | null;
 }
 
 export const aiRuntimeService = {
@@ -48,6 +54,23 @@ export const aiRuntimeService = {
 
   async embed(endpoint: string, model: string, input: string): Promise<OllamaEmbedResult> {
     return invoke<OllamaEmbedResult>('ollama_embed', { endpoint, model, input });
+  },
+
+  async customApiCheckConnection(baseUrl: string, apiKey: string): Promise<OllamaConnectionResult> {
+    return invoke<OllamaConnectionResult>('spark_check_connection', { baseUrl, apiKey });
+  },
+
+  async customApiChat(baseUrl: string, apiKey: string, model: string, messages: ChatMessage[], promptType: string): Promise<OllamaChatResult> {
+    return invoke<OllamaChatResult>('spark_chat', { baseUrl, apiKey, model, messages, promptType });
+  },
+
+  // Backward-compatible aliases
+  async sparkCheckConnection(baseUrl: string, apiKey: string): Promise<OllamaConnectionResult> {
+    return invoke<OllamaConnectionResult>('spark_check_connection', { baseUrl, apiKey });
+  },
+
+  async sparkChat(baseUrl: string, apiKey: string, model: string, messages: ChatMessage[], promptType: string): Promise<OllamaChatResult> {
+    return invoke<OllamaChatResult>('spark_chat', { baseUrl, apiKey, model, messages, promptType });
   },
 
   async readAIConfig(vaultPath: string): Promise<AIConfig> {

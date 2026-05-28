@@ -2,6 +2,851 @@
 
 ---
 
+## Phase 4 Upgrade+Round 11 devlog -- Context Pack 去卡片化紧凑视图
+
+**日期**: 2026-05-28
+**任务起始时间**: 10:01
+**任务结束时间**: 10:04
+**工时**: 3 分钟
+
+### 任务目标
+
+根据用户体验反馈，调整 Platter 中 Context Pack 视图。当前空状态和内容区使用多层卡片模块化布局，在窄侧栏中显得拥挤；本轮只做升级文档范围内的 Pack 管理视图体验修正，不改变 Context Pack 数据结构、推荐逻辑或输出生成能力。
+
+具体目标：
+1. 移除 Context Pack 面板外层卡片容器
+2. 移除 Pack item 的卡片边框
+3. 使用分区分隔线和紧凑列表代替卡片堆叠
+4. 保留新建、重命名、删除、导出、生成提示词、推荐加入等现有操作
+
+### 改动的文件名以及改动的行数
+
+| 文件 | 操作 | 行数 | 说明 |
+|---|---|---:|---|
+| `src/modules/context-pack/ContextPackPanel.tsx` | 修改 | +25/-20 行 | 根容器改为 divide 分区；Pack 列表/当前 Pack/推荐内容从 rounded card 改为 section；空状态去掉大图标卡片感；Pack 条目改为分隔线列表；推荐条目改为左侧强调线 |
+
+### 遇到的问题以及解决方式
+
+1. **卡片嵌套导致窄侧栏拥挤**：原布局中 Pack 列表、当前 Pack、推荐内容都是独立圆角卡片，条目本身也有圆角边框。解决方式：外层统一改为 `divide-y` 分区，条目改为 `py-2` 列表行。
+
+2. **仍需保留可识别状态**：完全去掉视觉层次会降低可扫读性。解决方式：当前 Pack 用左侧 2px emerald 线和浅背景表示选中；推荐项用 amber 左边线表示推荐来源。
+
+### 自动验证结果
+
+```bash
+$ npm run typecheck
+# exit 0，无 TypeScript 错误
+
+$ npm run build
+# built in 951ms，exit 0
+# 仍有 Vite 大 chunk / ineffective dynamic import warning，属于既有构建提示，不阻塞本轮视图修正
+```
+
+### 手工验证步骤说明
+
+1. 打开 Platter -> 上下文包
+2. 空状态下应不再显示一个大圆角卡片，只显示轻量分区和说明文字
+3. 有 Pack 时，Pack 列表应是紧凑列表，当前 Pack 通过左侧绿线识别
+4. Pack 条目应按分隔线排列，不再每条都有卡片边框
+5. 推荐内容应以左侧 amber 线标识，不再是独立卡片
+6. 新建、重命名、删除、导出、生成提示词、加入推荐按钮应保持可用
+
+### 当前风险，以及影响范围
+
+1. **未做截图级视觉回归**：本轮通过 typecheck/build 验证代码正确性，但未启动应用截图检查。影响范围：可能仍需根据实际侧栏宽度微调间距。
+2. **影响范围**：只影响 `ContextPackPanel` 视觉布局，不影响 Pack 数据、搜索、推荐、导出或 AI 生成。
+
+---
+
+## Phase 4 Upgrade+Round 10 devlog -- 搜索准确性：全量文档入索引与标题优先
+
+**日期**: 2026-05-28
+**任务起始时间**: 09:55
+**任务结束时间**: 09:59
+**工时**: 4 分钟
+
+### 任务目标
+
+根据用户手工验证反馈，修复 Command Palette 搜索“产品需求文档”时优先返回 RB-P4-001_upgrade 的不准确结果。问题定位为当前 metadata/chunks/FTS 只收录了 RB-P4-001_upgrade，一个真实存在的文档文件没有进入索引；同时搜索后端缺少标题/路径精确匹配优先策略。
+
+具体目标：
+1. Settings 重建索引前同步文件树中的所有 Markdown 到 metadata DB
+2. 重建索引覆盖所有已发现文档，而不是只覆盖旧 metadata 中已有记录
+3. 搜索后端增加标题/路径匹配结果，并排在 FTS/semantic 之前
+4. Command Palette 对标题匹配结果显示“标题”来源标签
+
+### 改动的文件名以及改动的行数
+
+| 文件 | 操作 | 行数 | 说明 |
+|---|---|---:|---|
+| `src/modules/settings/SettingsPanel.tsx` | 修改 | +59/-6 行 | 引入 docTree、documentService、frontmatter 解析；重建索引前遍历文件树所有 `.md`，读取内容、同步 title/frontmatter/hash/wordCount 到 metadata，再执行 reindex/embedding |
+| `src-tauri/src/commands/search.rs` | 修改 | +102/-18 行 | `search_documents` 增加 title/path LIKE 查询，精确标题 rank 最高；标题结果与 FTS 结果去重合并；返回 source=`title` |
+| `src/modules/command-palette/CommandPalette.tsx` | 修改 | +6/-2 行 | 搜索结果 source badge 增加 `title -> 标题`，让用户能识别标题命中 |
+
+### 遇到的问题以及解决方式
+
+1. **当前索引只收录 1 个文档**：本地查询 `/Users/qilong.lu/WorkDir/MindDock/.minddock/metadata.db` 发现 `documents/chunks/chunks_fts` 只有 `RB-P4-001_upgrade.md`，而截图中打开的 `产品需求文档（PRD）.md` 文件真实存在但没有索引记录。解决方式：Settings 重建索引不再只依赖 `listDocumentsMetadata`，而是先从 `docTree` 扁平化出所有 Markdown 文件，逐个读取内容并 upsert metadata。
+
+2. **文档名搜索没有标题优先**：原 `search_documents` 只查 FTS chunk 内容，缺少 `documents.title/path` 的直接匹配。解决方式：后端先执行标题/路径 LIKE 查询，精确标题 rank=-100，标题包含 rank=-50，路径包含 rank=-25，再合并 FTS 结果。
+
+3. **标题结果需要可识别来源**：新增 source=`title` 后，Command Palette 默认会显示英文 source。解决方式：source badge 增加“标题”标签。
+
+### 自动验证结果
+
+```bash
+$ cd src-tauri && rustfmt --check src/commands/search.rs
+# exit 0
+
+$ npm run typecheck
+# exit 0，无 TypeScript 错误
+
+$ cd src-tauri && cargo check
+# Finished dev profile，exit 0
+
+$ npm run build
+# built in 1.00s，exit 0
+# 仍有 Vite 大 chunk / ineffective dynamic import warning，属于既有构建提示，不阻塞本轮修复
+```
+
+### 手工验证步骤说明
+
+1. 打开 Settings -> Knowledge Engine，点击“重建索引”
+2. 重建完成后，全文索引文档数应接近左侧 documents 文件树中的 Markdown 文件数量，不应只显示 1 或 2 个历史 metadata 文档
+3. 打开 Command Palette，搜索“产品需求文档”
+4. 预期第一条结果为 `产品需求文档（PRD）`，来源标签为“标题”
+5. 搜索 RB-P4-001 相关词时，预期仍能返回 RB-P4-001_upgrade，说明原 FTS/semantic 路径未被破坏
+
+### 当前风险，以及影响范围
+
+1. **需要用户执行一次重建索引**：本轮修复了重建逻辑，但已有 vault 的 metadata 不会自动补齐，需在 Settings 点击“重建索引”后生效。影响范围：当前已存在但未入库的文档。
+2. **标题匹配依赖 metadata 同步**：如果文档未经过本轮重建或创建/保存同步，标题匹配仍无法命中该文档。影响范围：搜索召回。
+3. **影响范围**：只调整 Phase4 搜索与索引入口，不改变语义搜索算法、不引入 MindView/健康报告等后续阶段能力。
+
+---
+
+## Phase 4 Upgrade+Round 9 devlog -- verify-index 误报与 Settings 输出乱码修复
+
+**日期**: 2026-05-28
+**任务起始时间**: 09:51
+**任务结束时间**: 09:54
+**工时**: 3 分钟
+
+### 任务目标
+
+根据用户第二次手工验证反馈，修复 `验证索引` 已能执行但仍显示失败的问题。经本地复现，语义索引已 ready，失败来自 verify-index 脚本自身的两个误报与 ANSI 颜色码在 Settings 中显示为乱码。
+
+具体目标：
+1. 修复 personalization-signals.jsonl 合法 JSONL 被误判 invalid 的问题
+2. 修复 context-packs.json 引用真实存在文件但 metadata DB 未收录时被误判 invalid 的问题
+3. 让 verify-index 在 Settings 非 TTY 环境下输出纯文本，避免颜色码乱码
+
+### 改动的文件名以及改动的行数
+
+| 文件 | 操作 | 行数 | 说明 |
+|---|---|---:|---|
+| `scripts/verify-index.sh` | 修改 | +16/-7 行 | 颜色输出改为仅 TTY 且未设置 NO_COLOR 时启用；JSONL trim 不再使用 `xargs`，避免吞掉双引号；Context Pack 引用校验改为 metadata DB 或文件存在任一满足即通过 |
+
+### 遇到的问题以及解决方式
+
+1. **JSONL 校验误报**：脚本使用 `line=$(echo "$line" | xargs)` 做 trim，`xargs` 会移除 JSON 字符串的双引号，导致合法 JSONL 行变成 `{action_type:...}` 后被 `jq` 判 invalid。解决方式：改用 bash 参数展开裁剪首尾空白，保留原始 JSON 引号。
+
+2. **Context Pack 引用误报**：当前 vault 中 `context-packs.json` 引用了 `/Users/qilong.lu/WorkDir/MindDock/documents/产品需求文档（PRD）.md`，该文件真实存在，但 metadata DB 当前只收录了 2 个文档，因此脚本按 DB 查询判为失败。解决方式：引用校验改为 DB 存在或文件存在任一通过，避免把 metadata 覆盖范围问题误判为 Pack 源文件丢失。
+
+3. **Settings 输出 ANSI 颜色码乱码**：脚本无条件输出颜色码，Tauri invoke 捕获 stdout 后原样显示，导致 UI 中出现 `[0;32m`。解决方式：只有 stdout 是 TTY 且未设置 `NO_COLOR` 时启用颜色；Settings/后端捕获环境下自动输出纯文本。
+
+### 自动验证结果
+
+```bash
+$ bash scripts/verify-index.sh /Users/qilong.lu/WorkDir/MindDock; echo EXIT:$?
+# Verification PASSED: 16 pass(es), 0 warning(s), 0 failure(s)
+# EXIT:0
+
+$ bash -n scripts/verify-index.sh
+# exit 0
+
+$ npm run typecheck
+# exit 0，无 TypeScript 错误
+
+$ cd src-tauri && cargo check
+# Finished dev profile，exit 0
+```
+
+### 手工验证步骤说明
+
+1. 打开 Settings -> Knowledge Engine，点击“验证索引”
+2. 预期结果区显示纯文本 `[PASS]` / `[INFO]`，不再出现 ANSI 颜色码乱码
+3. 预期最终显示 `Verification PASSED: 16 pass(es), 0 warning(s), 0 failure(s)`
+4. 预期 Settings 不再在开头显示“验证失败”
+
+### 当前风险，以及影响范围
+
+1. **metadata DB 覆盖范围仍需单独治理**：当前脚本允许 Context Pack 引用文件存在即通过，但 metadata DB 只收录 2 个文档而文件夹实际有更多文档。影响范围：不是本轮 verify 误报阻塞，但会影响全库搜索覆盖范围。
+2. **影响范围**：只修复 verify-index 脚本误报和 Settings 输出可读性，不改变索引数据结构、不清理用户 vault 数据。
+
+---
+
+## Phase 4 Upgrade+Round 8 devlog -- Settings 语义索引启用与 verify-index 路径修复
+
+**日期**: 2026-05-28
+**任务起始时间**: 09:45
+**任务结束时间**: 09:50
+**工时**: 5 分钟
+
+### 任务目标
+
+根据用户手工验证反馈，修复 Settings 中“语义搜索未开启”和“验证索引失败”的两个 Phase4 验收阻塞点。问题限定在索引验证入口与 Settings 重建索引流程，不扩展升级文档外功能。
+
+具体目标：
+1. 修复 `run_verify_index` 在 Tauri 运行目录下找不到 `scripts/verify-index.sh` 的问题
+2. 让 Settings 的“重建索引”在 AI/embedding 可用时同时生成 chunk embeddings
+3. 让文档级 `embedding_status` 随 chunk embedding 写入自动更新为 ready/pending/error/stale/unavailable
+4. 重建 chunks 后将文档语义索引状态重置为 pending，避免旧 ready 状态误导
+
+### 改动的文件名以及改动的行数
+
+| 文件 | 操作 | 行数 | 说明 |
+|---|---|---:|---|
+| `src-tauri/src/commands/metadata.rs` | 修改 | +24/-17 行 | `run_verify_index` 从单一路径改为多候选查找：当前目录 scripts、父级 scripts、Cargo manifest 父级 scripts；找不到时返回已检查路径 |
+| `src-tauri/src/commands/chunking.rs` | 修改 | +4/-4 行 | 文档 reindex/chunk 写入后同时将 `embedding_status` 重置为 `pending` |
+| `src-tauri/src/commands/vector_index.rs` | 修改 | +125/-11 行 | 新增 `refresh_document_embedding_status`，根据文档 chunks 的 embedding 状态汇总更新 documents.embedding_status；store/stale/error 后刷新文档级状态 |
+| `src/modules/settings/SettingsPanel.tsx` | 修改 | +18/-5 行 | Settings 重建索引时，AI 已连接则对每个 chunk 调用 `embedAndStore`；进度文案区分全文索引和语义向量生成；单个 chunk embedding 失败不阻断全文索引 |
+
+### 遇到的问题以及解决方式
+
+1. **验证索引脚本路径错误**：截图显示后端尝试执行 `/src-tauri/scripts/verify-index.sh`，但仓库实际脚本位于根目录 `scripts/verify-index.sh`。解决方式：`run_verify_index` 改为按多个候选路径查找，兼容从仓库根目录或 `src-tauri` 目录启动的 Tauri 运行环境。
+
+2. **Settings 重建索引只重建 FTS/chunks**：当前 `handleRebuildIndex` 只调用 `chunkingService.reindexDocument`，不会调用 embedding，因此 UI 仍显示“语义搜索未开启”。解决方式：在 AI Runtime `status === 'connected'` 时，对重建后的 chunks 调用 `embedAndStore`，将向量写入 `chunk_embeddings`。
+
+3. **文档级 embedding_status 没有随 chunk_embeddings 更新**：即使 chunk embeddings 写入 ready，Settings 统计读取的是 `documents.embedding_status`，原代码没有在 `store_chunk_embedding` 后同步 documents 状态。解决方式：后端新增文档级状态汇总函数，ready chunks 覆盖全部 chunks 时把文档标记为 ready；有 error/stale/unavailable 时按状态汇总，否则 pending。
+
+4. **重建 chunks 后旧语义状态可能残留**：reindex 删除旧 chunk embeddings 后，documents.embedding_status 若不重置，可能显示过期 ready。解决方式：chunk 写库完成后把文档语义状态重置为 pending，等待新的 embedding 写入后再更新为 ready。
+
+### 自动验证结果
+
+```bash
+$ cd src-tauri && rustfmt --check src/commands/metadata.rs src/commands/chunking.rs src/commands/vector_index.rs
+# exit 0，本轮 Rust 改动文件格式通过
+
+$ npm run typecheck
+# exit 0，无 TypeScript 错误
+
+$ cd src-tauri && cargo check
+# Finished dev profile，exit 0
+
+$ npm run build
+# built in 1.00s，exit 0
+# 仍有 Vite 大 chunk / ineffective dynamic import warning，属于既有构建提示，不阻塞本轮修复
+```
+
+### 手工验证步骤说明
+
+1. 打开 Settings -> 索引状态，点击“验证索引”，预期不再报 `src-tauri/scripts/verify-index.sh: No such file or directory`，而是返回 verify-index 脚本的 PASS/WARN/FAIL 明细。
+2. 确认 AI Runtime 已连接且 embedding 模型可用，点击“重建索引”，预期进度先显示“重建全文索引”，随后显示“生成语义向量”。
+3. 重建结束后，Settings 中“语义索引”预期从“语义搜索未开启”变为 `N / N 文档已生成语义向量`。
+4. 重建结束后再点击“验证索引”，预期脚本中 `Semantic search available: <n> ready embedding(s)` 为 PASS。
+5. 若 AI 未连接或 embedding 服务不可用，预期全文索引仍可完成，语义索引保持 pending/未开启，不影响验证脚本路径修复。
+
+### 当前风险，以及影响范围
+
+1. **语义索引依赖 embedding 服务真实可用**：Settings 现在会尝试生成 embeddings，但如果当前使用自定义 reasoning provider 且本地 Ollama embedding endpoint 不可用，语义索引仍不会 ready。影响范围：语义搜索状态，不影响全文索引。
+2. **单个 chunk embedding 失败后文档可能保持 pending**：当前失败时不阻断重建流程，避免全文索引被 AI 服务问题拖垮。影响范围：该文档的语义搜索覆盖率。
+3. **影响范围**：仅修复 Phase4 Settings 索引验收链路，不改变 embedding provider 架构，不引入新的索引策略。
+
+---
+
+## Phase 4 Upgrade+Round 7 devlog -- 查缺补漏：chunk 链路、Pack 内容与 Mentor 可操作性
+
+**日期**: 2026-05-28
+**任务起始时间**: 09:13
+**任务结束时间**: 09:44
+**工时**: 31 分钟
+
+### 任务目标
+
+根据 RB-P4-001 升级文档、产品文档与 Phase4 既有 dev log，对 Phase4 Upgrade Round 1-6 的实现做查缺补漏。只补齐升级文档中已要求但当前实现缺失的任务，不回滚符合升级路线的改动，不新增升级文档外功能。
+
+具体目标：
+1. 补齐搜索结果、语义搜索结果、Pack 推荐候选的 chunk_id 与内容链路
+2. 修复文档级 Pack 只有 metadata、导出/生成上下文不足的问题
+3. 修复 Pack 推荐卡片没有内容预览、接受推荐后内容为空的问题
+4. 修正 Mentor 默认同时展开多个高优先级抽屉的问题，并让最近建议可操作
+5. 修正 Settings 中连接测试可能使用旧配置的问题
+
+### 改动的文件名以及改动的行数
+
+| 文件 | 操作 | 行数 | 说明 |
+|---|---|---:|---|
+| `src-tauri/src/commands/search.rs` | 修改 | +34/-16 行 | FTS/search_documents 返回 chunk_id、content、rank；搜索结果可直接关联 chunks |
+| `src-tauri/src/commands/vector_index.rs` | 修改 | +37/-11 行 | SemanticSearchResult 与 ContextPackCandidate 返回 chunk_id/content；read_all_ready_embeddings 读取 chunk 内容；仅格式化本轮改动文件 |
+| `src/services/index/search.ts` | 修改 | +4 行 | SearchResult/SearchDocumentResult 类型同步 chunk_id/content |
+| `src/services/index/vector.ts` | 修改 | +3 行 | SemanticSearchResult/CandidateResult 类型同步 chunk_id/content |
+| `src/modules/command-palette/CommandPalette.tsx` | 修改 | +4/-2 行 | 语义搜索结果带 chunk_id/content；打开搜索结果时记录 chunk_id 信号 |
+| `src/app/AppShell.tsx` | 修改 | 约 +88/-10 行 | 新增文档 Pack snapshot（前 3 个 chunk，最多 6000 字）；文档/文件夹生成与加入 Pack 时写入 content/heading/line/chunk_id；选区根据行号匹配 chunk_id；搜索结果加入 Pack 时保存 chunk_id/content/score |
+| `src/modules/context-pack/ContextPackPanel.tsx` | 修改 | +11/-4 行 | 推荐候选保存 content；推荐卡片显示内容预览；接受推荐写入 content/heading/chunk_id；个性化信号记录 chunk_id |
+| `src/components/MentorDock.tsx` | 修改 | +24/-2 行 | 有 trigger 时默认只展开“待判断”并收起“当前建议”；最近建议增加“采纳/忽略”动作 |
+| `src/modules/ai/AIRuntimeProvider.tsx` | 修改 | +9/-8 行 | checkConnection 支持传入本次草稿配置，避免立即测试时读到旧 state |
+| `src/modules/settings/SettingsPanel.tsx` | 修改 | +2/-2 行 | “检测连接”保存配置后用 nextConfig 直接测试 |
+
+> 说明：`src/app/AppShell.tsx` 当前工作区 diff 同时包含前序 Round 5/6 未提交内容，本表只记录本轮实际补漏范围。
+
+### 遇到的问题以及解决方式
+
+1. **M4 dev log 写了“搜索结果保存 chunk_id”，但当前代码仍保存 null**：读取 Round 4 dev log 后确认目标已列出，但当时只给 PackItem 扩字段，搜索后端类型并没有返回 chunk_id，导致 AppShell 只能写 null。解决方式：在 Rust `search.rs` 中把 `chunks.id`、`chunks.content`、`bm25` rank 一并返回，前端 SearchDocumentResult 同步字段，加入 Pack 时保存 chunk_id/content/score。
+
+2. **语义搜索与 Pack 推荐缺少内容预览**：升级文档要求“推荐卡片展示内容预览，用户可加入/忽略”，但后端候选只返回路径、heading、line 和 score。解决方式：vector index 读取 ready embeddings 时同时读取 chunk content，SemanticSearchResult/ContextPackCandidate 返回 content，ContextPackPanel 渲染内容预览并在接受推荐时写入 Pack item。
+
+3. **文档级 Pack 缺少正文上下文**：升级文档已指出“文档级 Pack 缺 content，summary 为空时导出上下文不足”。Round 4 dev log 的解决只覆盖“文档级 item 反查 chunks 用于推荐”，没有让 Pack item 本身带内容。解决方式：AppShell 创建文档/文件夹 Pack item 时读取该文档前 3 个 chunks，最多 6000 字，写入 content、heading、line、chunk_id，保证导出和 OutputGenerator 至少有可用正文。
+
+4. **选区 Pack item 没有 chunk_id**：选区本身有内容，但没有 chunk_id 会降低后续推荐质量。解决方式：根据选区 startLine/endLine 查找重叠 chunk，写入 chunk_id 和 heading；找不到 chunk 时保持 null，不阻断用户动作。
+
+5. **Mentor 默认展开逻辑与升级文档不一致**：Round 2 dev log 说明已做抽屉，但当前实现有 trigger 时“当前建议”和“待判断”会同时默认展开。解决方式：hasTriggers 为 true 时只展开“待判断”，并收起“当前建议”；trigger 消失后恢复“当前建议”默认展开。
+
+6. **最近建议缺少动作**：升级文档要求建议必须可被采纳/忽略/转任务/生成草稿，当前最近建议只有状态展示。解决方式：对 pending 建议增加“采纳/忽略”，调用既有 updateSuggestionStatus，不新增数据结构。
+
+7. **Settings 检测连接可能用旧配置**：点击检测时先 updateConfig 再 checkConnection，但 React state 不保证同步，可能仍使用旧 baseUrl/API key。解决方式：AIRuntimeProvider 的 checkConnection 支持 overrideConfig，Settings 传入刚保存的 nextConfig。
+
+8. **全仓 cargo fmt --check 失败**：失败来自大量既有 Rust 文件格式差异，超出本轮补漏边界。解决方式：不做全仓格式化，避免无关 churn；只对本轮修改的 `search.rs` 和 `vector_index.rs` 执行 rustfmt，并单独通过 `rustfmt --check`。
+
+### 自动验证结果
+
+```bash
+$ npm run typecheck
+# exit 0，无 TypeScript 错误
+
+$ cd src-tauri && rustfmt --check src/commands/search.rs src/commands/vector_index.rs
+# exit 0，本轮 Rust 改动文件格式通过
+
+$ cd src-tauri && cargo check
+# Finished dev profile，exit 0
+
+$ npm run build
+# built in 1.16s，exit 0
+# 仍有 Vite 大 chunk / ineffective dynamic import warning，属于现有构建提示，不阻塞本轮补漏
+```
+
+### 手工验证步骤说明
+
+1. 在 Command Palette 搜索任意内容，点击结果右侧“加入上下文包”，期望 Pack item 带有正文内容、位置、chunk_id，并在 Pack 中可显示内容预览
+2. 在 AI 已连接且 embedding ready 的 vault 中执行语义搜索，期望语义结果加入 Pack 后同样带 chunk_id/content/score
+3. 在已有 Pack 中加入一个文档，期望“推荐内容”卡片显示相关度、位置和内容预览；点击加入后 Pack item 有正文，不再是空 content
+4. 右键文档或文件夹选择“生成...”，输入意图创建草稿 Pack，期望初始来源 item 至少包含前 3 个 chunk 的正文 snapshot
+5. 在编辑器选中一段文字加入 Pack 或“从此生成...”，期望 item 保留选区正文，并在能匹配 chunk 时保存 chunk_id/heading
+6. 触发 Mentor 待判断后打开 Platter，期望默认只展开“待判断”，不同时展开“当前建议”
+7. 打开 Mentor 的“最近建议”，对 pending 建议点击“采纳/忽略”，期望状态持久化更新
+8. 在 Settings 修改自定义 API baseUrl/API key 后立即点击“检测连接”，期望检测使用最新输入而不是旧配置
+
+### 当前风险，以及影响范围
+
+1. **FTS chunk_id 来源仍依赖既有 join 条件**：当前 FTS 表未存 chunk_id，本轮沿用 `document_path + heading_path` join chunks。若同一文档出现重复 heading_path，搜索结果可能关联到非预期 chunk。影响范围：搜索结果加入 Pack 的 chunk 精度。
+2. **文档级 Pack snapshot 是确定性截断**：当前取前 3 个 chunks、最多 6000 字，不是语义 top-k 或 LLM 压缩摘要。影响范围：长文档生成输出时，后续内容可能未进入初始 Pack。
+3. **chunk_id 可能随 reindex 失效**：既有 chunking 实现会删除并重建 chunks，旧 Pack item 的 chunk_id 可能过期。本轮未改索引持久化策略，因为升级文档未要求稳定 chunk id 迁移。影响范围：历史 Pack 的推荐质量。
+4. **文件夹生成仍沿用 Round 5 的前 10 个文档限制**：本轮没有扩展范围。影响范围：大文件夹草稿 Pack 可能不完整，但该风险已在 Round 5 dev log 记录，不构成本轮阻塞。
+5. **影响范围**：只补齐 P4 Upgrade M1/M2/M4/M5 既定验收缺口，不引入 MindView、健康报告、复杂 agent 工作流或 Pack 数据结构大改。
+
+---
+
+## Phase 4 Upgrade+Round 6 devlog -- M6 选区解释/总结与输出生成 reasoning
+
+**日期**: 2026-05-28
+**任务起始时间**: 09:00
+**任务结束时间**: 09:12
+**工时**: 12 分钟
+
+### 任务目标
+
+根据 RB-P4-001 升级文档 M6 阶段，让 P4 的"解释、总结、生成输出"真正体现 AI Mentor。选区解释/总结调用 reasoning，OutputGenerator 从确定性拼接升级为 reasoning draft + source context。
+
+具体目标：
+1. 解释选区调用 reasoning，显示真实回答
+2. 总结选区调用 reasoning，可复制结果
+3. OutputGenerator 从确定性拼接升级为 reasoning draft + source context
+4. 添加 output type 选择（prompt/PRD/SPEC/checklist）
+5. 输出中展示来源覆盖
+6. 保留用户编辑和复制
+
+### 改动的文件名以及改动的行数
+
+| 文件 | 操作 | 行数 | 说明 |
+|---|---|---:|---|
+| `src/app/AppShell.tsx` | 修改 | +95/-5 行 | 新增 reasoningResult state；handleEditorSelectionAction 改为 async；explain/summarize case 改为调用 chat reasoning 并显示结果面板；渲染区添加 ReasoningResultPanel（含来源、复制、loading 状态）；依赖数组添加 aiStatus/chat |
+| `src/modules/context-pack/OutputGenerator.tsx` | 修改 | +155/-40 行 | 重构：新增 OutputType 类型（prompt/prd/spec/checklist）和 OUTPUT_TYPES 配置；assemblePrompt 按 outputType 生成不同 Task 模板；新增 buildSystemPrompt 按 outputType 生成 reasoning system prompt；新增 useAIRuntime 获取 chat 接口；新增 outputType state/reasoningDraft state/generating state；新增"AI 生成"按钮调用 chat reasoning；新增来源覆盖 footer（显示条目数、原文/摘要统计、来源标签）；保留编辑/复制/重置功能 |
+
+### 遇到的问题以及解决方式
+
+1. **handleEditorSelectionAction 需要改为 async**：explain/summarize case 中需要 `await chat(...)`，但原函数是同步的。解决方式：将函数声明从 `useCallback((...) => {` 改为 `useCallback(async (...) => {`，并在依赖数组中添加 `aiStatus` 和 `chat`。
+
+2. **displayContent 未使用**：重构 OutputGenerator 时声明了 `const displayContent = reasoningDraft || prompt` 但未在 JSX 中使用（JSX 中直接用了 reasoningDraft 和 prompt）。解决方式：移除该变量声明。
+
+3. **heading 计算逻辑重复**：explain 和 summarize case 中都需要计算选区所在 heading，代码结构相同。当前为内联实现，后续可抽取为辅助函数。影响范围：代码重复，但不影响功能。
+
+### 自动验证结果
+
+```bash
+$ pnpm typecheck
+# exit 0，无 TypeScript 错误
+
+$ pnpm build
+# built in 777ms，exit 0
+
+$ cd src-tauri && cargo check
+# Finished dev profile，exit 0
+```
+
+### 手工验证步骤说明
+
+1. 打开应用，在编辑器中选中一段文字，右键选择"解释选区"，应弹出 Reasoning Result Panel，显示 loading 状态后展示 AI 解释结果
+2. 右键选择"总结选区"，应弹出 Reasoning Result Panel，显示 AI 总结结果
+3. AI 未连接时，解释/总结应 fallback 到打开 document-context view
+4. 结果面板底部显示来源信息（文档名 › heading）
+5. 点击"复制"按钮可复制结果
+6. 在 Platter 的 Context Pack 中点击"生成提示词"，应打开 OutputGenerator
+7. OutputGenerator 顶部显示 4 种 output type 选择（Prompt/PRD/SPEC/Checklist）
+8. 选择不同 type 后模板内容应变化
+9. 点击"AI 生成"按钮，应调用 reasoning 生成草稿
+10. 生成后内容可编辑、可复制
+11. 底部显示来源覆盖（条目数、原文/摘要统计、来源标签）
+
+### 当前风险，以及影响范围
+
+1. **reasoning prompt 较简单**：解释/总结的 system prompt 只要求简洁回答，没有传入相似 chunks 或文档摘要等更丰富的上下文。影响范围：回答可能不够精准。
+2. **OutputGenerator AI 生成无流式输出**：当前 `chat` 调用等待完整响应后才显示，大文档生成可能等待较久。影响范围：用户体验，生成过程中只能看到 loading。
+3. **AI 未连接时 OutputGenerator 的"AI 生成"按钮禁用**：用户只能看到确定性模板，无法生成 reasoning draft。影响范围：离线场景下输出质量受限。
+4. **影响范围**：不改 Pack 数据结构，不自动写回文档，不做复杂 agent 工作流。
+
+---
+
+## Phase 4 Upgrade+Round 5 devlog -- M5 就地 GenerateIntentModal 与 Pack 草稿
+
+**日期**: 2026-05-28
+**任务起始时间**: 08:50
+**任务结束时间**: 08:55
+**工时**: 5 分钟
+
+### 任务目标
+
+根据 RB-P4-001 升级文档 M5 阶段，实现就地 GenerateIntentModal 与 Pack 草稿功能。用户在任意上下文选择"生成..."后，就地输入意图，自动创建 Pack 草稿并进入 Platter 管理。
+
+具体目标：
+1. 文档树右键增加"生成..."菜单项
+2. 文件夹右键"生成上下文包"替换为"根据文件夹生成..."
+3. 编辑器选区"从此生成..."改为打开 GenerateIntentModal
+4. GenerateIntentModal 输入 output intent
+5. 创建 draft pack 并添加来源 item
+6. 打开 Pack view
+
+### 改动的文件名以及改动的行数
+
+| 文件 | 操作 | 行数 | 说明 |
+|---|---|---:|---|
+| `src/modules/context-pack/GenerateIntentModal.tsx` | 新建 | +124 行 | M5 核心组件：就地输入生成意图的模态框，支持 document/folder/selection 三种来源类型，显示来源信息、意图输入框、确认/取消按钮 |
+| `src/modules/dock/DocTree.tsx` | 修改 | +12/-4 行 | 文件右键菜单添加"生成..."菜单项（Sparkles 图标）；文件夹右键菜单"生成上下文包"改为"根据文件夹生成..."；DocEntryItem 透传 onGenerate/onGenerateFromFolder；移除 Package 图标导入 |
+| `src/components/Sidebar.tsx` | 修改 | +4/-2 行 | SidebarProps 新增 onGenerate/onGenerateFromFolder；函数参数解构和 DocTree 透传 |
+| `src/app/AppShell.tsx` | 修改 | +40/-15 行 | Sidebar 传递 onGenerate/onGenerateFromFolder 回调（打开 GenerateIntentModal）；handleEditorSelectionAction 中 generateFrom 改为打开 GenerateIntentModal（计算行号和 heading）；渲染区添加 GenerateIntentModal 组件；移除废弃的 handleGenerateFromSelection |
+
+### 遇到的问题以及解决方式
+
+1. **编辑器选区需要计算行号和 heading**：原来 `handleGenerateFromSelection` 直接创建 Pack，改为打开 GenerateIntentModal 后需要传入行号和所在 heading。解决方式：在 handleEditorSelectionAction 的 generateFrom case 中，从 activeTab.content 计算选区的 startLine/endLine，并向上搜索最近的 heading 行。
+
+2. **handleGenerateFromSelection 废弃**：改为 GenerateIntentModal 流程后，`handleGenerateFromSelection` 不再被任何地方调用。解决方式：移除该函数，handleEditorSelectionAction 的依赖数组也相应更新。
+
+3. **Package 图标不再使用**：文件夹右键菜单从"生成上下文包"（Package 图标）改为"根据文件夹生成..."（Sparkles 图标）后，Package 导入不再需要。解决方式：从 DocTree 的 lucide-react 导入中移除 Package。
+
+### 自动验证结果
+
+```bash
+$ pnpm typecheck
+# exit 0，无 TypeScript 错误
+
+$ pnpm build
+# built in 1.29s，exit 0
+
+$ cd src-tauri && cargo check
+# Finished dev profile，exit 0
+```
+
+### 手工验证步骤说明
+
+1. 打开应用，在文档树中右键一个文档，应看到"生成..."菜单项（Sparkles 图标），点击后应弹出 GenerateIntentModal，来源显示文档名
+2. 在文档树中右键一个文件夹，应看到"根据文件夹生成..."菜单项（Sparkles 图标），点击后应弹出 GenerateIntentModal，来源显示文件夹名
+3. 在编辑器中选中一段文字，右键选择"从此生成..."，应弹出 GenerateIntentModal，来源显示选区文本预览和行号
+4. 在 Modal 中输入意图（如"生成开发提示词"），点击"创建并生成"，应创建草稿 Pack 并自动打开 Platter 的 Context Pack tab
+5. Pack 中应包含来源 item（文档/文件夹下文档/选区），Pack 名称格式为"草稿: <意图前30字>..."
+6. 不需要先去 Platter 新建 Pack，直接从任意上下文生成即可
+
+### 当前风险，以及影响范围
+
+1. **handleGenerateIntentConfirm 中 renameContextPack 冗余调用**：创建 Pack 时已传入 packName，之后再调用 renameContextPack 用相同名称，实际未做任何变更。影响范围：无功能影响，仅多一次无效 API 调用。
+2. **文件夹生成最多添加 10 个文档**：handleGenerateIntentConfirm 中 folder 类型限制了 `folderDocs.slice(0, 10)`，大文件夹可能遗漏文档。影响范围：文件夹包含超过 10 个文档时，Pack 中只会有前 10 个。
+3. **影响范围**：不改 Pack 数据结构，不改 OutputGenerator，不接 MindView。
+
+---
+
+## Phase 4 Upgrade+Round 4 devlog -- M4 Pack 推荐与 chunk 数据补齐
+
+**日期**: 2026-05-28
+**任务起始时间**: 08:30
+**任务结束时间**: 08:38
+**工时**: 8 分钟
+
+### 任务目标
+
+根据 RB-P4-001 升级文档 M4 阶段，让 embedding 推荐真正工作，补齐 Pack item 的 chunk 数据关联。
+
+具体目标：
+1. 扩展 ContextPackItem 增加 chunk_id / source_type / score / reasoning_note
+2. 修复 suggestContextPackCandidates 空参数问题（原来传 [] 导致后端直接返回空）
+3. 搜索结果保存 chunk_id，文档级 Pack 反查 chunks
+4. Pack 推荐显示片段标题、位置、相关度、内容预览，用户可加入/忽略
+
+### 改动的文件名以及改动的行数
+
+| 文件 | 操作 | 行数 | 说明 |
+|---|---|---:|---|
+| `src-tauri/src/commands/context_pack.rs` | 修改 | +4 行 | ContextPackItem 结构体新增 chunk_id/source_type/score/reasoning_note 四个 Option 字段 |
+| `src/services/index/context-pack.ts` | 修改 | +4 行 | 前端 ContextPackItem 接口同步新增四个字段 |
+| `src/modules/context-pack/ContextPackPanel.tsx` | 修改 | +50/-15 行 | DocCandidate 扩展 chunk_id/start_line/end_line；推荐加载逻辑从空数组改为收集已有 item 的 chunk_id 并反查文档 chunks；handleAcceptSuggestion 保存 chunk_id/source_type/score；pendingItem addItem 补全新字段；推荐卡片显示位置信息（L行号）；新增 chunkingService 导入 |
+| `src/app/AppShell.tsx` | 修改 | +16 行 | 4 处 addItem 调用补全 chunk_id/source_type/score/reasoning_note 字段（folder/document/selection/search 四种 source_type） |
+
+### 遇到的问题以及解决方式
+
+1. **suggestContextPackCandidates 传空数组**：原来 `ContextPackPanel` 调用 `suggestContextPackCandidates(vault.path, [], 20)`，后端在 `chunk_ids.is_empty()` 时直接返回空。解决方式：从已有 Pack item 中收集 chunk_id，对于没有 chunk_id 的文档级 item，查询该文档的 chunks 取第一个 chunk 的 id。
+
+2. **ContextPackItem 扩展后的兼容性**：新增的 4 个字段都是 `Option` 类型，旧数据中不存在这些字段时 Rust 反序列化会使用 `None`，前端 TypeScript 中使用 `null`，完全向后兼容。
+
+3. **AppShell 中 4 处 addItem 调用**：扩展 ContextPackItem 后，所有 addItem 调用都需要传入新字段。解决方式：按 selected_reason 区分 source_type（folder/document/selection/search），chunk_id/score/reasoning_note 暂设为 null。
+
+### 自动验证结果
+
+```bash
+$ pnpm typecheck
+# exit 0
+
+$ pnpm build
+# built in 900ms，exit 0
+
+$ cd src-tauri && cargo check
+# Finished dev profile，exit 0
+```
+
+### 手工验证步骤说明
+
+1. 打开应用，创建一个 Context Pack，添加一个文档
+2. Pack 中有内容后，"推荐内容"区域应不再总是空，应显示基于语义相似度的推荐
+3. 推荐卡片应显示：推荐标签、相关度百分比、片段标题（heading_path）、文档路径 + 行号范围（如 L10-25）
+4. 点击推荐卡片右侧的箭头按钮，推荐内容应加入 Pack
+5. 加入后推荐列表中该文档应消失（已排除）
+6. 检查加入的 item 在 Pack 中显示的 source_type 标签
+
+### 当前风险，以及影响范围
+
+1. **文档级 item 反查 chunks 性能**：对于没有 chunk_id 的文档级 item，每次加载推荐时都会调用 `getDocumentChunks`。如果 Pack 中有很多文档级 item，可能产生多次 API 调用。影响范围：推荐加载速度。
+2. **旧数据兼容**：旧的 context-packs.json 中不存在新字段，Rust 反序列化时使用 `None`，前端显示时使用 `null`，不影响功能但推荐可能无法基于旧 item 的 chunk_id 工作。影响范围：已有 Pack 的推荐效果。
+3. **影响范围**：不改 OutputGenerator reasoning，不改 Platter 整体视觉。
+
+---
+
+## Phase 4 Upgrade+Round 3 devlog -- M3 Trigger chunkId 与"帮我判断"
+
+**日期**: 2026-05-28
+**任务起始时间**: 08:20
+**任务结束时间**: 08:25
+**工时**: 5 分钟
+
+### 任务目标
+
+根据 RB-P4-001 升级文档 M3 阶段，让 semantic_repeat/context_drift 真正触发，并将"帮我判断"按钮变成真实 reasoning 动作。
+
+具体目标：
+1. reindex 后按 chunk 调用 checkTriggers 传入 chunkId
+2. 聚合 trigger 结果（去重，优先 threshold_exceeded）
+3. dismissed 持久化（调用 updateTriggerState 而非仅 React state 过滤）
+4. 点击"帮我判断"调用 reasoning，输出判断结果卡片
+
+### 改动的文件名以及改动的行数
+
+| 文件 | 操作 | 行数 | 说明 |
+|---|---|---:|---|
+| `src/app/AppShell.tsx` | 修改 | +45/-5 行 | postReindexHook 中按 chunk 调用 checkTriggers 传入 chunkId；聚合 trigger 去重；onDismissTrigger 增加 updateTriggerState 持久化；新增 onJudgeTrigger 回调调用 chat reasoning；解构增加 `chat` |
+| `src/components/MentorDock.tsx` | 修改 | +50/-3 行 | MentorView 新增 onJudgeTrigger prop；新增 judgingType/judgmentResults 状态和 handleJudge 函数；"帮我判断"按钮绑定 handleJudge 并显示 loading 状态；新增判断结果卡片（AI 判断结果 + 忽略按钮）；PlatterProps 和 InnerMentorDock 传递 onJudgeTrigger |
+
+### 遇到的问题以及解决方式
+
+1. **AppShell 中 `chat` 未解构**：AppShell 原来只解构了 `status` 和 `embedAndStore`，需要添加 `chat` 才能调用 reasoning。解决方式：在 `useAIRuntime()` 解构中添加 `chat`。
+
+2. **MentorView 函数参数解构遗漏**：添加 `onJudgeTrigger` 到 MentorView 的 props 类型定义后，忘记在函数参数解构中添加。解决方式：在解构列表中添加 `onJudgeTrigger`。
+
+3. **trigger 聚合策略**：按 chunk 调用 checkTriggers 可能产生大量重复 trigger（每个 chunk 都可能触发同一类型）。解决方式：使用 Map 按 trigger_type 去重，优先保留 `threshold_exceeded` 状态的结果。
+
+### 自动验证结果
+
+```bash
+$ pnpm typecheck
+# exit 0
+
+$ pnpm build
+# built in 827ms，exit 0
+
+$ cd src-tauri && cargo check
+# Finished dev profile，exit 0
+```
+
+### 手工验证步骤说明
+
+1. 打开应用，打开一个文档，编辑并保存触发 reindex
+2. 如果文档有语义重复内容，Mentor 的"待判断"section 应出现 semantic_repeat trigger
+3. 点击"帮我判断"按钮，应显示 loading 状态（"判断中..."）
+4. AI 返回后，trigger 卡片下方应出现绿色"AI 判断结果"卡片，包含 AI 的判断和建议
+5. 点击"忽略"按钮，trigger 应消失，且下次 reindex 后不会重新出现（dismissed 已持久化）
+6. 如果 AI 未连接，点击"帮我判断"应无响应（返回 null）
+
+### 当前风险，以及影响范围
+
+1. **按 chunk 调用 checkTriggers 性能**：如果文档有很多 chunk，每个 chunk 都调用一次 checkTriggers 可能较慢。当前没有做并行或采样优化。影响范围：大文档 reindex 后触发器检查可能耗时较长。
+2. **reasoning prompt 较简单**：当前"帮我判断"的 system prompt 只要求简洁回答，没有传入文档内容或相似片段的详细信息。更丰富的上下文需要 M4 的 chunk 数据补齐。影响范围：判断结果可能不够精准。
+3. **影响范围**：不改 Pack 数据结构，不自动修改原文，不自动合并文档。
+
+---
+
+## Phase 4 Upgrade+Round 2 devlog -- M2 Mentor view 折叠抽屉重构
+
+**日期**: 2026-05-28
+**任务起始时间**: 08:10
+**任务结束时间**: 08:15
+**工时**: 5 分钟
+
+### 任务目标
+
+根据 RB-P4-001 升级文档 M2 阶段，重构 Mentor view 为折叠抽屉结构，解决当前平铺杂乱的问题。
+
+具体目标：
+1. Mentor view 只承载当前上下文建议和动作
+2. 用可折叠抽屉避免平铺杂乱
+3. 分为 4 个 section：当前建议 / 待判断 / 可用动作 / 最近建议
+4. 默认只展开最高优先级 section
+5. trigger 卡片移入"待判断"section
+6. 当前文档动作移入"可用动作"section
+7. 最近建议默认折叠
+
+### 改动的文件名以及改动的行数
+
+| 文件 | 操作 | 行数 | 说明 |
+|---|---|---:|---|
+| `src/components/MentorDock.tsx` | 修改 | +150/-180 行 | MentorView 重构为 4 个折叠抽屉；trigger 卡片从 MentorDock 主组件移入 MentorView 的"待判断"section；当前文档动作从平铺卡片移入"可用动作"section；相关内容移入"当前建议"section；移除 `onAIOnboarding` prop（已由 Settings Product Flow 区替代）；移除旧的平铺布局 |
+
+### 遇到的问题以及解决方式
+
+1. **`onAIOnboarding` 不再使用**：MentorView 重构后，"重新运行 AI Onboarding"按钮不再出现在 Mentor 主 view 中（已在 M1 中移入 Settings Product Flow 区）。解决方式：从 MentorView 和 PlatterProps 中移除 `onAIOnboarding`。
+
+2. **trigger 卡片位置迁移**：原来 trigger 卡片在 MentorDock 主组件中渲染（MentorView 外部），需要移入 MentorView 的"待判断"section。解决方式：将 `triggerResults` 和 `onDismissTrigger` 作为 prop 传入 MentorView，在"待判断"section 中渲染。
+
+3. **折叠状态初始值**：需要根据是否有 trigger 动态决定"待判断"section 的初始展开状态。解决方式：使用 `useState(!!hasTriggers)` 初始化，并通过 `useEffect` 在 trigger 变化时自动展开。
+
+### 自动验证结果
+
+```bash
+$ pnpm typecheck
+# exit 0
+
+$ pnpm build
+# exit 0，built in 896ms
+
+$ cd src-tauri && cargo check
+# Finished dev profile，exit 0
+```
+
+### 手工验证步骤说明
+
+1. 打开应用，切换到 Mentor tab，应看到 4 个折叠抽屉：当前建议（展开）、待判断（折叠）、可用动作（折叠）、最近建议（折叠）
+2. 当前建议 section 显示当前文档名和相关内容
+3. 无文档时当前建议 section 显示 Empty State（AI 知识助手引导）
+4. 有 trigger 时"待判断"section 自动展开，显示 trigger 卡片（语义重复/新方向/主题偏移/复查建议），每条有"帮我判断"和"忽略"按钮
+5. 可用动作 section 包含：总结文档、查找相关、解释内容
+6. 最近建议 section 默认折叠，展开后显示最近 3 条 AI 建议
+7. AI 未连接时状态栏仍显示"去设置"链接
+
+### 当前风险，以及影响范围
+
+1. **"帮我判断"按钮仍为 UI 占位**：当前点击"帮我判断"没有实际 reasoning 调用，这是 M3 的任务。影响范围：用户点击后无响应。
+2. **onAIOnboarding 从 Mentor 移除**：如果 AppShell 中有其他地方依赖 MentorDock 的 onAIOnboarding prop，需要确认。当前已确认 AppShell 未传此 prop 给 MentorDock。影响范围：无。
+3. **影响范围**：仅修改 Mentor view 内部布局，不改 Pack 数据结构，不实现 reasoning 结果生成。
+
+---
+
+## Phase 4 Upgrade+Round 1b devlog -- M1 主界面技术术语收口
+
+**日期**: 2026-05-28
+**任务起始时间**: 08:05
+**任务结束时间**: 08:15
+**工时**: 10 分钟
+
+### 任务目标
+
+M1 review 后补齐主界面技术术语收口。在 M1 已完成 Settings 统一入口和 Mentor 配置迁移的基础上，进一步清理主界面中残留的 index / semantic / embedding 状态语言，让 CmdK 和 Mentor 主 view 不再暴露底层技术概念。
+
+具体目标：
+1. CommandPalette 移除"智能搜索未开启（需先生成语义索引）"技术提示
+2. MentorDock 移除"语义搜索已开启"条件渲染和 `semanticAvailable` 检测逻辑
+3. SettingsPanel Knowledge Engine 区补轻量说明：这是开发/诊断用途，产品主流程后台自动使用
+
+### 改动的文件名以及改动的行数
+
+| 文件 | 操作 | 行数 | 说明 |
+|---|---|---:|---|
+| `src/modules/command-palette/CommandPalette.tsx` | 修改 | -8 行 | 移除"智能搜索未开启（需先生成语义索引）"提示块 |
+| `src/components/MentorDock.tsx` | 修改 | -10 行 | 移除 `semanticAvailable` 状态、useEffect 检测、"语义搜索已开启"渲染；移除 `metadataService` 导入和主函数中未使用的 `vault` |
+| `src/modules/settings/SettingsPanel.tsx` | 修改 | +3 行 | Knowledge Engine 区顶部补轻量说明文字 |
+
+### 遇到的问题以及解决方式
+
+1. **`vault` 变量未使用警告**：移除 `semanticAvailable` 后，MentorView 主函数中的 `const { vault } = useVault()` 不再被使用（其他子组件有各自的 `useVault` 调用）。解决方式：移除主函数中的 `vault` 声明，保留子组件中的独立调用。
+
+### 自动验证结果
+
+```bash
+$ pnpm typecheck
+# exit 0
+
+$ pnpm build
+# exit 0
+
+$ cd src-tauri && cargo check
+# Finished dev profile，exit 0
+
+$ rg -n "需先生成语义索引|语义搜索已开启" src
+# 无匹配
+```
+
+### 手工验证步骤说明
+
+1. 打开应用，Mentor 状态栏只显示"AI 助手已连接/未连接"，不显示"语义搜索已开启"
+2. Cmd+K 搜索时，无语义结果不再显示"智能搜索未开启（需先生成语义索引）"提示
+3. Settings → Knowledge Engine 区顶部显示"以下为开发与诊断用途。产品主流程会在后台自动使用 Knowledge Engine，无需手动操作。"
+4. AI 未连接时 Mentor 状态栏仍显示"去设置"链接
+
+### 当前风险，以及影响范围
+
+1. **CommandPalette 语义搜索静默降级**：移除提示后，用户在语义搜索不可用时不会得到明确提示，搜索结果可能只包含 FTS 结果。影响范围：搜索体验，但 FTS fallback 仍可用，用户不会感知到功能缺失。
+2. **影响范围**：仅清理主界面技术术语，不涉及 AI Runtime 回滚、不改 Pack / GenerateIntent / PackSelector / Trigger。
+
+---
+
+## Phase 4 Upgrade+Round 1 devlog -- M1 Settings 入口与配置迁移
+
+**日期**: 2026-05-28
+**任务起始时间**: 07:20
+**任务结束时间**: 07:40
+**工时**: 20 分钟
+
+### 任务目标
+
+根据 RB-P4-001 升级文档，执行 M1 阶段修改：Settings 入口与配置迁移。核心目标是清理 Mentor view 的职责边界，将技术配置从用户引导界面中移出，建立统一的 Settings 入口。
+
+具体目标：
+1. 从 Mentor view 中移除 Settings 主入口（常驻设置图标）
+2. 在 WorkspaceHeader 增加统一 Settings 入口
+3. SettingsPanel 重构：将"AI 助手"改为"AI Reasoning"，将"知识索引状态"改为"Knowledge Engine"，新增"Product Flow"区
+4. 将 embedding 模型配置和测试从 AI Reasoning 移到 Knowledge Engine
+5. Mentor view 只在 AI 不可用时显示"去设置"链接
+6. Knowledge Engine 增加 stale embedding 检测显示
+
+### 改动的文件名以及改动的行数
+
+| 文件 | 操作 | 行数 | 说明 |
+|---|---|---:|---|
+| `src/components/WorkspaceHeader.tsx` | 修改 | +10/-2 行 | 新增 `onOpenSettings` prop 和 Settings 齿轮图标按钮 |
+| `src/app/AppShell.tsx` | 修改 | +1/-0 行 | 传入 `onOpenSettings={() => setSettingsOpen(true)}` |
+| `src/modules/settings/SettingsPanel.tsx` | 修改 | +120/-80 行 | 重构：AI 助手→AI Reasoning（移除 embedding 配置）；知识索引状态→Knowledge Engine（加入 embedding 模型/测试/stale 检测）；新增 Product Flow 区（onboarding reset + 说明）；关于区增加 Vault 路径；新增 Cpu/RotateCcw 图标导入；新增 onboardingService 导入 |
+| `src/components/MentorDock.tsx` | 修改 | +6/-4 行 | 移除常驻 Settings 图标按钮，改为 AI 未连接时显示"去设置"链接；移除 Settings 图标导入 |
+| `src/services/ai/onboarding.ts` | 修改 | +3/-0 行 | 新增 `resetStatus` 方法 |
+
+### 遇到的问题以及解决方式
+
+1. **`detectStaleEmbeddings` 需要单文档参数**：原计划在 Knowledge Engine 中调用全局 stale 检测，但 `detectStaleEmbeddings` 需要 `documentPath` 参数，不适合全局调用。解决方式：改为从 `listDocumentsMetadata` 中统计 `embedding_status === 'stale'` 的文档数量，无需额外 API 调用。
+
+2. **Settings import 清理**：从 MentorDock 移除 Settings 图标后，`Settings` 的 lucide import 不再需要。解决方式：从 import 语句中移除 `Settings`。
+
+### 自动验证结果
+
+```bash
+$ pnpm typecheck
+# exit 0，无 TypeScript 错误
+
+$ cd src-tauri && cargo check
+# Finished dev profile，exit 0
+
+$ pnpm lint
+# exit 0
+```
+
+### 手工验证步骤说明
+
+1. 打开应用，在 WorkspaceHeader 右侧应看到齿轮图标（Settings 按钮），点击应打开 SettingsPanel
+2. Mentor view 状态栏中不再有常驻的设置图标
+3. 当 AI 未连接时，Mentor 状态栏右侧应显示"去设置"链接，点击打开 SettingsPanel
+4. 当 AI 已连接时，Mentor 状态栏右侧不显示任何设置入口
+5. SettingsPanel 中应有 5 个区：AI Reasoning、Knowledge Engine、运行日志、Product Flow、关于
+6. AI Reasoning 区只包含对话模型配置（Provider、服务地址、对话模型、Custom API 配置、连接检测），不包含 embedding 模型
+7. Knowledge Engine 区包含：语义模型配置、Embedding 测试、索引状态（全文索引 + 语义索引 + stale 检测）、重建索引、验证索引
+8. Product Flow 区包含：重新运行 Onboarding 按钮、Knowledge Engine 说明文字
+9. 关于区包含：版本号、Vault 路径、数据存储说明
+
+### 当前风险，以及影响范围
+
+1. **onboarding reset 使用 page reload**：点击"重新运行 Onboarding"后调用 `window.location.reload()` 强制刷新页面，体验较粗暴。影响范围：仅影响手动触发 onboarding reset 的场景，正常使用不受影响。
+2. **stale 检测依赖 metadata 中的 embedding_status 字段**：如果后端在文档内容变更后没有正确更新 `embedding_status` 为 `stale`，前端将无法显示过期提示。影响范围：Knowledge Engine 中的 stale 检测可能不准确。
+3. **影响范围**：仅修改 UI 层布局和配置入口位置，不改模型调用逻辑、不改 Pack、不改 trigger。
+
+---
+
+## Phase 4+Round 11 devlog -- ContextPackItem 多粒度支持
+
+**日期**: 2026-05-25
+**任务起始时间**: 22:00
+**任务结束时间**: 22:45
+**工时**: 45 分钟
+
+### 任务目标
+
+更新 MindDock ContextPackItem 数据结构，支持多粒度（文件夹/文档/段落/选区），并调整所有相关添加逻辑。
+
+### 改动的文件名以及改动的行数
+
+| 文件 | 操作 | 行数 | 说明 |
+|---|---|---:|---|
+| `src-tauri/src/commands/context_pack.rs` | 修改 | +8 行 / -1 行 | ContextPackItem 新增 content/heading/start_line/end_line 字段；export_context_pack_markdown 适配新字段输出 |
+| `src/services/index/context-pack.ts` | 修改 | +14 行 / -5 行 | ContextPackItem 接口新增 4 个可选字段；exportAsMarkdown 适配粒度显示（heading 优先、位置信息、内容输出） |
+| `src/modules/context-pack/ContextPackPanel.tsx` | 修改 | +30 行 / -12 行 | pendingItem 类型扩展；条目卡片根据粒度显示不同内容（段落/选区标签、行号、内容预览）；编辑功能区分 content/summary |
+| `src/app/AppShell.tsx` | 修改 | +120 行 / -10 行 | addDocToPack 添加新字段；新增 addSelectionToPack/handleAddSelectionToPack/handleGenerateFromSelection/handleAddSearchResultToPack；handleEditorSelectionAction 改为选区级添加；搜索结果 onAddToContextPack 改用 handleAddSearchResultToPack |
+| `src/modules/context-pack/OutputGenerator.tsx` | 修改 | +8 行 / -8 行 | assemblePrompt 适配新字段（heading 优先、位置信息、content/summary 优先级） |
+| `src/components/MentorDock.tsx` | 修改 | +4 行 | pendingContextPackItem 类型新增 content/heading/start_line/end_line |
+
+### 遇到的问题以及解决方式
+
+1. **类型不兼容**：ContextPackItem 新增字段后，所有 `addItem` 调用点都需要补充新字段。通过全局诊断逐一修复，确保所有调用点传入 content/heading/start_line/end_line（文档级传 null，选区/段落级传实际值）。
+2. **编辑逻辑区分**：原有编辑功能只编辑 summary，现在需要根据是否有 content 区分：有 content 时编辑 content，否则编辑 summary。修改了 startEditItem 和 saveEditItem。
+
+### 自动验证结果
+
+- `pnpm typecheck`：✅ 通过，无类型错误
+- `cargo check`：✅ 通过，无编译错误
+
+### 手工验证步骤说明
+
+1. 打开应用，右键文档选择"加入上下文包"→ 验证文档级条目显示 title/summary/tags，无粒度标签
+2. 在编辑器中选中一段文字，右键选择"加入上下文包"→ 验证段落级条目显示 content 预览、行号范围、"段落"标签
+3. 在编辑器中选中一段文字，右键选择"从此生成"→ 验证创建新 Pack 并添加选区级条目
+4. 在搜索结果中点击"加入上下文包"→ 验证搜索结果以 chunk 级别添加（含 heading/start_line/end_line）
+5. 点击"生成提示词"→ 验证 OutputGenerator 中段落级条目显示 content，文档级显示 summary
+6. 点击"导出"→ 验证导出的 Markdown 包含章节、位置、内容等信息
+
+### 当前风险，以及影响范围
+
+1. **数据兼容性**：已有的 context-packs.json 中旧条目缺少 content/heading/start_line/end_line 字段。由于 Rust 端使用 `Option<String>`/`Option<i64>` 且 serde 默认对 Option 字段宽容，旧数据反序列化时这些字段为 None，不会报错。但需注意前端 null 检查。
+2. **多 Pack 选择器缺失**：`handleAddSelectionToPack` 在多 Pack 场景下暂时使用第一个 Pack，后续需添加 PackSelectorModal 支持。
+3. **影响范围**：ContextPackItem 数据结构变更影响所有使用上下文包功能的模块，包括 ContextPackPanel、OutputGenerator、AppShell、MentorDock。
+
+---
+
 ## Phase 4+Round 10 devlog -- 体验债务清偿
 
 **日期**: 2026-05-25

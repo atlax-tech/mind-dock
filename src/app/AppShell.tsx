@@ -19,6 +19,7 @@ import { StickyNotesLayer } from '@/modules/sticky-notes/StickyNotesLayer';
 import { ClarityInterviewPanel } from '@/modules/ai/ClarityInterviewPanel';
 import { OnboardingPanel } from '@/modules/ai/OnboardingPanel';
 import { OutputGenerator } from '@/modules/context-pack/OutputGenerator';
+import { GenerateIntentModal, type GenerateIntentSource } from '@/modules/context-pack/GenerateIntentModal';
 import { SettingsPanel } from '@/modules/settings/SettingsPanel';
 import { mentorEventBus } from '@/modules/ai/MentorEventBus';
 import { onboardingService } from '@/services/ai/onboarding';
@@ -110,7 +111,7 @@ function PackSelectorModal({ vaultPath, docPath, onSelect, onCreateNew, onCancel
 export function AppShell() {
   const { vault, docTree, refreshDocTree } = useVault();
   const { notes, error: stickyNotesError, addNote, updateNote, deleteNote, convertToCapture } = useStickyNotes();
-  const { status: aiStatus, embedAndStore } = useAIRuntime();
+  const { status: aiStatus, embedAndStore, chat } = useAIRuntime();
 
   // Editor ref for TOC navigation
   const editorRef = useRef<EditorViewHandle>(null);
@@ -146,8 +147,24 @@ export function AppShell() {
   // Output Generator state
   const [outputGeneratorPack, setOutputGeneratorPack] = useState<ContextPack | null>(null);
 
+  // Generate Intent Modal state
+  const [generateIntentSource, setGenerateIntentSource] = useState<GenerateIntentSource | null>(null);
+  const [generateIntentLoading, setGenerateIntentLoading] = useState(false);
+
   // Settings state
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Context pack refresh key: 递增后驱动 ContextPackPanel 重新加载
+  const [contextPackRefreshKey, setContextPackRefreshKey] = useState(0);
+
+  // Reasoning result state (explain/summarize selection)
+  const [reasoningResult, setReasoningResult] = useState<{
+    type: 'explain' | 'summarize';
+    title: string;
+    content: string;
+    sources: { path: string; heading?: string; startLine?: number; endLine?: number }[];
+    loading: boolean;
+  } | null>(null);
 
   // Generate from doc state (kept for compatibility, no longer used for pack generation)
   const [_generateFromDoc, _setGenerateFromDoc] = useState<string | null>(null);
@@ -191,12 +208,30 @@ export function AppShell() {
         }
       }
 
-      // 步骤 7: 检查触发器
+      // 步骤 7: 检查触发器（按 chunk 传入 chunkId，让 semantic_repeat/context_drift 能真正触发）
       try {
-        const results = await mentorTriggersService.checkTriggers(vaultPath, documentPath);
+        const chunks = await chunkingService.getDocumentChunks(vaultPath, documentPath);
+        // 聚合所有 chunk 的 trigger 结果
+        const allNewResults: TriggerResult[] = [];
+        for (const chunk of chunks) {
+          try {
+            const results = await mentorTriggersService.checkTriggers(vaultPath, documentPath, chunk.id);
+            allNewResults.push(...results);
+          } catch (err) {
+            console.error(`触发器检查 chunk ${chunk.id} 失败:`, err);
+          }
+        }
+        // 去重：同一 trigger_type 只保留一条（优先 threshold_exceeded）
+        const deduped = new Map<string, TriggerResult>();
+        for (const r of allNewResults) {
+          const existing = deduped.get(r.trigger_type);
+          if (!existing || r.status === 'threshold_exceeded') {
+            deduped.set(r.trigger_type, r);
+          }
+        }
+        const results = Array.from(deduped.values());
         if (results.length > 0) {
           setTriggerResults(prev => {
-            // 去重：替换同一文档的旧触发结果
             const filtered = prev.filter(r => !results.some(nr => nr.trigger_type === r.trigger_type));
             return [...filtered, ...results];
           });
@@ -518,6 +553,66 @@ export function AppShell() {
     handleTabSelect(tabId);
   }, []);
 
+  const buildDocumentPackSnapshot = useCallback(async (docPath: string) => {
+    if (!vault) {
+      return {
+        content: null,
+        heading: null,
+        start_line: null,
+        end_line: null,
+        chunk_id: null,
+      };
+    }
+
+    try {
+      const chunks = await chunkingService.getDocumentChunks(vault.path, docPath);
+      const selectedChunks = chunks.slice(0, 3);
+      if (selectedChunks.length === 0) {
+        return {
+          content: null,
+          heading: null,
+          start_line: null,
+          end_line: null,
+          chunk_id: null,
+        };
+      }
+
+      const content = selectedChunks
+        .map(chunk => chunk.content)
+        .join('\n\n---\n\n')
+        .slice(0, 6000);
+      const firstChunk = selectedChunks[0];
+      const lastChunk = selectedChunks[selectedChunks.length - 1];
+
+      return {
+        content,
+        heading: firstChunk.heading_path ?? null,
+        start_line: firstChunk.start_line,
+        end_line: lastChunk.end_line,
+        chunk_id: firstChunk.id,
+      };
+    } catch {
+      return {
+        content: null,
+        heading: null,
+        start_line: null,
+        end_line: null,
+        chunk_id: null,
+      };
+    }
+  }, [vault]);
+
+  const findChunkForLineRange = useCallback(async (docPath: string, startLine: number | null, endLine: number | null) => {
+    if (!vault || startLine == null || endLine == null) return null;
+
+    try {
+      const chunks = await chunkingService.getDocumentChunks(vault.path, docPath);
+      return chunks.find(chunk => chunk.start_line <= endLine && chunk.end_line >= startLine) ?? null;
+    } catch {
+      return null;
+    }
+  }, [vault]);
+
   // Generate Pack from Folder callback
   const handleGeneratePackFromFolder = useCallback(async (folderPath: string) => {
     if (!vault) return;
@@ -533,26 +628,32 @@ export function AppShell() {
       const folderDocs = allDocs.filter(doc => doc.path.startsWith(folderPath + '/') || doc.path === folderPath);
 
       for (const doc of folderDocs) {
+        const snapshot = await buildDocumentPackSnapshot(doc.path);
         await contextPackService.addItem(vault.path, pack.id, {
           document_path: doc.path,
           title: doc.title ?? null,
           summary: doc.summary ?? null,
           tags: doc.tags ?? null,
-          content: null,
-          heading: null,
-          start_line: null,
-          end_line: null,
+          content: snapshot.content,
+          heading: snapshot.heading,
+          start_line: snapshot.start_line,
+          end_line: snapshot.end_line,
           selected_reason: 'folder_collection',
+          chunk_id: snapshot.chunk_id,
+          source_type: 'folder',
+          score: null,
+          reasoning_note: null,
           is_suggestion: false,
         });
       }
 
       setMentorDockTab('context-pack');
       setMentorDockOpen(true);
+      setContextPackRefreshKey(prev => prev + 1);
     } catch (err) {
       console.error('生成上下文包失败:', err);
     }
-  }, [vault]);
+  }, [vault, buildDocumentPackSnapshot]);
 
   // Add to Pack callback
   const handleAddToPack = useCallback(async (docPath: string) => {
@@ -590,20 +691,26 @@ export function AppShell() {
 
     // 获取文档 metadata
     const meta = await metadataService.getDocumentDbMetadata(vault.path, docPath);
+    const snapshot = await buildDocumentPackSnapshot(docPath);
 
     await contextPackService.addItem(vault.path, packId, {
       document_path: docPath,
       title: meta?.title ?? null,
       summary: meta?.summary ?? null,
       tags: meta?.tags ?? null,
-      content: null,
-      heading: null,
-      start_line: null,
-      end_line: null,
+      content: snapshot.content,
+      heading: snapshot.heading,
+      start_line: snapshot.start_line,
+      end_line: snapshot.end_line,
       selected_reason: 'user_added',
+      chunk_id: snapshot.chunk_id,
+      source_type: 'document',
+      score: null,
+      reasoning_note: null,
       is_suggestion: false,
     });
-  }, [vault]);
+    setContextPackRefreshKey(prev => prev + 1);
+  }, [vault, buildDocumentPackSnapshot]);
 
   // 辅助函数：将选区添加到 Pack（段落/选区级）
   const addSelectionToPack = useCallback(async (packId: string, docPath: string, selection: { text: string; from: number; to: number }) => {
@@ -627,19 +734,26 @@ export function AppShell() {
       currentPos += lines[i].length + 1; // +1 for \n
     }
 
+    const matchedChunk = await findChunkForLineRange(docPath, startLine, endLine);
+
     await contextPackService.addItem(vault.path, packId, {
       document_path: docPath,
       title: null,
       summary: null,
       tags: null,
       content: selection.text,
-      heading: null,
+      heading: matchedChunk?.heading_path ?? null,
       start_line: startLine,
       end_line: endLine,
       selected_reason: 'user_added',
+      chunk_id: matchedChunk?.id ?? null,
+      source_type: 'selection',
+      score: null,
+      reasoning_note: null,
       is_suggestion: false,
     });
-  }, [vault, activeTab]);
+    setContextPackRefreshKey(prev => prev + 1);
+  }, [vault, activeTab, findChunkForLineRange]);
 
   // 辅助函数：将选区加入已有 Pack
   const handleAddSelectionToPack = useCallback(async (docPath: string, selection: { from: number; to: number; text: string }) => {
@@ -668,23 +782,105 @@ export function AppShell() {
     }
   }, [vault, addSelectionToPack]);
 
-  // 辅助函数：从选区生成新 Pack
-  const handleGenerateFromSelection = useCallback(async (docPath: string, selection: { from: number; to: number; text: string }) => {
-    if (!vault) return;
+  // M5: GenerateIntentModal 确认后创建 draft pack + 添加来源 + 设置意图
+  const handleGenerateIntentConfirm = useCallback(async (intent: string) => {
+    if (!vault || !generateIntentSource) return;
+    setGenerateIntentLoading(true);
     try {
       const { contextPackService } = await import('@/services/index/context-pack');
-      const docName = docPath.split('/').pop()?.replace('.md', '') || '未命名';
-      const pack = await contextPackService.createContextPack(vault.path, `来自: ${docName} 选区`);
-      await addSelectionToPack(pack.id, docPath, selection);
+      const source = generateIntentSource;
+
+      // 创建 draft pack，名称包含来源信息
+      let packName = `草稿: ${intent.slice(0, 30)}${intent.length > 30 ? '...' : ''}`;
+      const pack = await contextPackService.createContextPack(vault.path, packName);
+
+      // 根据来源类型添加初始 item
+      if (source.type === 'document' && source.documentPath) {
+        const docName = source.documentPath.split('/').pop()?.replace('.md', '') || '未命名';
+        const { metadataService } = await import('@/services/index/metadata');
+        const meta = await metadataService.getDocumentDbMetadata(vault.path, source.documentPath).catch(() => null);
+        const snapshot = await buildDocumentPackSnapshot(source.documentPath);
+        await contextPackService.addItem(vault.path, pack.id, {
+          document_path: source.documentPath,
+          title: docName,
+          summary: meta?.summary ?? null,
+          tags: meta?.tags ?? null,
+          content: snapshot.content,
+          heading: snapshot.heading,
+          start_line: snapshot.start_line,
+          end_line: snapshot.end_line,
+          chunk_id: snapshot.chunk_id,
+          source_type: 'document',
+          score: null,
+          reasoning_note: null,
+          selected_reason: 'generate_source',
+          is_suggestion: false,
+        });
+      } else if (source.type === 'folder' && source.folderPath) {
+        const { metadataService } = await import('@/services/index/metadata');
+        const allDocs = await metadataService.listDocumentsMetadata(vault.path);
+        const folderDocs = allDocs.filter(d => d.path.startsWith(source.folderPath! + '/')).map(d => d.path);
+        for (const doc of folderDocs.slice(0, 10)) {
+          const docName = doc.split('/').pop()?.replace('.md', '') || '未命名';
+          const snapshot = await buildDocumentPackSnapshot(doc);
+          await contextPackService.addItem(vault.path, pack.id, {
+            document_path: doc,
+            title: docName,
+            summary: null,
+            tags: null,
+            content: snapshot.content,
+            heading: snapshot.heading,
+            start_line: snapshot.start_line,
+            end_line: snapshot.end_line,
+            chunk_id: snapshot.chunk_id,
+            source_type: 'folder',
+            score: null,
+            reasoning_note: null,
+            selected_reason: 'folder_collection',
+            is_suggestion: false,
+          });
+        }
+      } else if (source.type === 'selection' && source.documentPath && source.selectedText) {
+        const matchedChunk = await findChunkForLineRange(
+          source.documentPath,
+          source.startLine ?? null,
+          source.endLine ?? null,
+        );
+        await contextPackService.addItem(vault.path, pack.id, {
+          document_path: source.documentPath,
+          title: source.heading ?? '选区',
+          summary: null,
+          tags: null,
+          content: source.selectedText,
+          heading: source.heading ?? matchedChunk?.heading_path ?? null,
+          start_line: source.startLine ?? null,
+          end_line: source.endLine ?? null,
+          chunk_id: matchedChunk?.id ?? null,
+          source_type: 'selection',
+          score: null,
+          reasoning_note: null,
+          selected_reason: 'generate_source',
+          is_suggestion: false,
+        });
+      }
+
+      // 设置意图到 pack name（追加意图说明）
+      await contextPackService.renameContextPack(vault.path, pack.id, packName);
+
+      // 关闭 modal，打开 Pack view
+      setGenerateIntentSource(null);
+      setGenerateIntentLoading(false);
       setMentorDockTab('context-pack');
       setMentorDockOpen(true);
+      setContextPackRefreshKey(prev => prev + 1);
     } catch (err) {
-      console.error('生成上下文包失败:', err);
+      console.error('创建生成草稿失败:', err);
+      setGenerateIntentLoading(false);
     }
-  }, [vault, addSelectionToPack]);
+  }, [vault, generateIntentSource, buildDocumentPackSnapshot, findChunkForLineRange]);
 
   // 辅助函数：将搜索结果添加到 Pack
-  const handleAddSearchResultToPack = useCallback(async (result: any) => {
+  const handleAddSearchResultToPack = useCallback(async (result: SearchDocumentResult) => {
     if (!vault) return;
     try {
       const { contextPackService } = await import('@/services/index/context-pack');
@@ -703,16 +899,21 @@ export function AppShell() {
         title: null,
         summary: null,
         tags: null,
-        content: result.snippet ?? result.content ?? null,
+        content: result.content ?? result.snippet ?? null,
         heading: result.heading_path ?? null,
         start_line: result.start_line ?? null,
         end_line: result.end_line ?? null,
         selected_reason: 'search_result',
+        chunk_id: result.chunk_id ?? null,
+        source_type: 'search',
+        score: typeof result.rank === 'number' ? result.rank : null,
+        reasoning_note: null,
         is_suggestion: false,
       });
 
       setMentorDockTab('context-pack');
       setMentorDockOpen(true);
+      setContextPackRefreshKey(prev => prev + 1);
     } catch (err) {
       console.error('加入上下文包失败:', err);
     }
@@ -767,7 +968,7 @@ export function AppShell() {
   }, []);
 
   // Editor selection action callback (from right-click context menu)
-  const handleEditorSelectionAction = useCallback((action: string, selection: { from: number; to: number; text: string }) => {
+  const handleEditorSelectionAction = useCallback(async (action: string, selection: { from: number; to: number; text: string }) => {
     if (!activeTabId || !vault) return;
 
     switch (action) {
@@ -776,20 +977,143 @@ export function AppShell() {
         handleAddSelectionToPack(activeTabId, selection);
         break;
       case 'generateFrom':
-        // 选区"从此生成"：创建新 Pack 并添加选区
-        handleGenerateFromSelection(activeTabId, selection);
+        // 选区"从此生成"：打开 GenerateIntentModal
+        {
+          const content = activeTab?.content ?? '';
+          const lines = content.split('\n');
+          let currentPos = 0;
+          let startLine = 1;
+          let endLine = 1;
+          for (let i = 0; i < lines.length; i++) {
+            if (currentPos + lines[i].length >= selection.from && startLine === 1) {
+              startLine = i + 1;
+            }
+            if (currentPos + lines[i].length >= selection.to) {
+              endLine = i + 1;
+              break;
+            }
+            currentPos += lines[i].length + 1;
+          }
+          // 查找选区所在 heading
+          let heading: string | undefined;
+          for (let i = startLine - 1; i >= 0; i--) {
+            const line = lines[i];
+            if (line.trim().startsWith('#')) {
+              heading = line.replace(/^#+\s*/, '').trim();
+              break;
+            }
+          }
+          setGenerateIntentSource({
+            type: 'selection',
+            documentPath: activeTabId,
+            selectedText: selection.text,
+            heading,
+            startLine,
+            endLine,
+          });
+        }
         break;
       case 'explain':
-        handleSummarizeDoc(activeTabId);
+        // 选区解释：调用 reasoning
+        if (aiStatus === 'connected' && selection.text) {
+          const explainHeading = (() => {
+            const content = activeTab?.content ?? '';
+            const lines = content.split('\n');
+            let currentPos = 0;
+            let startLine = 1;
+            for (let i = 0; i < lines.length; i++) {
+              if (currentPos + lines[i].length >= selection.from) {
+                startLine = i + 1;
+                break;
+              }
+              currentPos += lines[i].length + 1;
+            }
+            for (let i = startLine - 1; i >= 0; i--) {
+              if (lines[i].trim().startsWith('#')) {
+                return lines[i].replace(/^#+\s*/, '').trim();
+              }
+            }
+            return undefined;
+          })();
+          setReasoningResult({
+            type: 'explain',
+            title: `解释: ${selection.text.slice(0, 30)}${selection.text.length > 30 ? '...' : ''}`,
+            content: '',
+            sources: [{ path: activeTabId, heading: explainHeading }],
+            loading: true,
+          });
+          try {
+            const result = await chat([
+              {
+                role: 'system',
+                content: '你是 MindDock 的 AI Mentor。用户请求你解释一段选中的文本。请用简洁清晰的中文解释，说明含义、上下文和可能的目的。如果涉及技术概念，给出简短说明。不超过 5 句话。',
+              },
+              {
+                role: 'user',
+                content: `请解释以下选区内容：\n\n${selection.text}${explainHeading ? `\n\n所在章节: ${explainHeading}` : ''}`,
+              },
+            ], 'explain_selection');
+            setReasoningResult(prev => prev ? { ...prev, content: result.content || '无法获取解释结果', loading: false } : null);
+          } catch (err) {
+            setReasoningResult(prev => prev ? { ...prev, content: `解释失败: ${err}`, loading: false } : null);
+          }
+        } else {
+          handleSummarizeDoc(activeTabId);
+        }
         break;
       case 'findRelated':
         handleFindRelated(activeTabId);
         break;
       case 'summarize':
-        handleSummarizeDoc(activeTabId);
+        // 选区总结：调用 reasoning
+        if (aiStatus === 'connected' && selection.text) {
+          const summarizeHeading = (() => {
+            const content = activeTab?.content ?? '';
+            const lines = content.split('\n');
+            let currentPos = 0;
+            let startLine = 1;
+            for (let i = 0; i < lines.length; i++) {
+              if (currentPos + lines[i].length >= selection.from) {
+                startLine = i + 1;
+                break;
+              }
+              currentPos += lines[i].length + 1;
+            }
+            for (let i = startLine - 1; i >= 0; i--) {
+              if (lines[i].trim().startsWith('#')) {
+                return lines[i].replace(/^#+\s*/, '').trim();
+              }
+            }
+            return undefined;
+          })();
+          setReasoningResult({
+            type: 'summarize',
+            title: `总结: ${selection.text.slice(0, 30)}${selection.text.length > 30 ? '...' : ''}`,
+            content: '',
+            sources: [{ path: activeTabId, heading: summarizeHeading }],
+            loading: true,
+          });
+          try {
+            const result = await chat([
+              {
+                role: 'system',
+                content: '你是 MindDock 的 AI Mentor。用户请求你总结一段选中的文本。请用简洁的中文总结核心要点，提取关键信息和结论。不超过 5 句话。',
+              },
+              {
+                role: 'user',
+                content: `请总结以下选区内容：\n\n${selection.text}${summarizeHeading ? `\n\n所在章节: ${summarizeHeading}` : ''}`,
+              },
+            ], 'summarize_selection');
+            setReasoningResult(prev => prev ? { ...prev, content: result.content || '无法获取总结结果', loading: false } : null);
+          } catch (err) {
+            setReasoningResult(prev => prev ? { ...prev, content: `总结失败: ${err}`, loading: false } : null);
+          }
+        } else {
+          handleSummarizeDoc(activeTabId);
+        }
         break;
     }
-  }, [activeTabId, vault, handleAddSelectionToPack, handleGenerateFromSelection, handleSummarizeDoc, handleFindRelated]);
+  }, [activeTabId, vault, aiStatus, chat, handleAddSelectionToPack, handleSummarizeDoc, handleFindRelated, activeTab]);
 
   const handleOpenVersionDiff = useCallback(async (commit: GitCommit) => {
     if (!vault || !activeTabId) return;
@@ -927,6 +1251,8 @@ export function AppShell() {
         onDocRenamed={handleDocRenamed}
         onSummarize={handleSummarizeDoc}
         onGeneratePackFromFolder={handleGeneratePackFromFolder}
+        onGenerate={(docPath) => setGenerateIntentSource({ type: 'document', documentPath: docPath })}
+        onGenerateFromFolder={(folderPath) => setGenerateIntentSource({ type: 'folder', folderPath })}
         onFindRelated={handleFindRelated}
         onAddToPack={handleAddToPack}
       />
@@ -949,6 +1275,7 @@ export function AppShell() {
           onMentorDockToggle={() => setMentorDockOpen(prev => !prev)}
           onNotificationsOpen={() => { setMentorDockTab('notifications'); setMentorDockOpen(true); }}
           onCreateStickyNote={() => addNote(activeTabId || undefined)}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
         {renderWorkspaceContent()}
         <StickyNotesLayer
@@ -975,8 +1302,45 @@ export function AppShell() {
         onOpenVersionDiff={handleOpenVersionDiff}
         onGeneratePrompt={(pack) => setOutputGeneratorPack(pack)}
         triggerResults={triggerResults}
-        onDismissTrigger={(triggerType) => {
+        onDismissTrigger={async (triggerType) => {
           setTriggerResults(prev => prev.filter(r => r.trigger_type !== triggerType));
+          // 持久化 dismissed 状态
+          if (vault && activeTabId) {
+            try {
+              await mentorTriggersService.updateTriggerState(vault.path, activeTabId, triggerType, true);
+            } catch (err) {
+              console.error('持久化 dismissed 状态失败:', err);
+            }
+          }
+        }}
+        onJudgeTrigger={async (trigger) => {
+          if (aiStatus !== 'connected') return null;
+          try {
+            const triggerTypeLabel: Record<string, string> = {
+              semantic_repeat: '语义重复',
+              new_topic: '新方向',
+              context_drift: '主题偏移',
+              review: '复查建议',
+            };
+            const label = triggerTypeLabel[trigger.trigger_type] || trigger.trigger_type;
+            const result = await chat(
+              [
+                {
+                  role: 'system',
+                  content: '你是 MindDock 的 AI Mentor。用户请求你判断一个触发器是否需要关注。请用简洁的中文回答，给出判断结论和 1-2 条建议。不要超过 3 句话。',
+                },
+                {
+                  role: 'user',
+                  content: `触发器类型: ${label}\n原因: ${trigger.reason}${trigger.theme ? `\n主题: ${trigger.theme}` : ''}${trigger.repeat_count ? `\n重复次数: ${trigger.repeat_count}` : ''}\n状态: ${trigger.status === 'threshold_exceeded' ? '已超过阈值' : '建议级别'}\n\n请判断这个触发器是否需要关注，并给出建议。`,
+                },
+              ],
+              'trigger_judgment',
+            );
+            return result.content || '无法获取判断结果';
+          } catch (err) {
+            console.error('触发器判断失败:', err);
+            return null;
+          }
         }}
         onDocumentUpdated={async () => {
           // 摘要/标签写入后，重新读取文件内容并更新编辑器
@@ -1000,6 +1364,7 @@ export function AppShell() {
         relatedResults={relatedResults}
         onClearRelatedResults={() => setRelatedResults([])}
         onDocSelect={handleDocSelect}
+        contextPackRefreshKey={contextPackRefreshKey}
       />
 
       {/* Command Palette Overlay */}
@@ -1093,6 +1458,82 @@ export function AppShell() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
       />
+
+      {/* Generate Intent Modal */}
+      {generateIntentSource && (
+        <GenerateIntentModal
+          source={generateIntentSource}
+          onConfirm={handleGenerateIntentConfirm}
+          onCancel={() => setGenerateIntentSource(null)}
+          loading={generateIntentLoading}
+        />
+      )}
+
+      {/* Reasoning Result Panel (explain/summarize selection) */}
+      {reasoningResult && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 dark:bg-black/50" onClick={() => setReasoningResult(null)}>
+          <div
+            className="w-[520px] max-h-[70vh] bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl shadow-xl flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[#e6e6dc] dark:border-[#2f2f2f] shrink-0">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
+                  {reasoningResult.type === 'explain' ? '解释选区' : '总结选区'}
+                </span>
+                <span className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e] truncate max-w-[280px]">
+                  {reasoningResult.title}
+                </span>
+              </div>
+              <div className="flex items-center gap-1">
+                {reasoningResult.content && !reasoningResult.loading && (
+                  <button
+                    onClick={async () => {
+                      try { await navigator.clipboard.writeText(reasoningResult.content); } catch { /* ignore */ }
+                    }}
+                    className="px-2 py-1 rounded text-[10px] font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors"
+                  >
+                    复制
+                  </button>
+                )}
+                <button
+                  onClick={() => setReasoningResult(null)}
+                  className="p-1 text-[#7e7e78] dark:text-[#8e8e8e] hover:text-[#2c2c2a] dark:hover:text-[#e3e3e3] transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto p-4">
+              {reasoningResult.loading ? (
+                <div className="flex items-center gap-2 text-[11px] text-[#7e7e78] dark:text-[#8e8e8e]">
+                  <Loader2 size={14} className="animate-spin" />
+                  {reasoningResult.type === 'explain' ? '正在解释...' : '正在总结...'}
+                </div>
+              ) : (
+                <div className="text-[12px] text-[#2c2c2a] dark:text-[#e3e3e3] whitespace-pre-wrap leading-relaxed">
+                  {reasoningResult.content}
+                </div>
+              )}
+            </div>
+
+            {/* Sources */}
+            {reasoningResult.sources.length > 0 && (
+              <div className="px-4 py-2 border-t border-[#e6e6dc] dark:border-[#2f2f2f] shrink-0">
+                <p className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e]">
+                  来源: {reasoningResult.sources.map(s => {
+                    const name = s.path.split('/').pop()?.replace('.md', '') ?? '文档';
+                    return s.heading ? `${name} › ${s.heading}` : name;
+                  }).join(', ')}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

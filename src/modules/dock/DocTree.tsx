@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Folder, FileText, RefreshCw, Plus, Pencil, Trash2, Tags, Package, Search } from 'lucide-react';
+import { Folder, FileText, RefreshCw, Plus, Pencil, Trash2, Tags, Search, Sparkles } from 'lucide-react';
 import { useVault } from '@/modules/vault/VaultProvider';
 import { documentService } from '@/services/filesystem/documents';
 import type { DocEntry } from '@/types/vault';
@@ -12,7 +12,9 @@ interface DocTreeProps {
   onDocRenamed?: (oldPath: string, newPath: string) => void;
   onCreateDoc?: () => void;
   onSummarize?: (docPath: string) => void;
-  onGeneratePack?: (docPath: string) => void;
+  onGeneratePackFromFolder?: (folderPath: string) => void;
+  onGenerate?: (docPath: string) => void;
+  onGenerateFromFolder?: (folderPath: string) => void;
   onFindRelated?: (docPath: string) => void;
   onAddToPack?: (docPath: string) => void;
 }
@@ -28,7 +30,9 @@ function DocEntryItem({
   onRenameConfirm,
   onRenameCancel,
   onSummarize,
-  onGeneratePack,
+  onGeneratePackFromFolder,
+  onGenerate,
+  onGenerateFromFolder,
   onFindRelated,
   onAddToPack,
 }: {
@@ -42,7 +46,9 @@ function DocEntryItem({
   onRenameConfirm: (entry: DocEntry, newName: string) => void;
   onRenameCancel: () => void;
   onSummarize?: (docPath: string) => void;
-  onGeneratePack?: (docPath: string) => void;
+  onGeneratePackFromFolder?: (folderPath: string) => void;
+  onGenerate?: (docPath: string) => void;
+  onGenerateFromFolder?: (folderPath: string) => void;
   onFindRelated?: (docPath: string) => void;
   onAddToPack?: (docPath: string) => void;
 }) {
@@ -65,12 +71,40 @@ function DocEntryItem({
     return (
       <div className="space-y-0.5">
         <div
+          onContextMenu={handleContextMenu}
           className={`flex items-center gap-1 px-2 py-0.5 text-[#7e7e78] dark:text-[#8e8e8e] text-[11px] font-semibold`}
           style={{ paddingLeft: `${8 + depth * 12}px` }}
         >
           <Folder size={12} />
           <span>{entry.name}</span>
         </div>
+        {contextMenu && (
+          <div
+            className={`fixed z-50 bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-lg shadow-lg py-1 text-[11px] min-w-[140px]`}
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              className="w-full text-left px-3 py-1.5 hover:bg-stone-50 dark:hover:bg-stone-800/50 flex items-center gap-2"
+              onClick={() => { onGenerateFromFolder?.(entry.absolute_path); setContextMenu(null); }}
+            >
+              <Sparkles size={11} /> 根据文件夹生成...
+            </button>
+            <div className="border-t border-[#e6e6dc] dark:border-[#2f2f2f] my-1" />
+            <button
+              className="w-full text-left px-3 py-1.5 hover:bg-stone-50 dark:hover:bg-stone-800/50 flex items-center gap-2"
+              onClick={() => { onRename(entry); setContextMenu(null); }}
+            >
+              <Pencil size={11} /> 重命名
+            </button>
+            <button
+              className="w-full text-left px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-950/30 text-red-600 flex items-center gap-2"
+              onClick={() => { onDelete(entry); setContextMenu(null); }}
+            >
+              <Trash2 size={11} /> 删除
+            </button>
+          </div>
+        )}
         {entry.children.map(child => {
           if (!child.is_dir && renamingEntry && renamingEntry.absolute_path === child.absolute_path) {
             return (
@@ -96,7 +130,9 @@ function DocEntryItem({
               onRenameConfirm={onRenameConfirm}
               onRenameCancel={onRenameCancel}
               onSummarize={onSummarize}
-              onGeneratePack={onGeneratePack}
+              onGeneratePackFromFolder={onGeneratePackFromFolder}
+              onGenerate={onGenerate}
+              onGenerateFromFolder={onGenerateFromFolder}
               onFindRelated={onFindRelated}
               onAddToPack={onAddToPack}
             />
@@ -149,12 +185,6 @@ function DocEntryItem({
               </button>
               <button
                 className="w-full text-left px-3 py-1.5 hover:bg-stone-50 dark:hover:bg-stone-800/50 flex items-center gap-2"
-                onClick={() => { onGeneratePack?.(entry.absolute_path); setContextMenu(null); }}
-              >
-                <Package size={11} /> 生成上下文包
-              </button>
-              <button
-                className="w-full text-left px-3 py-1.5 hover:bg-stone-50 dark:hover:bg-stone-800/50 flex items-center gap-2"
                 onClick={() => { onFindRelated?.(entry.absolute_path); setContextMenu(null); }}
               >
                 <Search size={11} /> 查找相关内容
@@ -164,6 +194,12 @@ function DocEntryItem({
                 onClick={() => { onAddToPack?.(entry.absolute_path); setContextMenu(null); }}
               >
                 <Plus size={11} /> 加入上下文包
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-stone-50 dark:hover:bg-stone-800/50 flex items-center gap-2"
+                onClick={() => { onGenerate?.(entry.absolute_path); setContextMenu(null); }}
+              >
+                <Sparkles size={11} /> 生成...
               </button>
               <div className="border-t border-[#e6e6dc] dark:border-[#2f2f2f] my-1" />
             </>
@@ -270,7 +306,7 @@ function NewDocInput({
   );
 }
 
-export function DocTree({ activeDocId, docTree, onDocSelect, onDocDeleted, onDocRenamed, onCreateDoc, onSummarize, onGeneratePack, onFindRelated, onAddToPack }: DocTreeProps) {
+export function DocTree({ activeDocId, docTree, onDocSelect, onDocDeleted, onDocRenamed, onCreateDoc, onSummarize, onGeneratePackFromFolder, onGenerate, onGenerateFromFolder, onFindRelated, onAddToPack }: DocTreeProps) {
   const { vault, refreshDocTree } = useVault();
 
   const [renamingEntry, setRenamingEntry] = useState<DocEntry | null>(null);
@@ -373,7 +409,9 @@ export function DocTree({ activeDocId, docTree, onDocSelect, onDocDeleted, onDoc
             onRenameConfirm={handleRename}
             onRenameCancel={() => setRenamingEntry(null)}
             onSummarize={onSummarize}
-            onGeneratePack={onGeneratePack}
+            onGeneratePackFromFolder={onGeneratePackFromFolder}
+            onGenerate={onGenerate}
+            onGenerateFromFolder={onGenerateFromFolder}
             onFindRelated={onFindRelated}
             onAddToPack={onAddToPack}
           />

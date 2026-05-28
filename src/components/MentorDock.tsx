@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
-import { X, Bot, Bell, LayoutGrid, FileText, Inbox, CheckCheck, Trash2, Circle, ChevronDown, ChevronRight, GripVertical, Pencil, Trash, Loader2, Settings, AlertTriangle, Zap, PencilLine, GitCommit as GitCommitIcon, List, History, Info, RefreshCw, Search, Tags, Check, XCircle, Package, Eye } from 'lucide-react';
+import { X, Bot, Bell, LayoutGrid, FileText, Inbox, CheckCheck, Trash2, Circle, ChevronDown, ChevronRight, GripVertical, Pencil, Trash, Loader2, AlertTriangle, Zap, PencilLine, GitCommit as GitCommitIcon, List, History, Info, RefreshCw, Search, Tags, Check, XCircle, Package, Eye } from 'lucide-react';
 
 import { useNotifications } from '@/modules/notifications/NotificationProvider';
 import { useCapture } from '@/modules/capture/CaptureProvider';
@@ -9,7 +9,6 @@ import { useAISuggestions } from '@/modules/ai/AISuggestionsProvider';
 import { ContextPackPanel } from '@/modules/context-pack/ContextPackPanel';
 import { documentService, type DocumentMetadata } from '@/services/filesystem/documents';
 import { gitService, type GitCommit } from '@/services/filesystem/git';
-import { metadataService } from '@/services/index/metadata';
 import { summaryTagsService, type SummaryTagsResult } from '@/services/index/summary-tags';
 import { personalizationService } from '@/services/index/personalization';
 import type { ContextPack } from '@/services/index/context-pack';
@@ -28,13 +27,13 @@ interface PlatterProps {
   onAIConfig?: () => void;
   onAICheckConnection?: () => void;
   onAIRuntimeLogs?: () => void;
-  onAIOnboarding?: () => void;
   onScrollToHeading?: (heading: string) => void;
   onScrollToLine?: (line: number) => void;
   onOpenVersionDiff?: (commit: GitCommit) => void;
   onGeneratePrompt?: (pack: ContextPack) => void;
   triggerResults?: TriggerResult[];
   onDismissTrigger?: (triggerType: string) => void;
+  onJudgeTrigger?: (trigger: TriggerResult) => Promise<string | null>;
   onDocumentUpdated?: () => void;
   pendingContextPackItem?: {
     documentPath: string;
@@ -53,6 +52,7 @@ interface PlatterProps {
   relatedResults?: any[];
   onClearRelatedResults?: () => void;
   onDocSelect?: (docPath: string) => void;
+  contextPackRefreshKey?: number;
 }
 
 const PLATTER_TABS: { id: PlatterTab; label: string; icon: typeof Bot }[] = [
@@ -390,15 +390,16 @@ function MentorView({
   onFindRelated,
   onExplain,
   onSummarize,
-  onAIOnboarding,
   relatedResults,
   onClearRelatedResults,
   onDocSelect,
+  triggerResults,
+  onDismissTrigger,
+  onJudgeTrigger,
 }: {
   onAIConfig?: () => void;
   onAICheckConnection?: () => void;
   onAIRuntimeLogs?: () => void;
-  onAIOnboarding?: () => void;
   onOpenSettings?: () => void;
   activeDocumentPath?: string;
   activeDocumentName?: string;
@@ -408,19 +409,47 @@ function MentorView({
   relatedResults?: any[];
   onClearRelatedResults?: () => void;
   onDocSelect?: (docPath: string) => void;
+  triggerResults?: TriggerResult[];
+  onDismissTrigger?: (triggerType: string) => void;
+  onJudgeTrigger?: (trigger: TriggerResult) => Promise<string | null>;
 }) {
-  const { vault } = useVault();
   const { status } = useAIRuntime();
-  const { suggestions, loading: suggestionsLoading } = useAISuggestions();
+  const { suggestions, loading: suggestionsLoading, updateSuggestionStatus } = useAISuggestions();
 
-  // 语义搜索可用性检测
-  const [semanticAvailable, setSemanticAvailable] = useState(false);
+  // 折叠状态：默认只展开最高优先级
+  const hasTriggers = triggerResults && triggerResults.length > 0;
+  const [currentSuggestionOpen, setCurrentSuggestionOpen] = useState(!hasTriggers);
+  const [pendingJudgmentOpen, setPendingJudgmentOpen] = useState(!!hasTriggers);
+  const [availableActionsOpen, setAvailableActionsOpen] = useState(false);
+  const [recentSuggestionsOpen, setRecentSuggestionsOpen] = useState(false);
+
+  // 判断结果状态
+  const [judgingType, setJudgingType] = useState<string | null>(null);
+  const [judgmentResults, setJudgmentResults] = useState<Record<string, string>>({});
+
+  // 当 trigger 变化时自动展开待判断
   useEffect(() => {
-    if (!vault) return;
-    metadataService.listDocumentsMetadata(vault.path).then(docs => {
-      setSemanticAvailable(docs.some(d => d.embedding_status === 'ready'));
-    }).catch(() => setSemanticAvailable(false));
-  }, [vault]);
+    if (hasTriggers) {
+      setPendingJudgmentOpen(true);
+      setCurrentSuggestionOpen(false);
+    } else {
+      setPendingJudgmentOpen(false);
+      setCurrentSuggestionOpen(true);
+    }
+  }, [hasTriggers]);
+
+  const handleJudge = async (trigger: TriggerResult) => {
+    if (!onJudgeTrigger) return;
+    setJudgingType(trigger.trigger_type);
+    try {
+      const result = await onJudgeTrigger(trigger);
+      if (result) {
+        setJudgmentResults(prev => ({ ...prev, [trigger.trigger_type]: result }));
+      }
+    } finally {
+      setJudgingType(null);
+    }
+  };
 
   // 最近建议（只显示3条）
   const recentSuggestions = [...suggestions].reverse().slice(0, 3);
@@ -445,115 +474,232 @@ function MentorView({
   };
 
   return (
-    <div className="space-y-3">
-      {/* A. 轻量状态栏 */}
+    <div>
+      {/* 轻量状态栏 */}
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-[#e6e6dc] dark:border-[#2f2f2f]">
         <div className="flex items-center gap-2">
           <span className={`w-1.5 h-1.5 rounded-full ${status === 'connected' ? 'bg-emerald-500' : 'bg-stone-300'}`} />
           <span className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e]">
             {status === 'connected' ? 'AI 助手已连接' : 'AI 助手未连接'}
           </span>
-          {semanticAvailable && (
-            <span className="text-[9px] text-emerald-600 dark:text-emerald-400">· 语义搜索已开启</span>
-          )}
         </div>
-        <button onClick={onOpenSettings} className="p-0.5 text-[#7e7e78] hover:text-stone-800 dark:hover:text-stone-200">
-          <Settings size={10} />
-        </button>
+        {status !== 'connected' && onOpenSettings && (
+          <button onClick={onOpenSettings} className="text-[9px] text-amber-600 dark:text-amber-400 hover:underline">
+            去设置
+          </button>
+        )}
       </div>
 
-      {/* B. 当前文档上下文 / C. Empty State */}
-      {activeDocumentName ? (
-        <div className="p-3 space-y-2">
-          <p className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
-            当前文档
-          </p>
-          <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] truncate">
-            {activeDocumentName}
-          </p>
+      {/* 折叠抽屉区 */}
+      <div className="border-b border-[#e6e6dc] dark:border-[#2f2f2f]">
 
-          <div className="grid grid-cols-2 gap-1.5">
-            <button
-              onClick={() => activeDocumentPath && onSummarize?.(activeDocumentPath)}
-              className="flex items-center justify-center gap-1 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
-            >
-              <Tags size={10} /> 总结文档
-            </button>
-            <button
-              onClick={() => activeDocumentPath && onFindRelated?.(activeDocumentPath)}
-              className="flex items-center justify-center gap-1 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
-            >
-              <Search size={10} /> 查找相关内容
-            </button>
-            <button
-              onClick={() => activeDocumentPath && onExplain?.(activeDocumentPath)}
-              className="flex items-center justify-center gap-1 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
-            >
-              <Bot size={10} /> 解释内容
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div className="p-6 text-center space-y-2">
-          <Bot size={24} className="mx-auto text-stone-300 dark:text-stone-600" />
-          <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3]">AI 知识助手</p>
-          <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
-            打开文档后，我可以帮你总结内容、查找相关知识、生成上下文包。
-          </p>
-          <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
-            你也可以在文档上右键，直接使用各项功能。
-          </p>
-        </div>
-      )}
+        {/* ── 1. 当前建议 ── */}
+        <ExplorerSection
+          title="当前建议"
+          icon={Zap}
+          expanded={currentSuggestionOpen}
+          onToggle={() => setCurrentSuggestionOpen(prev => !prev)}
+          contentClassName="px-3 pb-2 space-y-2"
+        >
+          {activeDocumentName ? (
+            <>
+              <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3]">
+                正在查看: {activeDocumentName}
+              </p>
+              {/* 相关内容 */}
+              {relatedResults && relatedResults.length > 0 && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e]">
+                      相关内容
+                    </p>
+                    <button onClick={onClearRelatedResults} className="p-0.5 text-[#7e7e78] hover:text-stone-800">
+                      <X size={10} />
+                    </button>
+                  </div>
+                  {relatedResults.slice(0, 3).map((result, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => onDocSelect?.(result.document_path)}
+                      className="w-full text-left px-2 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+                    >
+                      <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] truncate">
+                        {result.heading_path || result.document_path}
+                      </p>
+                      <p className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e] truncate">
+                        {result.document_path}
+                        {result.similarity_score && ` · 相关度 ${(result.similarity_score * 100).toFixed(0)}%`}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {/* 无相关内容且无 trigger 时的默认建议 */}
+              {(!relatedResults || relatedResults.length === 0) && !hasTriggers && (
+                <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
+                  暂无新建议。你可以使用下方"可用动作"操作当前文档。
+                </p>
+              )}
+            </>
+          ) : (
+            <div className="py-2 text-center space-y-1.5">
+              <Bot size={20} className="mx-auto text-stone-300 dark:text-stone-600" />
+              <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3]">AI 知识助手</p>
+              <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
+                打开文档后，我可以帮你总结内容、查找相关知识、生成上下文包。
+              </p>
+            </div>
+          )}
+        </ExplorerSection>
 
-      {/* D. 相关内容 */}
-      {relatedResults && relatedResults.length > 0 && (
-        <div className="p-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
-              相关内容
-            </p>
-            <button onClick={onClearRelatedResults} className="p-0.5 text-[#7e7e78] hover:text-stone-800">
-              <X size={10} />
-            </button>
-          </div>
-          <div className="space-y-1">
-            {relatedResults.slice(0, 5).map((result, idx) => (
+        {/* ── 2. 待判断 ── */}
+        <ExplorerSection
+          title={`待判断${hasTriggers ? ` (${triggerResults!.length})` : ''}`}
+          icon={AlertTriangle}
+          expanded={pendingJudgmentOpen}
+          onToggle={() => setPendingJudgmentOpen(prev => !prev)}
+          contentClassName="px-3 pb-2 space-y-2"
+        >
+          {hasTriggers ? (
+            triggerResults!.map((trigger, idx) => {
+              const triggerConfig = TRIGGER_TYPE_CONFIG[trigger.trigger_type] ?? { label: trigger.trigger_type, icon: AlertTriangle, colorClass: 'text-amber-600 dark:text-amber-400' };
+              const TriggerIcon = triggerConfig.icon;
+              return (
+                <div
+                  key={`${trigger.trigger_type}-${idx}`}
+                  className={`border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-lg p-2 space-y-1.5 ${
+                    trigger.status === 'threshold_exceeded' ? 'border-l-2 border-l-amber-500' : ''
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <TriggerIcon size={11} className={triggerConfig.colorClass} />
+                      <span className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
+                        {triggerConfig.label}
+                      </span>
+                      {trigger.status === 'threshold_exceeded' && (
+                        <span className="text-[9px] px-1 py-0.5 rounded bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400">
+                          阈值已超
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => onDismissTrigger?.(trigger.trigger_type)}
+                      className="p-0.5 text-stone-300 dark:text-stone-600 hover:text-stone-500 dark:hover:text-stone-400 shrink-0"
+                      title="忽略"
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] leading-normal">
+                    {trigger.reason}
+                  </p>
+                  {trigger.theme && (
+                    <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
+                      主题: {trigger.theme}
+                    </p>
+                  )}
+                  <div className="flex items-center gap-1.5 pt-0.5">
+                    <button
+                      onClick={() => handleJudge(trigger)}
+                      disabled={judgingType === trigger.trigger_type}
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="帮我判断"
+                    >
+                      {judgingType === trigger.trigger_type ? (
+                        <Loader2 size={10} className="animate-spin" />
+                      ) : (
+                        <Eye size={10} />
+                      )}
+                      {judgingType === trigger.trigger_type ? '判断中...' : '帮我判断'}
+                    </button>
+                    <button
+                      onClick={() => onDismissTrigger?.(trigger.trigger_type)}
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+                    >
+                      忽略
+                    </button>
+                  </div>
+                  {/* 判断结果卡片 */}
+                  {judgmentResults[trigger.trigger_type] && (
+                    <div className="mt-1.5 p-2 rounded-lg bg-emerald-50/50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 space-y-1">
+                      <div className="flex items-center gap-1">
+                        <Check size={10} className="text-emerald-600 dark:text-emerald-400" />
+                        <span className="text-[9px] font-mono uppercase font-bold text-emerald-600 dark:text-emerald-400">
+                          AI 判断结果
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] leading-normal whitespace-pre-wrap">
+                        {judgmentResults[trigger.trigger_type]}
+                      </p>
+                      <div className="flex items-center gap-1.5 pt-0.5">
+                        <button
+                          onClick={() => onDismissTrigger?.(trigger.trigger_type)}
+                          className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+                        >
+                          忽略
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          ) : (
+            <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">暂无待判断项</p>
+          )}
+        </ExplorerSection>
+
+        {/* ── 3. 可用动作 ── */}
+        <ExplorerSection
+          title="可用动作"
+          icon={Bot}
+          expanded={availableActionsOpen}
+          onToggle={() => setAvailableActionsOpen(prev => !prev)}
+          contentClassName="px-3 pb-2 space-y-1.5"
+        >
+          {activeDocumentPath ? (
+            <div className="grid grid-cols-2 gap-1.5">
               <button
-                key={idx}
-                onClick={() => onDocSelect?.(result.document_path)}
-                className="w-full text-left px-2 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+                onClick={() => onSummarize?.(activeDocumentPath)}
+                className="flex items-center justify-center gap-1 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
               >
-                <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] truncate">
-                  {result.heading_path || result.document_path}
-                </p>
-                <p className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e] truncate">
-                  {result.document_path}
-                  {result.similarity_score && ` · 相关度 ${(result.similarity_score * 100).toFixed(0)}%`}
-                </p>
+                <Tags size={10} /> 总结文档
               </button>
-            ))}
-          </div>
-        </div>
-      )}
+              <button
+                onClick={() => onFindRelated?.(activeDocumentPath)}
+                className="flex items-center justify-center gap-1 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+              >
+                <Search size={10} /> 查找相关
+              </button>
+              <button
+                onClick={() => onExplain?.(activeDocumentPath)}
+                className="flex items-center justify-center gap-1 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+              >
+                <Bot size={10} /> 解释内容
+              </button>
+            </div>
+          ) : (
+            <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">打开文档后可使用动作</p>
+          )}
+        </ExplorerSection>
 
-      {/* E. 最近建议（简化为3条） */}
-      <div className="bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl p-3.5 space-y-2">
-        <div className="flex items-center gap-1.5">
-          <PencilLine size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
-          <p className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
-            最近建议
-          </p>
-        </div>
-        {suggestionsLoading ? (
-          <div className="flex items-center justify-center py-3">
-            <Loader2 size={12} className="animate-spin text-stone-400" />
-          </div>
-        ) : recentSuggestions.length === 0 ? (
-          <p className="text-[11px] text-[#7e7e78] dark:text-[#8e8e8e]">暂无 AI 建议</p>
-        ) : (
-          <div className="space-y-1.5">
-            {recentSuggestions.map(s => (
+        {/* ── 4. 最近建议 ── */}
+        <ExplorerSection
+          title="最近建议"
+          icon={PencilLine}
+          expanded={recentSuggestionsOpen}
+          onToggle={() => setRecentSuggestionsOpen(prev => !prev)}
+          contentClassName="px-3 pb-2 space-y-1.5"
+        >
+          {suggestionsLoading ? (
+            <div className="flex items-center justify-center py-2">
+              <Loader2 size={12} className="animate-spin text-stone-400" />
+            </div>
+          ) : recentSuggestions.length === 0 ? (
+            <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">暂无 AI 建议</p>
+          ) : (
+            recentSuggestions.map(s => (
               <div key={s.id} className="border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-lg p-2 space-y-1">
                 <div className="flex items-center justify-between gap-1">
                   <span className="text-[9px] px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-[#5a5a56] dark:text-[#a0a0a0]">
@@ -567,20 +713,29 @@ function MentorView({
                 <p className="text-[9px] text-stone-400 dark:text-stone-500">
                   {new Date(s.created_at).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                 </p>
+                {s.status === 'pending' && (
+                  <div className="flex items-center gap-1 pt-0.5">
+                    <button
+                      onClick={() => updateSuggestionStatus(s.id, 'accepted')}
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors"
+                    >
+                      <Check size={10} />
+                      采纳
+                    </button>
+                    <button
+                      onClick={() => updateSuggestionStatus(s.id, 'rejected')}
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+                    >
+                      <XCircle size={10} />
+                      忽略
+                    </button>
+                  </div>
+                )}
               </div>
-            ))}
-          </div>
-        )}
+            ))
+          )}
+        </ExplorerSection>
       </div>
-
-      {onAIOnboarding && (
-        <button
-          onClick={onAIOnboarding}
-          className="w-full text-[10px] text-[#7e7e78] dark:text-[#8e8e8e] hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors py-1"
-        >
-          重新运行 AI Onboarding
-        </button>
-      )}
     </div>
   );
 }
@@ -1180,13 +1335,13 @@ export function MentorDock({
   onAIConfig,
   onAICheckConnection,
   onAIRuntimeLogs,
-  onAIOnboarding,
   onScrollToHeading,
   onScrollToLine,
   onOpenVersionDiff,
   onGeneratePrompt,
   triggerResults,
   onDismissTrigger,
+  onJudgeTrigger,
   onDocumentUpdated,
   pendingContextPackItem,
   onOpenSettings,
@@ -1196,6 +1351,7 @@ export function MentorDock({
   relatedResults,
   onClearRelatedResults,
   onDocSelect,
+  contextPackRefreshKey,
 }: PlatterProps) {
   const [tabOrder, setTabOrder] = useState<PlatterTab[]>(PLATTER_TABS.map(t => t.id));
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -1465,72 +1621,10 @@ export function MentorDock({
       ) : (
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           <div className={activeTab === 'mentor' ? '' : 'hidden'}>
-            {/* Trigger Notifications */}
-            {triggerResults && triggerResults.length > 0 && (
-              <div className="space-y-2 mb-4">
-                {triggerResults.map((trigger, idx) => {
-                  const triggerConfig = TRIGGER_TYPE_CONFIG[trigger.trigger_type] ?? { label: trigger.trigger_type, icon: AlertTriangle, colorClass: 'text-amber-600 dark:text-amber-400' };
-                  const TriggerIcon = triggerConfig.icon;
-                  return (
-                    <div
-                      key={`${trigger.trigger_type}-${idx}`}
-                      className={`bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl p-3 space-y-1.5 ${
-                        trigger.status === 'threshold_exceeded' ? 'border-l-2 border-l-amber-500' : ''
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-1.5">
-                        <div className="flex items-center gap-1.5">
-                          <TriggerIcon size={12} className={triggerConfig.colorClass} />
-                          <span className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
-                            {triggerConfig.label}
-                          </span>
-                          {trigger.status === 'threshold_exceeded' && (
-                            <span className="text-[9px] px-1 py-0.5 rounded bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400">
-                              阈值已超
-                            </span>
-                          )}
-                        </div>
-                        <button
-                          onClick={() => onDismissTrigger?.(trigger.trigger_type)}
-                          className="p-0.5 text-stone-300 dark:text-stone-600 hover:text-stone-500 dark:hover:text-stone-400 shrink-0"
-                          title="忽略"
-                        >
-                          <X size={10} />
-                        </button>
-                      </div>
-                      <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] leading-normal">
-                        {trigger.reason}
-                      </p>
-                      {trigger.theme && (
-                        <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
-                          主题: {trigger.theme}
-                        </p>
-                      )}
-                      <div className="flex items-center gap-1.5 pt-1">
-                        <button
-                          className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors"
-                          title="帮我判断"
-                        >
-                          <Eye size={10} />
-                          帮我判断
-                        </button>
-                        <button
-                          onClick={() => onDismissTrigger?.(trigger.trigger_type)}
-                          className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
-                        >
-                          忽略
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
             <MentorView
               onAIConfig={onAIConfig}
               onAICheckConnection={onAICheckConnection}
               onAIRuntimeLogs={onAIRuntimeLogs}
-              onAIOnboarding={onAIOnboarding}
               onOpenSettings={onOpenSettings}
               activeDocumentPath={activeDocumentPath}
               activeDocumentName={activeDocumentName}
@@ -1540,6 +1634,9 @@ export function MentorDock({
               relatedResults={relatedResults}
               onClearRelatedResults={onClearRelatedResults}
               onDocSelect={onDocSelect}
+              triggerResults={triggerResults}
+              onDismissTrigger={onDismissTrigger}
+              onJudgeTrigger={onJudgeTrigger}
             />
           </div>
           <div className={activeTab === 'notifications' ? '' : 'hidden'}>
@@ -1552,7 +1649,7 @@ export function MentorDock({
             <WidgetsView />
           </div>
           <div className={activeTab === 'context-pack' ? '' : 'hidden'}>
-            <ContextPackPanel onGeneratePrompt={onGeneratePrompt} pendingItem={pendingContextPackItem} />
+            <ContextPackPanel onGeneratePrompt={onGeneratePrompt} pendingItem={pendingContextPackItem} refreshKey={contextPackRefreshKey} />
           </div>
         </div>
       )}

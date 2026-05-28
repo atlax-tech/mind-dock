@@ -13,6 +13,9 @@ import {
 import {
   vectorIndexService,
 } from '@/services/index/vector';
+import {
+  chunkingService,
+} from '@/services/index/chunking';
 import { personalizationService } from '@/services/index/personalization';
 
 /** selected_reason 的中文标签映射 */
@@ -43,6 +46,7 @@ interface ContextPackPanelProps {
     start_line: number | null;
     end_line: number | null;
   } | null;
+  refreshKey?: number;
 }
 
 /** 文档级推荐候选 */
@@ -51,11 +55,15 @@ interface DocCandidate {
   title?: string;
   summary?: string;
   tags?: string;
+  content?: string;
   selected_reason: string;
   similarity_score: number;
+  chunk_id?: number;
+  start_line?: number;
+  end_line?: number;
 }
 
-export function ContextPackPanel({ onGeneratePrompt, pendingItem }: ContextPackPanelProps) {
+export function ContextPackPanel({ onGeneratePrompt, pendingItem, refreshKey }: ContextPackPanelProps) {
   const { vault } = useVault();
   const [packs, setPacks] = useState<ContextPack[]>([]);
   const [activePackId, setActivePackId] = useState<string | null>(null);
@@ -87,6 +95,11 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem }: ContextPackP
     refreshPacks();
   }, [refreshPacks]);
 
+  useEffect(() => {
+    if (refreshKey === undefined) return;
+    refreshPacks();
+  }, [refreshKey, refreshPacks]);
+
   // 处理 pendingItem：当从搜索结果添加时，自动加入当前活跃的 Pack
   useEffect(() => {
     if (!vault || !pendingItem) return;
@@ -109,6 +122,10 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem }: ContextPackP
           heading: pendingItem.heading ?? null,
           start_line: pendingItem.start_line ?? null,
           end_line: pendingItem.end_line ?? null,
+          chunk_id: null,
+          source_type: 'search',
+          score: null,
+          reasoning_note: null,
           selected_reason: 'user_added',
           is_suggestion: false,
         });
@@ -122,42 +139,79 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem }: ContextPackP
     addPendingItem();
   }, [vault, pendingItem]);
 
-  // 当 activePack 变化时，加载建议（基于文档级推荐）
+  // 当 activePack 变化时，加载建议（基于已有 item 的 chunk_id 推荐相似内容）
   useEffect(() => {
     if (!vault || !activePack) {
       setSuggestions([]);
       return;
     }
-    const docPaths = activePack.items
-      .filter(i => !i.is_suggestion)
-      .map(i => i.document_path);
-    if (docPaths.length === 0) {
+    const confirmedItems = activePack.items.filter(i => !i.is_suggestion);
+    if (confirmedItems.length === 0) {
       setSuggestions([]);
       return;
     }
     setSuggestionsLoading(true);
-    // 使用 vectorIndexService 获取相似 chunks，然后聚合到文档级别
-    vectorIndexService
-      .suggestContextPackCandidates(vault.path, [], 20)
-      .then(candidates => {
-        // 按 document_path 去重，只保留文档级推荐
+
+    // 收集已有 item 的 chunk_id 用于推荐
+    const collectChunkIdsAndSuggest = async () => {
+      try {
+        // 1. 从已有 item 中直接收集 chunk_id
+        const existingChunkIds = confirmedItems
+          .map(i => i.chunk_id)
+          .filter((id): id is number => id != null);
+
+        // 2. 对于没有 chunk_id 的文档级 item，查询该文档的 chunks 取第一个
+        const docItemsWithoutChunk = confirmedItems.filter(i => i.chunk_id == null);
+        for (const item of docItemsWithoutChunk) {
+          try {
+            const chunks = await chunkingService.getDocumentChunks(vault.path, item.document_path);
+            if (chunks.length > 0) {
+              existingChunkIds.push(chunks[0].id);
+            }
+          } catch {
+            // 文档可能未索引，跳过
+          }
+        }
+
+        if (existingChunkIds.length === 0) {
+          setSuggestions([]);
+          return;
+        }
+
+        // 3. 用收集到的 chunkIds 调用推荐
+        const candidates = await vectorIndexService.suggestContextPackCandidates(
+          vault.path,
+          existingChunkIds,
+          20,
+        );
+
+        // 4. 按 document_path 去重，排除已有文档
+        const existingDocPaths = new Set(confirmedItems.map(i => i.document_path));
         const seen = new Set<string>();
         const docCandidates: DocCandidate[] = [];
         for (const c of candidates) {
-          if (seen.has(c.document_path) || docPaths.includes(c.document_path)) continue;
+          if (seen.has(c.document_path) || existingDocPaths.has(c.document_path)) continue;
           seen.add(c.document_path);
           docCandidates.push({
             document_path: c.document_path,
             title: c.heading_path ?? undefined,
+            content: c.content,
             selected_reason: c.selected_reason,
             similarity_score: c.similarity_score,
+            chunk_id: c.chunk_id,
+            start_line: c.start_line,
+            end_line: c.end_line,
           });
         }
-        return docCandidates.slice(0, 5);
-      })
-      .catch(() => [] as DocCandidate[])
-      .then(setSuggestions)
-      .finally(() => setSuggestionsLoading(false));
+        setSuggestions(docCandidates.slice(0, 5));
+      } catch {
+        setSuggestions([]);
+      } finally {
+        setSuggestionsLoading(false);
+      }
+    };
+
+    collectChunkIdsAndSuggest();
   }, [vault, activePackId, activePack?.items.filter(i => !i.is_suggestion).length]);
 
   // 创建新 pack
@@ -214,7 +268,7 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem }: ContextPackP
       personalizationService.recordSignal(vault.path, {
         action_type: 'context_pack_item_rejected',
         document_path: item.document_path,
-        chunk_id: null,
+        chunk_id: item.chunk_id ?? null,
         search_query: null,
       }).catch(() => { /* 信号记录失败不影响操作 */ });
     }
@@ -263,10 +317,14 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem }: ContextPackP
         title: candidate.title ?? null,
         summary: candidate.summary ?? null,
         tags: candidate.tags ?? null,
-        content: null,
-        heading: null,
-        start_line: null,
-        end_line: null,
+        content: candidate.content ?? null,
+        heading: candidate.title ?? null,
+        start_line: candidate.start_line ?? null,
+        end_line: candidate.end_line ?? null,
+        chunk_id: candidate.chunk_id ?? null,
+        source_type: 'suggestion',
+        score: candidate.similarity_score,
+        reasoning_note: null,
         selected_reason: candidate.selected_reason,
         is_suggestion: false,
       });
@@ -282,7 +340,7 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem }: ContextPackP
       personalizationService.recordSignal(vault.path, {
         action_type: 'context_pack_item_accepted',
         document_path: candidate.document_path,
-        chunk_id: null,
+        chunk_id: candidate.chunk_id ?? null,
         search_query: null,
       }).catch(() => { /* 信号记录失败不影响操作 */ });
     }
@@ -335,9 +393,9 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem }: ContextPackP
   const confirmedItems = activePack?.items.filter(i => !i.is_suggestion) ?? [];
 
   return (
-    <div className="space-y-3">
+    <div className="divide-y divide-[#e6e6dc] dark:divide-[#2f2f2f]">
       {/* Pack 列表 */}
-      <div className="bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl p-3.5 space-y-2">
+      <section className="px-3 py-2.5 space-y-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5">
             <Package size={12} className="text-[#7e7e78] dark:text-[#8e8e8e]" />
@@ -375,9 +433,7 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem }: ContextPackP
         )}
 
         {packs.length === 0 ? (
-          <div className="text-center py-6 space-y-2">
-            <Package size={20} className="mx-auto text-stone-300 dark:text-stone-600" />
-            <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3]">上下文包</p>
+          <div className="py-4 space-y-1.5">
             <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
               收集相关文档，生成结构化提示词。
             </p>
@@ -390,10 +446,10 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem }: ContextPackP
             {packs.map(pack => (
               <div
                 key={pack.id}
-                className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg cursor-pointer transition-colors ${
+                className={`flex items-center gap-1.5 px-1.5 py-1.5 cursor-pointer transition-colors border-l-2 ${
                   activePackId === pack.id
-                    ? 'bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800'
-                    : 'hover:bg-stone-50 dark:hover:bg-stone-800/50 border border-transparent'
+                    ? 'border-l-emerald-500 bg-emerald-50/50 dark:bg-emerald-900/10'
+                    : 'border-l-transparent hover:bg-stone-50 dark:hover:bg-stone-800/40'
                 }`}
               >
                 {renamingPackId === pack.id ? (
@@ -437,11 +493,11 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem }: ContextPackP
             ))}
           </div>
         )}
-      </div>
+      </section>
 
       {/* 当前 Pack 内容 */}
       {activePack && (
-        <div className="bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl p-3.5 space-y-2">
+        <section className="px-3 py-2.5 space-y-2">
           {justAdded && (
             <div className="flex items-center gap-1 px-2 py-1 bg-emerald-50 dark:bg-emerald-900/20 rounded text-[10px] text-emerald-600 dark:text-emerald-400">
               <Check size={10} />
@@ -484,11 +540,11 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem }: ContextPackP
           {confirmedItems.length === 0 ? (
             <p className="text-[11px] text-[#7e7e78] dark:text-[#8e8e8e]">从文档右键菜单或搜索结果添加文档</p>
           ) : (
-            <div className="space-y-1.5">
+            <div className="divide-y divide-[#e6e6dc] dark:divide-[#2f2f2f]">
               {confirmedItems.map((item, idx) => (
                 <div
                   key={item.id}
-                  className="border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-lg p-2 space-y-1"
+                  className="py-2 space-y-1"
                 >
                   <div className="flex items-start justify-between gap-1">
                     <div className="flex-1 min-w-0">
@@ -582,12 +638,12 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem }: ContextPackP
               ))}
             </div>
           )}
-        </div>
+        </section>
       )}
 
       {/* Embedding-driven 候选建议 */}
       {activePack && (
-        <div className="bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-xl p-3.5 space-y-2">
+        <section className="px-3 py-2.5 space-y-2">
           <div className="flex items-center gap-1.5">
             <Sparkles size={12} className="text-amber-500 dark:text-amber-400" />
             <p className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
@@ -612,7 +668,7 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem }: ContextPackP
               {suggestions.map(candidate => (
                 <div
                   key={candidate.document_path}
-                  className="border border-amber-200 dark:border-amber-800/40 bg-amber-50/30 dark:bg-amber-900/10 rounded-lg p-2 space-y-1"
+                  className="border-l-2 border-l-amber-500 bg-amber-50/30 dark:bg-amber-900/10 px-2 py-1.5 space-y-1"
                 >
                   <div className="flex items-start justify-between gap-1">
                     <div className="flex-1 min-w-0">
@@ -630,7 +686,15 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem }: ContextPackP
                       </p>
                       <p className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e] truncate">
                         {candidate.document_path}
+                        {candidate.start_line != null && candidate.end_line != null && (
+                          <span> · L{candidate.start_line}-{candidate.end_line}</span>
+                        )}
                       </p>
+                      {candidate.content && (
+                        <p className="text-[9px] text-[#5a5a56] dark:text-[#a0a0a0] line-clamp-2 mt-0.5 leading-normal">
+                          {candidate.content}
+                        </p>
+                      )}
                     </div>
                     <button
                       onClick={() => handleAcceptSuggestion(candidate)}
@@ -644,7 +708,7 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem }: ContextPackP
               ))}
             </div>
           )}
-        </div>
+        </section>
       )}
     </div>
   );

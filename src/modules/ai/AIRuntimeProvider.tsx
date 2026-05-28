@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { useVault } from '@/modules/vault/VaultProvider';
-import { aiRuntimeService, type AIConfig, type OllamaConnectionResult, type ChatMessage, type OllamaChatResult, type OllamaEmbedResult } from '@/services/ai/runtime';
+import { aiRuntimeService, type AIConfig, type AIProvider, type OllamaConnectionResult, type ChatMessage, type OllamaChatResult, type OllamaEmbedResult } from '@/services/ai/runtime';
 import { aiLogsService } from '@/services/ai/logs';
 import { vectorIndexService } from '@/services/index/vector';
 import { mentorEventBus } from '@/modules/ai/MentorEventBus';
@@ -17,7 +17,7 @@ interface AIRuntimeState {
   isRemote: boolean;
   error: string | null;
   aiPhase: AIPhase;
-  checkConnection: () => Promise<void>;
+  checkConnection: (overrideConfig?: AIConfig) => Promise<void>;
   chat: (messages: ChatMessage[], promptType: string) => Promise<OllamaChatResult>;
   embed: (input: string) => Promise<OllamaEmbedResult>;
   embedAndStore: (chunkId: number, content: string, contentHash: string) => Promise<void>;
@@ -37,6 +37,10 @@ const DEFAULT_CONFIG: AIConfig = {
   endpoint: 'http://localhost:11434',
   default_model: null,
   embedding_model: null,
+  provider: 'ollama',
+  spark_base_url: 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v2',
+  spark_api_key: null,
+  spark_model: 'astron-code-latest',
 };
 
 // AI 阶段自动推进计时器
@@ -54,6 +58,15 @@ export function AIRuntimeProvider({ children }: { children: ReactNode }) {
   const [isRemote, setIsRemote] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [aiPhase, setAiPhase] = useState<AIPhase>('idle');
+
+  const isCustomApiProvider = useCallback((provider: AIProvider | undefined) => {
+    return provider === 'custom_api' || provider === 'spark_codingplan';
+  }, []);
+
+  const isXfyunCodingPlanBaseUrl = useCallback((baseUrl: string | null | undefined) => {
+    const raw = (baseUrl || '').trim().toLowerCase();
+    return raw.includes('maas-coding-api.cn-huabei-1.xf-yun.com');
+  }, []);
 
   // 取消标志
   const cancelledRef = useRef(false);
@@ -106,18 +119,29 @@ export function AIRuntimeProvider({ children }: { children: ReactNode }) {
   }, [vault]);
 
   // 检测连接
-  const checkConnection = useCallback(async () => {
+  const checkConnection = useCallback(async (overrideConfig?: AIConfig) => {
     try {
       setStatus('running');
       setError(null);
-      const result: OllamaConnectionResult = await aiRuntimeService.checkConnection(config.endpoint);
+      const targetConfig = overrideConfig ?? config;
+      const provider: AIProvider = targetConfig.provider ?? 'ollama';
+      const result: OllamaConnectionResult = isCustomApiProvider(provider)
+        ? await aiRuntimeService.customApiCheckConnection(
+          targetConfig.spark_base_url || 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v2',
+          targetConfig.spark_api_key || '',
+        )
+        : await aiRuntimeService.checkConnection(targetConfig.endpoint);
       if (result.connected) {
         setStatus('connected');
-        setAvailableModels(result.models.map(m => m.name));
+        const detectedModels = result.models.map(m => m.name);
+        const models = isCustomApiProvider(provider) && isXfyunCodingPlanBaseUrl(targetConfig.spark_base_url)
+          ? ['astron-code-latest']
+          : detectedModels;
+        setAvailableModels(models);
         setIsRemote(result.is_remote);
       } else {
         setStatus('error');
-        setError(result.error || '无法连接 Ollama 服务');
+        setError(result.error || (isCustomApiProvider(provider) ? '无法连接自定义 API 服务' : '无法连接 Ollama 服务'));
         setAvailableModels([]);
       }
       mentorEventBus.emit('ai_runtime_status_changed', { status: result.connected ? 'connected' : 'error' });
@@ -127,19 +151,25 @@ export function AIRuntimeProvider({ children }: { children: ReactNode }) {
       setAvailableModels([]);
       mentorEventBus.emit('ai_runtime_status_changed', { status: 'error' });
     }
-  }, [config.endpoint]);
+  }, [config, isCustomApiProvider, isXfyunCodingPlanBaseUrl]);
 
   // 配置加载后自动检测连接
   useEffect(() => {
-    if (vault && config.endpoint) {
+    const provider: AIProvider = config.provider ?? 'ollama';
+    if (vault && (isCustomApiProvider(provider) ? config.spark_base_url : config.endpoint)) {
       checkConnection();
     }
-  }, [vault, config.endpoint, checkConnection]);
+  }, [vault, config.endpoint, config.provider, config.spark_base_url, checkConnection, isCustomApiProvider]);
 
   // chat 调用
   const chat = useCallback(async (messages: ChatMessage[], promptType: string): Promise<OllamaChatResult> => {
     if (!vault) throw new Error('Vault 未就绪');
-    const model = config.default_model || availableModels[0];
+    const provider: AIProvider = config.provider ?? 'ollama';
+    const model = isCustomApiProvider(provider)
+      ? (isXfyunCodingPlanBaseUrl(config.spark_base_url)
+        ? 'astron-code-latest'
+        : (config.spark_model || config.default_model || 'astron-code-latest'))
+      : (config.default_model || availableModels[0]);
     if (!model) throw new Error('未选择模型，请先配置 AI Runtime');
 
     cancelledRef.current = false;
@@ -147,7 +177,15 @@ export function AIRuntimeProvider({ children }: { children: ReactNode }) {
 
     const startTime = Date.now();
     try {
-      const result = await aiRuntimeService.chat(config.endpoint, model, messages, promptType);
+      const result = isCustomApiProvider(provider)
+        ? await aiRuntimeService.customApiChat(
+          config.spark_base_url || 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v2',
+          config.spark_api_key || '',
+          model,
+          messages,
+          promptType,
+        )
+        : await aiRuntimeService.chat(config.endpoint, model, messages, promptType);
 
       // 检查是否被取消
       if (cancelledRef.current) {
@@ -161,7 +199,7 @@ export function AIRuntimeProvider({ children }: { children: ReactNode }) {
 
       // 记录 AI Runtime Log（只记录 metadata，不记录完整 prompt/response）
       await aiLogsService.appendLog(
-        vault.path, 'ollama', model, result.latency_ms, promptType,
+        vault.path, provider, model, result.latency_ms, promptType,
         promptType, 'none', true, null
       );
       return result;
@@ -176,17 +214,20 @@ export function AIRuntimeProvider({ children }: { children: ReactNode }) {
 
       const latencyMs = Date.now() - startTime;
       await aiLogsService.appendLog(
-        vault.path, 'ollama', model, latencyMs, promptType,
+        vault.path, provider, model, latencyMs, promptType,
         promptType, 'none', false, String(err)
       );
       throw err;
     }
-  }, [vault, config, availableModels, startPhaseProgression, clearPhaseTimers]);
+  }, [vault, config, availableModels, startPhaseProgression, clearPhaseTimers, isCustomApiProvider, isXfyunCodingPlanBaseUrl]);
 
   // embed 调用
   const embed = useCallback(async (input: string): Promise<OllamaEmbedResult> => {
     if (!vault) throw new Error('Vault 未就绪');
-    const model = config.embedding_model || config.default_model || availableModels[0];
+    const provider: AIProvider = config.provider ?? 'ollama';
+    const model = isCustomApiProvider(provider)
+      ? config.embedding_model
+      : (config.embedding_model || config.default_model || availableModels[0]);
     if (!model) throw new Error('未选择模型，请先配置 AI Runtime');
 
     cancelledRef.current = false;
@@ -226,12 +267,15 @@ export function AIRuntimeProvider({ children }: { children: ReactNode }) {
       );
       throw err;
     }
-  }, [vault, config, availableModels, startPhaseProgression, clearPhaseTimers]);
+  }, [vault, config, availableModels, startPhaseProgression, clearPhaseTimers, isCustomApiProvider]);
 
   // embedAndStore: 生成 embedding 并存储到 vector index
   const embedAndStore = useCallback(async (chunkId: number, content: string, contentHash: string): Promise<void> => {
     if (!vault) throw new Error('Vault 未就绪');
-    const model = config.embedding_model || config.default_model || availableModels[0];
+    const provider: AIProvider = config.provider ?? 'ollama';
+    const model = isCustomApiProvider(provider)
+      ? config.embedding_model
+      : (config.embedding_model || config.default_model || availableModels[0]);
     if (!model) throw new Error('未选择模型，请先配置 AI Runtime');
 
     // 1. 调用 embed 获取 embedding 向量
@@ -252,7 +296,7 @@ export function AIRuntimeProvider({ children }: { children: ReactNode }) {
       embeddingProvider: 'ollama',
       embeddingContentHash: contentHash,
     });
-  }, [vault, config, availableModels]);
+  }, [vault, config, availableModels, isCustomApiProvider]);
 
   // 取消当前操作
   const cancelCurrentOperation = useCallback(() => {

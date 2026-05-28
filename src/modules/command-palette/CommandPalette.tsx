@@ -27,7 +27,6 @@ interface CommandPaletteProps {
   onGenerateSummaryTags?: (docPath: string) => void;
   onAddToContextPack?: (result: SearchDocumentResult) => void;
   onFindSimilar?: (result: SearchDocumentResult) => void;
-  onGeneratePackFromDoc?: (docPath: string) => void;
   onAddCurrentDocToPack?: () => void;
   onFindRelatedContent?: (docPath: string) => void;
   onOpenSettings?: () => void;
@@ -36,7 +35,7 @@ interface CommandPaletteProps {
   docEntries: Array<{ name: string; path: string; absolute_path: string; is_dir: boolean }>;
 }
 
-export function CommandPalette({ open, onClose, onOpenDoc, onCreateDoc, onSwitchTab, onQuickCapture, onTogglePlatter, onSwitchPlatterView, onCreateStickyNote, onAIOnboarding, onOpenDocAtLine, onGenerateSummaryTags, onAddToContextPack, onFindSimilar, onGeneratePackFromDoc, onAddCurrentDocToPack, onFindRelatedContent, onOpenSettings, activeDocPath, openTabs, docEntries }: CommandPaletteProps) {
+export function CommandPalette({ open, onClose, onOpenDoc, onCreateDoc, onSwitchTab, onQuickCapture, onTogglePlatter, onSwitchPlatterView, onCreateStickyNote, onAIOnboarding, onOpenDocAtLine, onGenerateSummaryTags, onAddToContextPack, onFindSimilar, onAddCurrentDocToPack, onFindRelatedContent, onOpenSettings, activeDocPath, openTabs, docEntries }: CommandPaletteProps) {
   const { vault } = useVault();
   const { status: aiStatus, embed } = useAIRuntime();
 
@@ -86,12 +85,14 @@ export function CommandPalette({ open, onClose, onOpenDoc, onCreateDoc, onSwitch
             const queryEmbedding = embedResult.embeddings[0];
             const semResults = await vectorIndexService.semanticSearch(vault.path, queryEmbedding, 5);
             semanticResults = semResults.map(r => ({
+              chunk_id: r.chunk_id,
               document_title: null,
               document_path: r.document_path,
               heading_path: r.heading_path,
               start_line: r.start_line,
               end_line: r.end_line,
-              snippet: '',
+              content: r.content,
+              snippet: r.content,
               source: 'semantic',
               rank: r.similarity_score,
             }));
@@ -189,6 +190,8 @@ export function CommandPalette({ open, onClose, onOpenDoc, onCreateDoc, onSwitch
         return <span className="text-[8px] px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-[#5a5a56] dark:text-[#a0a0a0]">全文</span>;
       case 'semantic':
         return <span className="text-[8px] px-1 py-0.5 rounded bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">智能</span>;
+      case 'title':
+        return <span className="text-[8px] px-1 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400">标题</span>;
       default:
         return <span className="text-[8px] px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-[#5a5a56] dark:text-[#a0a0a0]">{source}</span>;
     }
@@ -200,7 +203,7 @@ export function CommandPalette({ open, onClose, onOpenDoc, onCreateDoc, onSwitch
       personalizationService.recordSignal(vault.path, {
         action_type: 'opened_result',
         document_path: result.document_path,
-        chunk_id: null,
+        chunk_id: result.chunk_id ?? null,
         search_query: searchQuery || null,
       }).catch(() => { /* 信号记录失败不影响操作 */ });
     }
@@ -288,14 +291,7 @@ export function CommandPalette({ open, onClose, onOpenDoc, onCreateDoc, onSwitch
                   </Command.Group>
                 )}
 
-                {/* 语义搜索状态提示 - 仅在无语义结果时显示 */}
-                {semanticAvailable === false && !searchResults.some(r => r.source === 'semantic') && (
-                  <div className="px-2 py-1">
-                    <p className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e]">
-                      💡 智能搜索未开启（需先生成语义索引）
-                    </p>
-                  </div>
-                )}
+
 
                 {searching && searchResults.length === 0 && (
                   <div className="p-3 flex items-center justify-center gap-1.5">
@@ -402,14 +398,6 @@ export function CommandPalette({ open, onClose, onOpenDoc, onCreateDoc, onSwitch
                 <Tags size={12} className="text-blue-600 dark:text-blue-400" />
                 <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">总结当前文档</span>
                 <span className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e] ml-auto">当前文档</span>
-              </Command.Item>
-              <Command.Item
-                value="从当前文档生成上下文包"
-                onSelect={() => { onGeneratePackFromDoc?.(activeDocPath || ''); onClose(); }}
-                className="p-2 rounded cursor-pointer flex items-center gap-2 data-[selected=true]:bg-stone-100 dark:data-[selected=true]:bg-stone-800"
-              >
-                <Package size={12} className="text-emerald-600" />
-                <span className="text-[#2c2c2a] dark:text-[#e3e3e3]">从当前文档生成上下文包</span>
               </Command.Item>
               <Command.Item
                 value="将当前文档加入上下文包"

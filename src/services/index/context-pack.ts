@@ -14,6 +14,11 @@ export interface ContextPackItem {
   heading: string | null;
   start_line: number | null;
   end_line: number | null;
+  // M4: chunk 关联字段
+  chunk_id: number | null;
+  source_type: string | null;
+  score: number | null;
+  reasoning_note: string | null;
   // 通用字段
   selected_reason: string;
   is_suggestion: boolean;

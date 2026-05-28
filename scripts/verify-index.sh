@@ -6,11 +6,19 @@
 set -euo pipefail
 
 # ── Colors ──
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  RED='\033[0;31m'
+  GREEN='\033[0;32m'
+  YELLOW='\033[0;33m'
+  CYAN='\033[0;36m'
+  NC='\033[0m'
+else
+  RED=''
+  GREEN=''
+  YELLOW=''
+  CYAN=''
+  NC=''
+fi
 
 # ── Counters ──
 PASS=0
@@ -407,7 +415,7 @@ if [[ -f "$CONTEXT_PACKS_FILE" ]]; then
     if [[ -f "$DB_PATH" ]]; then
       INVALID_REFS=$(jq -r '.[].items[].document_path // empty' "$CONTEXT_PACKS_FILE" 2>/dev/null | while read -r docpath; do
         EXISTS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM documents WHERE path = '$docpath';" 2>/dev/null || echo "0")
-        if [[ "$EXISTS" == "0" ]]; then
+        if [[ "$EXISTS" == "0" && ! -f "$docpath" ]]; then
           echo "$docpath"
         fi
       done || true)
@@ -481,7 +489,8 @@ if [[ -f "$SIGNALS_FILE" ]]; then
   INVALID_LINES=0
   TOTAL_LINES=0
   while IFS= read -r line; do
-    line=$(echo "$line" | xargs) # trim
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
     if [[ -z "$line" ]]; then
       continue
     fi

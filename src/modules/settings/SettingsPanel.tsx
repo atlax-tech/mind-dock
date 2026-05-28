@@ -14,6 +14,8 @@ import {
   ScrollText,
   Info,
   Shield,
+  Cpu,
+  RotateCcw,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -23,12 +25,35 @@ import { metadataService } from '@/services/index/metadata';
 import { chunkingService } from '@/services/index/chunking';
 import { vectorIndexService, type DocumentEmbeddingResult } from '@/services/index/vector';
 import { aiLogsService, type AIRuntimeLog } from '@/services/ai/logs';
+import { onboardingService } from '@/services/ai/onboarding';
+import { documentService } from '@/services/filesystem/documents';
+import { extractTitle, parseFrontMatter } from '@/services/markdown/frontmatter';
+import type { DocEntry } from '@/types/vault';
 
 // ── Props ──
 
 interface SettingsPanelProps {
   open: boolean;
   onClose: () => void;
+}
+
+async function computeContentHash(content: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(content);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function flattenDocTree(entries: DocEntry[]): DocEntry[] {
+  const result: DocEntry[] = [];
+  for (const entry of entries) {
+    result.push(entry);
+    if (entry.children.length > 0) {
+      result.push(...flattenDocTree(entry.children));
+    }
+  }
+  return result;
 }
 
 // ── ExplorerSection (复用 MentorDock 样式) ──
@@ -81,22 +106,33 @@ const STATUS_CONFIG: Record<AIRuntimeStatus, { label: string; dotClass: string; 
 // ── 主组件 ──
 
 export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
-  const { vault } = useVault();
-  const { status, config, availableModels, error, checkConnection, updateConfig, embed } = useAIRuntime();
+  const { vault, docTree } = useVault();
+  const { status, config, availableModels, error, checkConnection, updateConfig, embed, embedAndStore } = useAIRuntime();
+  const normalizedProvider = config.provider === 'spark_codingplan' ? 'custom_api' : (config.provider || 'ollama');
+  const isXfyunCodingPlanBaseUrl = (baseUrl: string) => baseUrl.trim().toLowerCase().includes('maas-coding-api.cn-huabei-1.xf-yun.com');
 
   // ── 折叠状态 ──
   const [aiSectionOpen, setAiSectionOpen] = useState(true);
-  const [indexSectionOpen, setIndexSectionOpen] = useState(true);
+  const [knowledgeEngineOpen, setKnowledgeEngineOpen] = useState(true);
   const [logsSectionOpen, setLogsSectionOpen] = useState(false);
+  const [productFlowOpen, setProductFlowOpen] = useState(false);
   const [aboutSectionOpen, setAboutSectionOpen] = useState(false);
 
   // ── AI 配置编辑 ──
   const [editingEndpoint, setEditingEndpoint] = useState(false);
   const [editingModel, setEditingModel] = useState(false);
   const [editingEmbeddingModel, setEditingEmbeddingModel] = useState(false);
+  const [editingProvider, setEditingProvider] = useState(false);
+  const [editingSparkBaseUrl, setEditingSparkBaseUrl] = useState(false);
+  const [editingSparkApiKey, setEditingSparkApiKey] = useState(false);
+  const [editingSparkModel, setEditingSparkModel] = useState(false);
   const [endpointDraft, setEndpointDraft] = useState(config.endpoint);
   const [modelDraft, setModelDraft] = useState(config.default_model || '');
   const [embeddingModelDraft, setEmbeddingModelDraft] = useState(config.embedding_model || '');
+  const [providerDraft, setProviderDraft] = useState<'ollama' | 'custom_api'>(normalizedProvider === 'custom_api' ? 'custom_api' : 'ollama');
+  const [sparkBaseUrlDraft, setSparkBaseUrlDraft] = useState(config.spark_base_url || 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v2');
+  const [sparkApiKeyDraft, setSparkApiKeyDraft] = useState(config.spark_api_key || '');
+  const [sparkModelDraft, setSparkModelDraft] = useState(config.spark_model || 'astron-code-latest');
 
   // ── Embedding 测试 ──
   const [embedTesting, setEmbedTesting] = useState(false);
@@ -104,7 +140,7 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   const [embedTestError, setEmbedTestError] = useState<string | null>(null);
 
   // ── 索引状态 ──
-  const [indexStats, setIndexStats] = useState<{ totalDocs: number; indexedDocs: number; embeddingReadyDocs: number } | null>(null);
+  const [indexStats, setIndexStats] = useState<{ totalDocs: number; indexedDocs: number; embeddingReadyDocs: number; staleDocs: number } | null>(null);
   const [indexLoading, setIndexLoading] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
   const [rebuildProgress, setRebuildProgress] = useState<string | null>(null);
@@ -120,6 +156,12 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   useEffect(() => { setEndpointDraft(config.endpoint); }, [config.endpoint]);
   useEffect(() => { setModelDraft(config.default_model || ''); }, [config.default_model]);
   useEffect(() => { setEmbeddingModelDraft(config.embedding_model || ''); }, [config.embedding_model]);
+  useEffect(() => {
+    setProviderDraft(normalizedProvider === 'custom_api' ? 'custom_api' : 'ollama');
+  }, [normalizedProvider]);
+  useEffect(() => { setSparkBaseUrlDraft(config.spark_base_url || 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v2'); }, [config.spark_base_url]);
+  useEffect(() => { setSparkApiKeyDraft(config.spark_api_key || ''); }, [config.spark_api_key]);
+  useEffect(() => { setSparkModelDraft(config.spark_model || 'astron-code-latest'); }, [config.spark_model]);
 
   // ── 保存配置 ──
   const saveEndpoint = useCallback(async () => {
@@ -144,6 +186,73 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
       await updateConfig({ ...config, embedding_model: newModel });
     }
   }, [embeddingModelDraft, config, updateConfig]);
+
+  const saveProvider = useCallback(async () => {
+    setEditingProvider(false);
+    const nextProvider = providerDraft === 'custom_api' ? 'custom_api' : 'ollama';
+    if (nextProvider !== normalizedProvider) {
+      await updateConfig({ ...config, provider: nextProvider });
+    }
+  }, [providerDraft, config, updateConfig, normalizedProvider]);
+
+  const saveSparkBaseUrl = useCallback(async () => {
+    setEditingSparkBaseUrl(false);
+    const value = sparkBaseUrlDraft.trim() || 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v2';
+    if (value !== (config.spark_base_url || 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v2')) {
+      await updateConfig({ ...config, spark_base_url: value });
+    }
+  }, [sparkBaseUrlDraft, config, updateConfig]);
+
+  const saveSparkApiKey = useCallback(async () => {
+    setEditingSparkApiKey(false);
+    const value = sparkApiKeyDraft.trim();
+    if (value !== (config.spark_api_key || '')) {
+      await updateConfig({ ...config, spark_api_key: value || null });
+    }
+  }, [sparkApiKeyDraft, config, updateConfig]);
+
+  const saveSparkModel = useCallback(async () => {
+    setEditingSparkModel(false);
+    const value = isXfyunCodingPlanBaseUrl(config.spark_base_url || '')
+      ? 'astron-code-latest'
+      : (sparkModelDraft.trim() || 'astron-code-latest');
+    if (value !== (config.spark_model || 'astron-code-latest')) {
+      await updateConfig({ ...config, spark_model: value });
+    }
+  }, [sparkModelDraft, config, updateConfig]);
+
+  const handleCheckConnection = useCallback(async () => {
+    if (providerDraft === 'custom_api') {
+      const normalizedBaseUrl = sparkBaseUrlDraft.trim() || 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v2';
+      const forceAstronModel = isXfyunCodingPlanBaseUrl(normalizedBaseUrl);
+      const nextConfig = {
+        ...config,
+        provider: 'custom_api' as const,
+        spark_base_url: normalizedBaseUrl,
+        spark_api_key: sparkApiKeyDraft.trim() || null,
+        spark_model: forceAstronModel ? 'astron-code-latest' : (config.spark_model || 'astron-code-latest'),
+      };
+      await updateConfig(nextConfig);
+      await checkConnection(nextConfig);
+      return;
+    }
+
+    const nextConfig = {
+      ...config,
+      provider: 'ollama' as const,
+      endpoint: endpointDraft.trim() || config.endpoint,
+    };
+    await updateConfig(nextConfig);
+    await checkConnection(nextConfig);
+  }, [
+    providerDraft,
+    config,
+    sparkBaseUrlDraft,
+    sparkApiKeyDraft,
+    endpointDraft,
+    updateConfig,
+    checkConnection,
+  ]);
 
   // ── Embedding 测试 ──
   const handleEmbedTest = useCallback(async () => {
@@ -177,7 +286,8 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
       const totalDocs = docs.length;
       const indexedDocs = docs.filter(d => d.index_status === 'indexed').length;
       const embeddingReadyDocs = docs.filter(d => d.embedding_status === 'ready').length;
-      setIndexStats({ totalDocs, indexedDocs, embeddingReadyDocs });
+      const staleDocs = docs.filter(d => d.embedding_status === 'stale').length;
+      setIndexStats({ totalDocs, indexedDocs, embeddingReadyDocs, staleDocs });
 
       const readyDoc = docs.find(d => d.embedding_status === 'ready');
       if (readyDoc) {
@@ -204,6 +314,24 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
     setRebuildProgress('初始化数据库...');
     try {
       await metadataService.initMetadataDb(vault.path);
+      setRebuildProgress('同步文档元数据...');
+      const markdownDocs = flattenDocTree(docTree).filter(entry => !entry.is_dir && entry.absolute_path.endsWith('.md'));
+      for (const doc of markdownDocs) {
+        try {
+          const content = await documentService.readDocument(vault.path, doc.absolute_path);
+          const { data: fmData } = parseFrontMatter(content);
+          await metadataService.upsertDocumentMetadata({
+            vaultPath: vault.path,
+            documentPath: doc.absolute_path,
+            title: extractTitle(content) || doc.name.replace(/\.md$/, ''),
+            frontmatter: Object.keys(fmData).length > 0 ? JSON.stringify(fmData) : null,
+            contentHash: await computeContentHash(content),
+            wordCount: content.trim() ? content.trim().split(/\s+/).length : 0,
+          });
+        } catch {
+          // 单个文档 metadata 同步失败不中断整体重建
+        }
+      }
       setRebuildProgress('读取文档列表...');
       const docs = await metadataService.listDocumentsMetadata(vault.path);
       const total = docs.length;
@@ -211,9 +339,22 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
 
       for (const doc of docs) {
         processed++;
-        setRebuildProgress(`索引中 (${processed}/${total})...`);
+        setRebuildProgress(`重建全文索引 (${processed}/${total})...`);
         try {
           await chunkingService.reindexDocument(vault.path, doc.path);
+          if (status === 'connected') {
+            const chunks = await chunkingService.getDocumentChunks(vault.path, doc.path);
+            let embedded = 0;
+            for (const chunk of chunks) {
+              embedded++;
+              setRebuildProgress(`生成语义向量 (${processed}/${total}, ${embedded}/${chunks.length})...`);
+              try {
+                await embedAndStore(chunk.id, chunk.content, chunk.content_hash || '');
+              } catch {
+                await vectorIndexService.markEmbeddingError(vault.path, chunk.id).catch(() => {});
+              }
+            }
+          }
         } catch {
           // 单个文档索引失败不中断整体流程
         }
@@ -227,7 +368,7 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
       setRebuilding(false);
       setRebuildProgress(null);
     }
-  }, [vault, rebuilding, loadIndexStats]);
+  }, [vault, docTree, rebuilding, loadIndexStats, status, embedAndStore]);
 
   // ── 验证索引 ──
   const handleVerifyIndex = useCallback(async () => {
@@ -301,9 +442,9 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
 
         {/* ── 内容区 ── */}
         <div className="flex-1 overflow-y-auto">
-          {/* ── 1. AI 助手配置 ── */}
+          {/* ── 1. AI Reasoning ── */}
           <ExplorerSection
-            title="AI 助手"
+            title="AI Reasoning"
             icon={Zap}
             expanded={aiSectionOpen}
             onToggle={() => setAiSectionOpen(prev => !prev)}
@@ -320,7 +461,7 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
                   <span className={`inline-block w-1.5 h-1.5 rounded-full ${statusCfg.dotClass}`} />
                 </div>
                 <button
-                  onClick={() => checkConnection()}
+                  onClick={() => void handleCheckConnection()}
                   className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
                 >
                   <Zap size={10} />
@@ -332,7 +473,32 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
               )}
             </div>
 
-            {/* 服务地址 */}
+            {/* Provider */}
+            <div>
+              <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">Provider</p>
+              {editingProvider ? (
+                <select
+                  value={providerDraft}
+                  onChange={(e) => setProviderDraft(e.target.value as 'ollama' | 'custom_api')}
+                  onBlur={saveProvider}
+                  className="w-full text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] bg-transparent border-b border-emerald-600 dark:border-emerald-400 outline-none py-0.5"
+                  autoFocus
+                >
+                  <option value="ollama">Ollama (本地)</option>
+                  <option value="custom_api">Custom API</option>
+                </select>
+              ) : (
+                <p
+                  onClick={() => setEditingProvider(true)}
+                  className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors truncate"
+                  title="点击编辑"
+                >
+                  {normalizedProvider === 'custom_api' ? 'Custom API' : 'Ollama (本地)'}
+                </p>
+              )}
+            </div>
+
+            {/* Ollama 服务地址 */}
             <div>
               <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">服务地址</p>
               {editingEndpoint ? (
@@ -360,7 +526,8 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
             </div>
 
             {/* 对话模型 */}
-            <div>
+            {normalizedProvider === 'ollama' && (
+              <div>
               <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">对话模型</p>
               {editingModel ? (
                 availableModels.length > 0 ? (
@@ -400,9 +567,130 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
                   {config.default_model || '（自动选择）'}
                 </p>
               )}
-            </div>
+              </div>
+            )}
 
-            {/* 语义模型 */}
+            {/* Custom API 配置 */}
+            {normalizedProvider === 'custom_api' && (
+              <>
+                <div>
+                  <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">Custom API Base URL</p>
+                  {editingSparkBaseUrl ? (
+                    <input
+                      type="text"
+                      value={sparkBaseUrlDraft}
+                      onChange={(e) => setSparkBaseUrlDraft(e.target.value)}
+                      onBlur={saveSparkBaseUrl}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') saveSparkBaseUrl();
+                        if (e.key === 'Escape') { setEditingSparkBaseUrl(false); setSparkBaseUrlDraft(config.spark_base_url || 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v2'); }
+                      }}
+                      className="w-full text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] bg-transparent border-b border-emerald-600 dark:border-emerald-400 outline-none py-0.5"
+                      autoFocus
+                    />
+                  ) : (
+                    <p
+                      onClick={() => setEditingSparkBaseUrl(true)}
+                      className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors truncate"
+                      title="点击编辑"
+                    >
+                      {config.spark_base_url || 'https://maas-coding-api.cn-huabei-1.xf-yun.com/v2'}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">Custom API Key</p>
+                  {editingSparkApiKey ? (
+                    <input
+                      type="password"
+                      value={sparkApiKeyDraft}
+                      onChange={(e) => setSparkApiKeyDraft(e.target.value)}
+                      onBlur={saveSparkApiKey}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') saveSparkApiKey();
+                        if (e.key === 'Escape') { setEditingSparkApiKey(false); setSparkApiKeyDraft(config.spark_api_key || ''); }
+                      }}
+                      className="w-full text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] bg-transparent border-b border-emerald-600 dark:border-emerald-400 outline-none py-0.5"
+                      autoFocus
+                    />
+                  ) : (
+                    <p
+                      onClick={() => setEditingSparkApiKey(true)}
+                      className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors truncate"
+                      title="点击编辑"
+                    >
+                      {config.spark_api_key ? '••••••••••' : '（未设置）'}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">Custom API 模型</p>
+                  {isXfyunCodingPlanBaseUrl(config.spark_base_url || '') ? (
+                    <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3]">astron-code-latest</p>
+                  ) : editingSparkModel ? (
+                    availableModels.length > 0 ? (
+                      <select
+                        value={sparkModelDraft}
+                        onChange={(e) => setSparkModelDraft(e.target.value)}
+                        onBlur={saveSparkModel}
+                        className="w-full text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] bg-transparent border-b border-emerald-600 dark:border-emerald-400 outline-none py-0.5"
+                        autoFocus
+                      >
+                        {availableModels.map((m) => (
+                          <option key={m} value={m}>{m}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={sparkModelDraft}
+                        onChange={(e) => setSparkModelDraft(e.target.value)}
+                        onBlur={saveSparkModel}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') saveSparkModel();
+                          if (e.key === 'Escape') { setEditingSparkModel(false); setSparkModelDraft(config.spark_model || 'astron-code-latest'); }
+                        }}
+                        className="w-full text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] bg-transparent border-b border-emerald-600 dark:border-emerald-400 outline-none py-0.5"
+                        autoFocus
+                      />
+                    )
+                  ) : (
+                    <p
+                      onClick={() => setEditingSparkModel(true)}
+                      className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors truncate"
+                      title="点击编辑"
+                    >
+                      {config.spark_model || 'astron-code-latest'}
+                    </p>
+                  )}
+                  {isXfyunCodingPlanBaseUrl(config.spark_base_url || '') ? (
+                    <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-1">
+                      讯飞 CodingPlan 请求 model 固定为 astron-code-latest；底层模型请到讯飞套餐页面切换（1-3 分钟生效）。
+                    </p>
+                  ) : availableModels.length > 0 && (
+                    <p className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e] mt-1">
+                      已检测到 {availableModels.length} 个可用模型
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+          </ExplorerSection>
+
+          {/* ── 2. Knowledge Engine（知识引擎） ── */}
+          <ExplorerSection
+            title="Knowledge Engine"
+            icon={Database}
+            expanded={knowledgeEngineOpen}
+            onToggle={() => setKnowledgeEngineOpen(prev => !prev)}
+            contentClassName="px-4 pb-3 space-y-3"
+          >
+            <p className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e] leading-normal">
+              以下为开发与诊断用途。产品主流程会在后台自动使用 Knowledge Engine，无需手动操作。
+            </p>
+            {/* 语义模型配置 */}
             <div>
               <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">语义模型</p>
               {editingEmbeddingModel ? (
@@ -451,7 +739,7 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
                 <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e]">Embedding 测试</p>
                 <button
                   onClick={handleEmbedTest}
-                  disabled={embedTesting || status !== 'connected'}
+                  disabled={embedTesting}
                   className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {embedTesting ? <Loader2 size={10} className="animate-spin" /> : <Zap size={10} />}
@@ -472,78 +760,89 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
                 </p>
               )}
             </div>
-          </ExplorerSection>
 
-          {/* ── 2. 知识索引状态 ── */}
-          <ExplorerSection
-            title="知识索引状态"
-            icon={Database}
-            expanded={indexSectionOpen}
-            onToggle={() => setIndexSectionOpen(prev => !prev)}
-            contentClassName="px-4 pb-3 space-y-2"
-          >
-            {indexLoading && !indexStats ? (
-              <div className="flex items-center justify-center py-3">
-                <Loader2 size={12} className="animate-spin text-stone-400" />
-              </div>
-            ) : indexStats ? (
-              <div className="space-y-2">
-                <div>
-                  <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">全文索引</p>
-                  <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3]">
-                    {indexStats.indexedDocs} / {indexStats.totalDocs} 文档已索引
-                  </p>
+            {/* 索引状态 */}
+            <div className="border-t border-[#e6e6dc] dark:border-[#2f2f2f] pt-2 space-y-2">
+              <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e]">索引状态</p>
+              {indexLoading && !indexStats ? (
+                <div className="flex items-center justify-center py-3">
+                  <Loader2 size={12} className="animate-spin text-stone-400" />
                 </div>
-                <div>
-                  <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">语义索引</p>
-                  {indexStats.embeddingReadyDocs > 0 ? (
+              ) : indexStats ? (
+                <div className="space-y-2">
+                  <div>
+                    <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">全文索引</p>
                     <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3]">
-                      {indexStats.embeddingReadyDocs} / {indexStats.totalDocs} 文档已生成语义向量
+                      {indexStats.indexedDocs} / {indexStats.totalDocs} 文档已索引
                     </p>
-                  ) : (
+                  </div>
+                  <div>
+                    <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">语义索引</p>
+                    {indexStats.embeddingReadyDocs > 0 ? (
+                      <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3]">
+                        {indexStats.embeddingReadyDocs} / {indexStats.totalDocs} 文档已生成语义向量
+                      </p>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <Search size={10} className="text-amber-500" />
+                        <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                          语义搜索未开启
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                  {/* Stale Embedding 检测 */}
+                  {indexStats.staleDocs > 0 ? (
                     <div className="flex items-center gap-1.5">
-                      <Search size={10} className="text-amber-500" />
+                      <AlertTriangle size={10} className="text-amber-500" />
                       <p className="text-[11px] text-amber-600 dark:text-amber-400">
-                        语义搜索未开启
+                        {indexStats.staleDocs} 个文档的向量已过期（内容已变更，需重建索引）
+                      </p>
+                    </div>
+                  ) : indexStats.embeddingReadyDocs > 0 && (
+                    <div className="flex items-center gap-1.5">
+                      <Shield size={10} className="text-emerald-500" />
+                      <p className="text-[11px] text-emerald-600 dark:text-emerald-400">
+                        所有向量均为最新
                       </p>
                     </div>
                   )}
                 </div>
-              </div>
-            ) : (
-              <p className="text-[11px] text-[#7e7e78] dark:text-[#8e8e8e]">无法加载索引状态</p>
-            )}
+              ) : (
+                <p className="text-[11px] text-[#7e7e78] dark:text-[#8e8e8e]">无法加载索引状态</p>
+              )}
 
-            {rebuildProgress && (
-              <div className="flex items-center gap-1.5">
-                <Loader2 size={10} className="animate-spin text-stone-400" />
-                <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">{rebuildProgress}</p>
-              </div>
-            )}
+              {rebuildProgress && (
+                <div className="flex items-center gap-1.5">
+                  <Loader2 size={10} className="animate-spin text-stone-400" />
+                  <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">{rebuildProgress}</p>
+                </div>
+              )}
 
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleRebuildIndex}
-                disabled={rebuilding}
-                className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <RefreshCw size={10} className={rebuilding ? 'animate-spin' : ''} />
-                {rebuilding ? '重建中...' : '重建索引'}
-              </button>
-              <button
-                onClick={handleVerifyIndex}
-                disabled={verifyRunning}
-                className="flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <Shield size={10} />
-                {verifyRunning ? '验证中...' : '验证索引'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleRebuildIndex}
+                  disabled={rebuilding}
+                  className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <RefreshCw size={10} className={rebuilding ? 'animate-spin' : ''} />
+                  {rebuilding ? '重建中...' : '重建索引'}
+                </button>
+                <button
+                  onClick={handleVerifyIndex}
+                  disabled={verifyRunning}
+                  className="flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Shield size={10} />
+                  {verifyRunning ? '验证中...' : '验证索引'}
+                </button>
+              </div>
+              {verifyResult && (
+                <pre className="text-[9px] text-[#5a5a56] dark:text-[#a0a0a0] bg-stone-50 dark:bg-stone-800/50 rounded-lg p-2 max-h-48 overflow-y-auto whitespace-pre-wrap">
+                  {verifyResult}
+                </pre>
+              )}
             </div>
-            {verifyResult && (
-              <pre className="text-[9px] text-[#5a5a56] dark:text-[#a0a0a0] bg-stone-50 dark:bg-stone-800/50 rounded-lg p-2 max-h-48 overflow-y-auto whitespace-pre-wrap">
-                {verifyResult}
-              </pre>
-            )}
           </ExplorerSection>
 
           {/* ── 3. 运行日志 ── */}
@@ -588,7 +887,41 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
             )}
           </ExplorerSection>
 
-          {/* ── 4. 关于 ── */}
+          {/* ── 4. Product Flow ── */}
+          <ExplorerSection
+            title="Product Flow"
+            icon={Cpu}
+            expanded={productFlowOpen}
+            onToggle={() => setProductFlowOpen(prev => !prev)}
+            contentClassName="px-4 pb-3 space-y-2"
+          >
+            <div>
+              <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-0.5">Onboarding</p>
+              <button
+                onClick={async () => {
+                  if (!vault) return;
+                  try {
+                    await onboardingService.resetStatus(vault.path);
+                    window.location.reload();
+                  } catch (err) {
+                    alert(`重置失败: ${err}`);
+                  }
+                }}
+                className="flex items-center gap-1.5 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+              >
+                <RotateCcw size={10} />
+                重新运行 Onboarding
+              </button>
+            </div>
+            <div>
+              <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e] mb-1">说明</p>
+              <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e] leading-normal">
+                Knowledge Engine 负责在后台维护知识感知能力（索引、召回、聚类、相似推荐、重复检测）。即使 AI Reasoning 不可用，搜索、推荐、发现相似内容等基础功能仍可正常使用。
+              </p>
+            </div>
+          </ExplorerSection>
+
+          {/* ── 5. 关于 ── */}
           <ExplorerSection
             title="关于"
             icon={Info}

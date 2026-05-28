@@ -20,6 +20,11 @@ pub struct ContextPackItem {
     pub heading: Option<String>,
     pub start_line: Option<i64>,
     pub end_line: Option<i64>,
+    // M4: chunk 关联字段
+    pub chunk_id: Option<i64>,
+    pub source_type: Option<String>,
+    pub score: Option<f64>,
+    pub reasoning_note: Option<String>,
     // 通用字段
     pub selected_reason: String,
     pub is_suggestion: bool,

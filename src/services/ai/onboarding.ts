@@ -14,4 +14,8 @@ export const onboardingService = {
   async writeStatus(vaultPath: string, status: string): Promise<void> {
     return invoke('write_onboarding_status', { vaultPath, status });
   },
+
+  async resetStatus(vaultPath: string): Promise<void> {
+    return invoke('write_onboarding_status', { vaultPath, status: 'pending' });
+  },
 };
