@@ -1,6 +1,6 @@
 mod commands;
 
-use commands::{vault, fs, capture, sticky_notes, notifications, ai_runtime, ai_logs, ai_suggestions, git, metadata, chunking, search, vector_index, summary_tags, personalization, context_pack, mentor_memory, mentor_triggers};
+use commands::{vault, fs, capture, sticky_notes, notifications, ai_runtime, ai_logs, ai_suggestions, git, metadata, chunking, search, vector_index, summary_tags, personalization, context_pack, mentor_memory, mentor_triggers, mentor_events, mentor_signals, mentor_suggestions, mentor_jobs};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -101,6 +101,21 @@ pub fn run() {
             mentor_triggers::check_triggers,
             mentor_triggers::get_trigger_state,
             mentor_triggers::update_trigger_state,
+            mentor_events::create_mentor_event,
+            mentor_events::list_mentor_events,
+            mentor_signals::create_mentor_signal,
+            mentor_signals::list_mentor_signals,
+            mentor_suggestions::create_mentor_suggestion,
+            mentor_suggestions::list_mentor_suggestions,
+            mentor_suggestions::get_mentor_suggestion,
+            mentor_suggestions::update_mentor_suggestion_status,
+            mentor_suggestions::snooze_mentor_suggestion,
+            mentor_suggestions::delete_mentor_suggestion,
+            mentor_suggestions::cleanup_mentor_suggestions,
+            mentor_suggestions::import_legacy_ai_suggestions,
+            mentor_jobs::create_mentor_job,
+            mentor_jobs::list_mentor_jobs,
+            mentor_jobs::update_mentor_job_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { useVault } from '@/modules/vault/VaultProvider';
+import { mentorEventBus } from '@/modules/ai/MentorEventBus';
 import { captureService, type CaptureEntry } from '@/services/filesystem/capture';
 
 interface CaptureState {
@@ -68,6 +69,13 @@ export function CaptureProvider({ children }: { children: ReactNode }) {
       setError(null);
       const entry = await captureService.appendCapture(vault.path, content, source);
       setCaptures(prev => [...prev, entry]);
+      mentorEventBus.emit('capture_created', {
+        targetId: entry.id,
+        targetType: 'capture',
+        captureId: entry.id,
+        source,
+        contentLength: content.length,
+      }, { vaultPath: vault.path, vaultId: vault.path });
       return entry.id;
     } catch (err) {
       setError(String(err));

@@ -27,11 +27,17 @@ export interface EditorContextMenuSeparator {
 
 export type EditorContextMenuItem = EditorContextMenuAction | EditorContextMenuSeparator;
 
+export interface EditorContextMenuOptions {
+  items: EditorContextMenuItem[];
+  onSelectionCreated?: (selection: EditorSelectionPayload) => void;
+}
+
 /**
  * Creates a CM6 extension that shows a custom context menu on right-click.
  * Replaces the browser's default context menu within the editor.
  */
-export function editorContextMenu(items: EditorContextMenuItem[]) {
+export function editorContextMenu(options: EditorContextMenuOptions) {
+  const { items, onSelectionCreated } = options;
   return EditorView.domEventHandlers({
     contextmenu(event, view) {
       event.preventDefault();
@@ -59,6 +65,15 @@ export function editorContextMenu(items: EditorContextMenuItem[]) {
 
       // Only show menu if there's selected text
       if (!selectedText.trim()) return;
+
+      // 通知外部有选区被创建（轻量回调，不阻塞菜单渲染）
+      if (onSelectionCreated) {
+        try {
+          onSelectionCreated({ from, to, text: selectedText });
+        } catch (err) {
+          console.error('onSelectionCreated error:', err);
+        }
+      }
 
       const clickCoords = view.coordsAtPos(pos);
       const anchorRect = clickCoords

@@ -11,7 +11,7 @@ import { StatusBar } from '@/components/StatusBar';
 import { PlaceholderView } from '@/components/PlaceholderView';
 import { TabBar } from '@/components/TabBar';
 import { EditorToolbar, type PreviewMode } from '@/modules/editor/EditorToolbar';
-import { EditorView, type EditorViewHandle } from '@/modules/editor/EditorView';
+import { EditorTocScale, EditorView, type EditorViewHandle } from '@/modules/editor/EditorView';
 import type { EditorSelectionAnchorRect, EditorSelectionPayload } from '@/modules/editor/editorContextMenu';
 import { DocumentPreview } from '@/modules/editor/MarkdownPreview';
 import { CommandPalette } from '@/modules/command-palette/CommandPalette';
@@ -25,6 +25,7 @@ import { GenerateIntentModal, type GenerateIntentSource, type OutputType } from 
 import { GeneratingOverlay } from '@/components/GeneratingOverlay';
 import { SettingsPanel } from '@/modules/settings/SettingsPanel';
 import { mentorEventBus } from '@/modules/ai/MentorEventBus';
+import { mentorEventsService } from '@/services/mentor/mentor-events';
 import { onboardingService } from '@/services/ai/onboarding';
 import { documentService } from '@/services/filesystem/documents';
 import { gitService, type GitCommit, type GitDiffEntry } from '@/services/filesystem/git';
@@ -182,6 +183,7 @@ export function AppShell() {
 
   // Editor ref for TOC navigation
   const editorRef = useRef<EditorViewHandle>(null);
+  const editorContentRef = useRef<HTMLDivElement>(null);
 
   // Multi-tab state
   const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
@@ -404,8 +406,29 @@ export function AppShell() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // 注册 MentorEvent 持久化处理器（fire-and-forget，不阻塞 UI）
+  useEffect(() => {
+    mentorEventBus.setPersistHandler((event, vaultPath, vaultId) => {
+      mentorEventsService.createEvent(
+        vaultPath,
+        vaultId,
+        event.type,
+        (event.payload?.targetId as string) ?? null,
+        (event.payload?.targetType as string) ?? null,
+        event.payload ?? {},
+      ).catch(err => {
+        console.error(`[MentorEventBus] 持久化事件 ${event.type} 失败:`, err);
+      });
+    });
+    return () => {
+      mentorEventBus.setPersistHandler(null);
+    };
+  }, []);
+
   useEffect(() => {
     if (!vault) return;
+    // 发出 app_started 事件
+    mentorEventBus.emit('app_started', { vaultPath: vault.path }, { vaultPath: vault.path, vaultId: vault.path });
     (async () => {
       const status = await onboardingService.readStatus(vault.path);
       if (status.status === 'pending') {
@@ -464,6 +487,11 @@ export function AppShell() {
     if (alreadyOpen) {
       setActiveTabId(docPath);
       setCurrentView('editor');
+      mentorEventBus.emit('document_opened', {
+        targetId: docPath,
+        targetType: 'document',
+        documentPath: docPath,
+      }, { vaultPath: vault.path, vaultId: vault.path });
       personalizationService.recordSignal(vault.path, {
         action_type: 'document_opened',
         document_path: docPath,
@@ -493,6 +521,12 @@ export function AppShell() {
       });
       setActiveTabId(docPath);
       setCurrentView('editor');
+      mentorEventBus.emit('document_opened', {
+        targetId: docPath,
+        targetType: 'document',
+        documentPath: docPath,
+        contentLength: content.length,
+      }, { vaultPath: vault.path, vaultId: vault.path });
       personalizationService.recordSignal(vault.path, {
         action_type: 'document_opened',
         document_path: docPath,
@@ -583,6 +617,12 @@ export function AppShell() {
         ));
         // 保存成功后刷新文档树，以同步 frontmatter title 变更
         refreshDocTree();
+        mentorEventBus.emit('document_saved', {
+          targetId: currentTabId,
+          targetType: 'document',
+          documentPath: currentTabId,
+          contentLength: newContent.length,
+        }, { vaultPath: vault.path, vaultId: vault.path });
         personalizationService.recordSignal(vault.path, {
           action_type: 'document_edited',
           document_path: currentTabId,
@@ -926,6 +966,14 @@ export function AppShell() {
       setMentorDockTab('context-pack');
       setMentorDockOpen(true);
       setContextPackRefreshKey(prev => prev + 1);
+      mentorEventBus.emit('context_pack_generated', {
+        targetId: pack.id,
+        targetType: 'context_pack',
+        packId: pack.id,
+        packName: folderName,
+        itemCount: folderDocs.length,
+        source: 'folder',
+      }, { vaultPath: vault.path, vaultId: vault.path });
     } catch (err) {
       console.error('生成上下文包失败:', err);
     }
@@ -1104,6 +1152,14 @@ export function AppShell() {
       setOutputGeneratorInitialType(toOutputGeneratorType(outputType));
       setOutputGeneratorInitialIntent(intent);
       setOutputGeneratorPack(finalPack);
+      mentorEventBus.emit('context_pack_generated', {
+        targetId: finalPack.id,
+        targetType: 'context_pack',
+        packId: finalPack.id,
+        packName: finalPack.name,
+        itemCount: finalPack.items.length,
+        source: source.type,
+      }, { vaultPath: vault.path, vaultId: vault.path });
     } catch (err) {
       console.error('创建生成草稿失败:', err);
       setGeneratingPack(false);
@@ -1455,6 +1511,17 @@ export function AppShell() {
   const handleEditorSelectionAction = useCallback(async (action: string, selection: EditorSelectionPayload) => {
     if (!activeTabId || !vault) return;
 
+    // 发出 selection_created 事件（轻量 payload）
+    const content = activeTab?.content ?? '';
+    const { startLine } = getSelectionLineContext(content, selection);
+    mentorEventBus.emit('selection_created', {
+      targetId: activeTabId,
+      targetType: 'selection',
+      documentPath: activeTabId,
+      selectionLength: selection.text.length,
+      lineStart: startLine,
+    }, { vaultPath: vault.path, vaultId: vault.path });
+
     switch (action) {
       case 'addToPack':
         // 选区加入 Pack：需要先选择 Pack
@@ -1574,7 +1641,7 @@ export function AppShell() {
               previewMode={previewMode}
               onPreviewModeChange={setPreviewMode}
             />
-            <div className="flex-1 flex min-h-0">
+            <div className="flex-1 flex min-h-0 relative" ref={editorContentRef}>
               {(previewMode === 'edit' || previewMode === 'split') && (
                 <EditorView
                   ref={editorRef}
@@ -1582,6 +1649,8 @@ export function AppShell() {
                   onContentChange={handleContentChange}
                   onSelectionAction={handleEditorSelectionAction}
                   reasoningAvailable={aiStatus === 'connected'}
+                  vaultPath={vault?.path}
+                  vaultId={activeTabId}
                 />
               )}
               {(previewMode === 'preview' || previewMode === 'split') && (
@@ -1590,6 +1659,19 @@ export function AppShell() {
                   filePath={activeTabId}
                 />
               )}
+              <EditorTocScale
+                content={editorText}
+                onEntryClick={(entry) => {
+                  if (editorRef.current) {
+                    editorRef.current.scrollToLine(entry.line);
+                    return;
+                  }
+
+                  const headings = Array.from(editorContentRef.current?.querySelectorAll('h1,h2,h3,h4,h5,h6') ?? []);
+                  const target = headings.find(heading => heading.textContent?.trim() === entry.text);
+                  target?.scrollIntoView({ block: 'center' });
+                }}
+              />
             </div>
             <StatusBar
               charCount={editorText.length}

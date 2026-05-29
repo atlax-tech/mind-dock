@@ -111,6 +111,87 @@ pub fn create_tables(conn: &Connection) -> Result<(), String> {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_chunk_embeddings_chunk_id ON chunk_embeddings(chunk_id);
 
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(content, heading_path, document_path, tokenize='unicode61');
+
+        CREATE TABLE IF NOT EXISTS mentor_events (
+            id TEXT PRIMARY KEY,
+            vault_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            target_id TEXT,
+            target_type TEXT,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mentor_events_vault_created
+        ON mentor_events(vault_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS mentor_signals (
+            id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL,
+            vault_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            evidence_ids_json TEXT NOT NULL,
+            detector TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mentor_signals_target
+        ON mentor_signals(vault_id, target_id, type);
+
+        CREATE TABLE IF NOT EXISTS mentor_suggestions (
+            id TEXT PRIMARY KEY,
+            vault_id TEXT NOT NULL,
+            source_event_id TEXT,
+            source_signal_ids_json TEXT NOT NULL,
+            source_job_id TEXT,
+            target_id TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            intent TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            surface TEXT NOT NULL,
+            message TEXT NOT NULL,
+            short_message TEXT NOT NULL,
+            evidence_ids_json TEXT NOT NULL,
+            actions_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            model_trace_id TEXT,
+            expires_at TEXT,
+            last_shown_at TEXT,
+            snoozed_until TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mentor_suggestions_pending
+        ON mentor_suggestions(vault_id, status, priority, created_at);
+        CREATE INDEX IF NOT EXISTS idx_mentor_suggestions_target
+        ON mentor_suggestions(vault_id, target_id, status);
+
+        CREATE TABLE IF NOT EXISTS mentor_jobs (
+            id TEXT PRIMARY KEY,
+            vault_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            target_ids_json TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            status TEXT NOT NULL,
+            input_hash TEXT NOT NULL,
+            provider TEXT,
+            model TEXT,
+            prompt_type TEXT,
+            latency_ms INTEGER,
+            fallback_status TEXT,
+            result_suggestion_ids_json TEXT NOT NULL DEFAULT '[]',
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            cancelled_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_mentor_jobs_dedup
+        ON mentor_jobs(vault_id, type, input_hash);
+        CREATE INDEX IF NOT EXISTS idx_mentor_jobs_status_priority
+        ON mentor_jobs(vault_id, status, priority, created_at);
         ",
     )
     .map_err(|e| format!("创建表失败: {}", e))?;

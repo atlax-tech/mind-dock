@@ -16,3 +16,7 @@ pub mod personalization;
 pub mod context_pack;
 pub mod mentor_memory;
 pub mod mentor_triggers;
+pub mod mentor_events;
+pub mod mentor_signals;
+pub mod mentor_suggestions;
+pub mod mentor_jobs;

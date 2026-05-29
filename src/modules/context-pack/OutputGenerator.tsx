@@ -6,6 +6,7 @@ import { Copy, Pencil, X, Check, Sparkles, Loader2, FileText, ListChecks, FileCo
 import type { ContextPack } from '@/services/index/context-pack';
 import { useAIRuntime } from '@/modules/ai/AIRuntimeProvider';
 import { useVault } from '@/modules/vault/VaultProvider';
+import { mentorEventBus } from '@/modules/ai/MentorEventBus';
 import { GeneratingOverlay } from '@/components/GeneratingOverlay';
 import { documentService } from '@/services/filesystem/documents';
 import { personalizationService } from '@/services/index/personalization';
@@ -191,10 +192,20 @@ export function OutputGenerator({ pack, onClose, initialOutputType, initialInten
     try {
       await invoke('export_text_file', { filePath, content: textToExport });
       setExportedPath(filePath);
+      if (vault) {
+        mentorEventBus.emit('context_pack_exported', {
+          targetId: pack.id,
+          targetType: 'context_pack',
+          packId: pack.id,
+          packName: pack.name,
+          format: 'markdown',
+          itemCount: confirmedItems.length,
+        }, { vaultPath: vault.path, vaultId: vault.path });
+      }
     } catch (err) {
       setExportError(`导出失败: ${err}`);
     }
-  }, [outputIntent, outputType, textToExport]);
+  }, [outputIntent, outputType, textToExport, pack, confirmedItems.length, vault]);
 
   const handleSaveAsDocument = useCallback(async () => {
     if (!vault) return;
@@ -217,7 +228,15 @@ export function OutputGenerator({ pack, onClose, initialOutputType, initialInten
       content,
     });
     setSavedPath(filePath);
-  }, [outputIntent, outputType, pack.name, textToExport, vault]);
+    mentorEventBus.emit('context_pack_exported', {
+      targetId: pack.id,
+      targetType: 'context_pack',
+      packId: pack.id,
+      packName: pack.name,
+      format: 'document',
+      itemCount: confirmedItems.length,
+    }, { vaultPath: vault.path, vaultId: vault.path });
+  }, [outputIntent, outputType, pack.name, pack.id, confirmedItems.length, textToExport, vault]);
 
   const handleReset = useCallback(() => {
     setReasoningDraft(null);

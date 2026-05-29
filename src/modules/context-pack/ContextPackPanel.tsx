@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 
 import { useVault } from '@/modules/vault/VaultProvider';
+import { mentorEventBus } from '@/modules/ai/MentorEventBus';
 import {
   contextPackService,
   type ContextPack,
@@ -307,6 +308,13 @@ export function ContextPackPanel({ onGeneratePrompt, onOpenInEditor, onActivePac
       setShowNewPack(false);
       await refreshPacks();
       setActivePackId(pack.id);
+      mentorEventBus.emit('context_pack_generated', {
+        targetId: pack.id,
+        targetType: 'context_pack',
+        packId: pack.id,
+        packName: newPackName.trim(),
+        itemCount: 0,
+      }, { vaultPath: vault.path, vaultId: vault.path });
     } catch (err) {
       console.error('创建 Context Pack 失败:', err);
     }
@@ -481,6 +489,15 @@ export function ContextPackPanel({ onGeneratePrompt, onOpenInEditor, onActivePac
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+
+      mentorEventBus.emit('context_pack_exported', {
+        targetId: activePack.id,
+        targetType: 'context_pack',
+        packId: activePack.id,
+        packName: activePack.name,
+        format: 'markdown',
+        itemCount: confirmedItems.length,
+      }, { vaultPath: vault.path, vaultId: vault.path });
 
       // 记录 prompt_copied 信号
       personalizationService.recordSignal(vault.path, {
