@@ -11,10 +11,15 @@ import { tags } from '@lezer/highlight';
 import { useTheme } from '@/app/theme';
 import { mentorEventBus } from '@/modules/ai/MentorEventBus';
 import { editorContextMenu, type EditorSelectionPayload } from './editorContextMenu';
+import { mentorInlineExtension, showMentorSuggestion, hideMentorSuggestion, type MentorInlineExtensionConfigRef } from './mentorInlineExtension';
+import type { MentorSuggestion } from '@/services/mentor/mentor-suggestions';
+import type { SuggestionActionContext } from '@/services/mentor/suggestion-actions';
 
 export interface EditorViewHandle {
   scrollToLine(lineNumber: number): void;
   scrollToHeading(headingText: string): void;
+  showInlineSuggestion(suggestion: MentorSuggestion): void;
+  hideInlineSuggestion(): void;
 }
 
 interface EditorViewProps {
@@ -24,6 +29,14 @@ interface EditorViewProps {
   reasoningAvailable?: boolean;
   vaultPath?: string;
   vaultId?: string;
+  documentPath?: string;
+  inlineSuggestion?: MentorSuggestion | null;
+  suggestionActionContext?: SuggestionActionContext | null;
+  onSuggestionDismissed?: () => void;
+  onSuggestionSnoozed?: () => void;
+  onSuggestionAccepted?: (actionId: string) => void;
+  onSuggestionOpenDetail?: () => void;
+  onSelectionChanged?: (hasSelection: boolean) => void;
 }
 
 interface EditorTocEntry {
@@ -98,21 +111,32 @@ const editorHighlightStyle = (isDark: boolean) => HighlightStyle.define([
   { tag: tags.comment, color: isDark ? '#a3a3a3' : '#78716c' },
 ]);
 
-export const EditorView = forwardRef<EditorViewHandle, EditorViewProps>(function EditorView({ content, onContentChange, onSelectionAction, reasoningAvailable = false, vaultPath, vaultId }, ref) {
+export const EditorView = forwardRef<EditorViewHandle, EditorViewProps>(function EditorView({
+  content, onContentChange, onSelectionAction, reasoningAvailable = false,
+  vaultPath, vaultId, inlineSuggestion, suggestionActionContext,
+  documentPath,
+  onSuggestionDismissed, onSuggestionSnoozed, onSuggestionAccepted, onSuggestionOpenDetail,
+  onSelectionChanged,
+}, ref) {
   const { isDark } = useTheme();
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<CMEditorView | null>(null);
   const isExternalUpdate = useRef(false);
   const onContentChangeRef = useRef(onContentChange);
   const onSelectionActionRef = useRef(onSelectionAction);
+  const onSelectionChangedRef = useRef(onSelectionChanged);
   const reasoningAvailableRef = useRef(reasoningAvailable);
   const vaultPathRef = useRef(vaultPath);
   const vaultIdRef = useRef(vaultId);
+  const documentPathRef = useRef(documentPath);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const selectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   onSelectionActionRef.current = onSelectionAction;
+  onSelectionChangedRef.current = onSelectionChanged;
   reasoningAvailableRef.current = reasoningAvailable;
   vaultPathRef.current = vaultPath;
   vaultIdRef.current = vaultId;
+  documentPathRef.current = documentPath;
 
   useImperativeHandle(ref, () => ({
     scrollToLine(lineNumber: number) {
@@ -144,9 +168,105 @@ export const EditorView = forwardRef<EditorViewHandle, EditorViewProps>(function
         }
       }
     },
+
+    showInlineSuggestion(suggestion: MentorSuggestion) {
+      const view = viewRef.current;
+      if (!view) return;
+      showMentorSuggestion(view, suggestion);
+    },
+
+    hideInlineSuggestion() {
+      const view = viewRef.current;
+      if (!view) return;
+      hideMentorSuggestion(view);
+    },
   }), []);
 
+  const onSuggestionDismissedRef = useRef(onSuggestionDismissed);
+  const onSuggestionSnoozedRef = useRef(onSuggestionSnoozed);
+  const onSuggestionAcceptedRef = useRef(onSuggestionAccepted);
+  const onSuggestionOpenDetailRef = useRef(onSuggestionOpenDetail);
+  const suggestionActionContextRef = useRef(suggestionActionContext);
+  onSuggestionDismissedRef.current = onSuggestionDismissed;
+  onSuggestionSnoozedRef.current = onSuggestionSnoozed;
+  onSuggestionAcceptedRef.current = onSuggestionAccepted;
+  onSuggestionOpenDetailRef.current = onSuggestionOpenDetail;
+  suggestionActionContextRef.current = suggestionActionContext;
+
+  const mentorInlineConfigRef = useRef<MentorInlineExtensionConfigRef>({
+    current: {
+      actionContext: suggestionActionContext ?? null,
+      callbacks: {
+        onDismissed: () => onSuggestionDismissedRef.current?.(),
+        onSnoozed: () => onSuggestionSnoozedRef.current?.(),
+        onAccepted: (actionId: string) => onSuggestionAcceptedRef.current?.(actionId),
+        onOpenDetail: () => onSuggestionOpenDetailRef.current?.(),
+      },
+    },
+  });
+
+  mentorInlineConfigRef.current.current.actionContext = suggestionActionContext ?? null;
+  mentorInlineConfigRef.current.current.callbacks = {
+    onDismissed: () => onSuggestionDismissedRef.current?.(),
+    onSnoozed: () => onSuggestionSnoozedRef.current?.(),
+    onAccepted: (actionId: string) => onSuggestionAcceptedRef.current?.(actionId),
+    onOpenDetail: () => onSuggestionOpenDetailRef.current?.(),
+  };
+
   onContentChangeRef.current = onContentChange;
+
+  function getParagraphAtPosition(doc: import('@codemirror/state').Text, pos: number) {
+    const line = doc.lineAt(pos);
+    let fromLine = line.number;
+    let toLine = line.number;
+
+    while (fromLine > 1 && doc.line(fromLine - 1).text.trim() !== '') {
+      fromLine -= 1;
+    }
+    while (toLine < doc.lines && doc.line(toLine + 1).text.trim() !== '') {
+      toLine += 1;
+    }
+
+    const from = doc.line(fromLine).from;
+    const to = doc.line(toLine).to;
+    return {
+      text: doc.sliceString(from, to).slice(0, 2000),
+      from,
+      to,
+      lineNumber: line.number,
+    };
+  }
+
+  function emitDocumentIdle(payload: {
+    targetType: 'document' | 'selection';
+    cursorPos: number;
+    currentParagraph: string;
+    paragraphFrom: number;
+    paragraphTo: number;
+    lineNumber: number;
+    idleDurationMs: number;
+  }) {
+    if (!vaultPathRef.current || !vaultIdRef.current || !documentPathRef.current) return;
+    const eventId = `${payload.targetType}_idle_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    console.log('[EditorView] 发射 document_idle 事件:', {
+      targetType: payload.targetType,
+      documentPath: documentPathRef.current,
+      lineNumber: payload.lineNumber,
+      textLen: payload.currentParagraph.length,
+    });
+    mentorEventBus.emit('document_idle', {
+      eventId,
+      targetId: documentPathRef.current,
+      targetType: payload.targetType,
+      documentPath: documentPathRef.current,
+      idleDurationMs: payload.idleDurationMs,
+      cursorPos: payload.cursorPos,
+      currentParagraph: payload.currentParagraph,
+      paragraphFrom: payload.paragraphFrom,
+      paragraphTo: payload.paragraphTo,
+      lineNumber: payload.lineNumber,
+    }, { vaultPath: vaultPathRef.current, vaultId: vaultIdRef.current });
+  }
 
   useEffect(() => {
     if (!editorRef.current) return;
@@ -161,16 +281,57 @@ export const EditorView = forwardRef<EditorViewHandle, EditorViewProps>(function
         if (idleTimerRef.current) {
           clearTimeout(idleTimerRef.current);
         }
-        if (vaultPathRef.current && vaultIdRef.current) {
+        if (vaultPathRef.current && vaultIdRef.current && documentPathRef.current) {
           idleTimerRef.current = setTimeout(() => {
-            if (!vaultPathRef.current || !vaultIdRef.current) return;
-            mentorEventBus.emit('document_idle', {
-              targetId: vaultIdRef.current,
+            const view = viewRef.current;
+            if (!vaultPathRef.current || !vaultIdRef.current || !documentPathRef.current || !view) return;
+            const cursorPos = view.state.selection.main.head;
+            const paragraph = getParagraphAtPosition(view.state.doc, cursorPos);
+            emitDocumentIdle({
               targetType: 'document',
-              documentPath: vaultIdRef.current,
               idleDurationMs: IDLE_THRESHOLD_MS,
-            }, { vaultPath: vaultPathRef.current, vaultId: vaultIdRef.current });
+              cursorPos,
+              currentParagraph: paragraph.text,
+              paragraphFrom: paragraph.from,
+              paragraphTo: paragraph.to,
+              lineNumber: paragraph.lineNumber,
+            });
           }, IDLE_THRESHOLD_MS);
+        }
+      }
+
+      if (update.selectionSet) {
+        const sel = update.state.selection.main;
+        const hasSelection = sel.from !== sel.to;
+        onSelectionChangedRef.current?.(hasSelection);
+
+        if (selectionTimerRef.current) {
+          clearTimeout(selectionTimerRef.current);
+          selectionTimerRef.current = null;
+        }
+
+        if (hasSelection && vaultPathRef.current && vaultIdRef.current && documentPathRef.current) {
+          const selectedText = update.state.doc.sliceString(sel.from, sel.to).trim();
+          if (selectedText.length >= 6) {
+            selectionTimerRef.current = setTimeout(() => {
+              const view = viewRef.current;
+              if (!view) return;
+              const currentSel = view.state.selection.main;
+              if (currentSel.from === currentSel.to) return;
+              const text = view.state.doc.sliceString(currentSel.from, currentSel.to).trim();
+              if (text.length < 6) return;
+              const line = view.state.doc.lineAt(currentSel.from);
+              emitDocumentIdle({
+                targetType: 'selection',
+                idleDurationMs: 700,
+                cursorPos: currentSel.head,
+                currentParagraph: text.slice(0, 2000),
+                paragraphFrom: currentSel.from,
+                paragraphTo: currentSel.to,
+                lineNumber: line.number,
+              });
+            }, 700);
+          }
         }
       }
     });
@@ -238,11 +399,11 @@ export const EditorView = forwardRef<EditorViewHandle, EditorViewProps>(function
               { label: () => reasoningAvailableRef.current ? '总结选区' : '总结选区（需连接 AI）', action: (_view, sel) => onSelectionActionRef.current?.('summarize', sel) },
             ],
             onSelectionCreated: (sel) => {
-              if (vaultPathRef.current && vaultIdRef.current) {
+              if (vaultPathRef.current && vaultIdRef.current && documentPathRef.current) {
                 mentorEventBus.emit('selection_created', {
-                  targetId: vaultIdRef.current,
+                  targetId: documentPathRef.current,
                   targetType: 'selection',
-                  documentPath: vaultIdRef.current,
+                  documentPath: documentPathRef.current,
                   selectionLength: sel.text.length,
                 }, { vaultPath: vaultPathRef.current, vaultId: vaultIdRef.current });
               }
@@ -250,6 +411,7 @@ export const EditorView = forwardRef<EditorViewHandle, EditorViewProps>(function
           })
         ] : []),
         CMEditorView.lineWrapping,
+        mentorInlineExtension(mentorInlineConfigRef.current),
       ],
     });
 
@@ -264,6 +426,10 @@ export const EditorView = forwardRef<EditorViewHandle, EditorViewProps>(function
       if (idleTimerRef.current) {
         clearTimeout(idleTimerRef.current);
         idleTimerRef.current = null;
+      }
+      if (selectionTimerRef.current) {
+        clearTimeout(selectionTimerRef.current);
+        selectionTimerRef.current = null;
       }
       view.destroy();
       viewRef.current = null;
@@ -282,6 +448,17 @@ export const EditorView = forwardRef<EditorViewHandle, EditorViewProps>(function
       isExternalUpdate.current = false;
     }
   }, [content]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    console.log('[EditorView] inlineSuggestion 变化:', inlineSuggestion?.id ?? null, 'surface:', inlineSuggestion?.surface);
+    if (inlineSuggestion) {
+      showMentorSuggestion(view, inlineSuggestion);
+    } else {
+      hideMentorSuggestion(view);
+    }
+  }, [inlineSuggestion]);
 
   return (
     <div className="flex-1 flex flex-col min-w-0" ref={editorRef} />

@@ -109,6 +109,7 @@ pub fn run() {
             mentor_suggestions::list_mentor_suggestions,
             mentor_suggestions::get_mentor_suggestion,
             mentor_suggestions::update_mentor_suggestion_status,
+            mentor_suggestions::update_mentor_suggestion_last_shown,
             mentor_suggestions::snooze_mentor_suggestion,
             mentor_suggestions::delete_mentor_suggestion,
             mentor_suggestions::cleanup_mentor_suggestions,

@@ -46,6 +46,17 @@ import { chunkingService } from '@/services/index/chunking';
 import { metadataService } from '@/services/index/metadata';
 import { personalizationService } from '@/services/index/personalization';
 import { vectorIndexService } from '@/services/index/vector';
+import { startDetectorRunner, notifySuggestionDismissed } from '@/services/mentor/detector-runner';
+import type { MentorSuggestion, MentorSuggestionIntent } from '@/services/mentor/mentor-suggestions';
+
+function parseSignalTypeFromSuggestion(suggestion: MentorSuggestion): string {
+  try {
+    const ids = JSON.parse(suggestion.source_signal_ids_json) as string[];
+    return ids[0] ?? suggestion.intent;
+  } catch {
+    return suggestion.intent;
+  }
+}
 
 interface MentorSourceRef {
   id: string;
@@ -179,7 +190,7 @@ function PackSelectorModal({ vaultPath, label, activePackId, onSelect, onCreateN
 export function AppShell() {
   const { vault, docTree, refreshDocTree } = useVault();
   const { notes, error: stickyNotesError, addNote, updateNote, deleteNote, convertToCapture } = useStickyNotes();
-  const { status: aiStatus, embedAndStore, chat } = useAIRuntime();
+  const { status: aiStatus, embedAndStore, chat, embed } = useAIRuntime();
 
   // Editor ref for TOC navigation
   const editorRef = useRef<EditorViewHandle>(null);
@@ -224,6 +235,10 @@ export function AppShell() {
   const [mentorDockOpen, setMentorDockOpen] = useState(true);
   const [mentorDockTab, setMentorDockTab] = useState<PlatterTab>('mentor');
   const [diffSelection, setDiffSelection] = useState<DiffSelection | null>(null);
+
+  // Inline Mentor Bubble state
+  const [inlineSuggestion, setInlineSuggestion] = useState<MentorSuggestion | null>(null);
+  const [editorHasSelection, setEditorHasSelection] = useState(false);
 
   // Editor state
   const [previewMode, setPreviewMode] = useState<PreviewMode>('split');
@@ -439,6 +454,71 @@ export function AppShell() {
       console.error('读取 onboarding 状态失败:', err);
     });
   }, [vault]);
+
+  // 启动 detector runner：订阅 document_idle 事件 → 运行 light detector → delivery policy → 生成 suggestion
+  useEffect(() => {
+    const unsub = startDetectorRunner(() => {
+      if (!vault || !activeTabId) return null;
+      return {
+        vaultPath: vault.path,
+        vaultId: vault.path,
+        documentPath: activeTabId,
+        documentContent: openTabsRef.current.find(t => t.id === activeTabId)?.content ?? '',
+      };
+    }, () => ({
+      userIsTyping: false,
+      hasSelection: editorHasSelection,
+      editorFocused: true,
+      platterOpen: mentorDockOpen,
+      modelBusy: false,
+    }), aiStatus === 'connected' ? embed : undefined);
+    return unsub;
+  }, [vault, activeTabId, editorHasSelection, mentorDockOpen, aiStatus, embed]);
+
+  // 监听 mentor suggestion 事件，更新 inline bubble
+  useEffect(() => {
+    const unsub = mentorEventBus.on('mentor_suggestion_created', (event) => {
+      const payload = event.payload;
+      console.log('[AppShell] mentor_suggestion_created 事件:', payload);
+      if (!payload || !vault) return;
+      const surface = payload.surface as string;
+      if (surface !== 'inline') return;
+      const targetId = payload.targetId as string;
+      if (targetId !== activeTabId) return;
+
+      const suggestion: MentorSuggestion = {
+        id: payload.suggestionId as string,
+        vault_id: vault.path,
+        source_event_id: (payload.eventId as string) ?? null,
+        source_signal_ids_json: JSON.stringify(payload.signalIds ?? []),
+        source_job_id: null,
+        target_id: targetId,
+        target_type: 'document',
+        intent: (payload.intent as MentorSuggestionIntent) ?? 'classify',
+        priority: (payload.priority as 'low' | 'medium' | 'high') ?? 'medium',
+        surface: 'inline',
+        message: (payload.message as string) ?? '',
+        short_message: (payload.shortMessage as string) ?? '',
+        evidence_ids_json: JSON.stringify(payload.evidenceIds ?? []),
+        actions_json: JSON.stringify(payload.actions ?? []),
+        status: 'pending',
+        confidence: (payload.confidence as number) ?? 0,
+        model_trace_id: null,
+        expires_at: null,
+        last_shown_at: null,
+        snoozed_until: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      setInlineSuggestion(suggestion);
+    });
+    return unsub;
+  }, [vault, activeTabId]);
+
+  // 切换文档时清除 inline suggestion
+  useEffect(() => {
+    setInlineSuggestion(null);
+  }, [activeTabId]);
 
   useEffect(() => {
     const unsubs = [
@@ -1650,7 +1730,28 @@ export function AppShell() {
                   onSelectionAction={handleEditorSelectionAction}
                   reasoningAvailable={aiStatus === 'connected'}
                   vaultPath={vault?.path}
-                  vaultId={activeTabId}
+                  vaultId={vault?.path}
+                  documentPath={activeTabId}
+                  inlineSuggestion={inlineSuggestion}
+                  suggestionActionContext={vault ? {
+                    vaultPath: vault.path,
+                    documentPath: activeTabId,
+                    onPlatterOpen: () => { setMentorDockTab('mentor'); setMentorDockOpen(true); },
+                  } : null}
+                  onSuggestionDismissed={() => {
+                    if (inlineSuggestion) {
+                      notifySuggestionDismissed(activeTabId, parseSignalTypeFromSuggestion(inlineSuggestion));
+                    }
+                    setInlineSuggestion(null);
+                  }}
+                  onSuggestionSnoozed={() => setInlineSuggestion(null)}
+                  onSuggestionAccepted={(_actionId) => setInlineSuggestion(null)}
+                  onSuggestionOpenDetail={() => {
+                    setMentorDockTab('mentor');
+                    setMentorDockOpen(true);
+                    setInlineSuggestion(null);
+                  }}
+                  onSelectionChanged={setEditorHasSelection}
                 />
               )}
               {(previewMode === 'preview' || previewMode === 'split') && (

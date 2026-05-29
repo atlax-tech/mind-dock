@@ -14,6 +14,8 @@ import { personalizationService } from '@/services/index/personalization';
 import { metadataService, type KnowledgeTypeCandidate } from '@/services/index/metadata';
 import type { ContextPack } from '@/services/index/context-pack';
 import type { TriggerResult } from '@/services/index/mentor-triggers';
+import { mentorEventBus } from '@/modules/ai/MentorEventBus';
+import { mentorSuggestionsService, type MentorSuggestion } from '@/services/mentor/mentor-suggestions';
 
 export type PlatterTab = 'mentor' | 'notifications' | 'inbox' | 'widgets' | 'document-context' | 'context-pack';
 
@@ -421,7 +423,9 @@ function MentorView({
 }) {
   const { status } = useAIRuntime();
   const { vault } = useVault();
-  const { suggestions, loading: suggestionsLoading, updateSuggestionStatus } = useAISuggestions();
+  const { suggestions: legacySuggestions, loading: legacySuggestionsLoading, updateSuggestionStatus: updateLegacySuggestionStatus } = useAISuggestions();
+  const [mentorSuggestions, setMentorSuggestions] = useState<MentorSuggestion[]>([]);
+  const [mentorSuggestionsLoading, setMentorSuggestionsLoading] = useState(false);
 
   // 折叠状态：默认只展开最高优先级
   const hasTriggers = triggerResults && triggerResults.length > 0;
@@ -441,6 +445,47 @@ function MentorView({
   const [dismissedRelated, setDismissedRelated] = useState<Set<number>>(new Set());
   const [knowledgeTypeCandidates, setKnowledgeTypeCandidates] = useState<KnowledgeTypeCandidate[]>([]);
   const [handledKnowledgeTypes, setHandledKnowledgeTypes] = useState<Set<string>>(new Set());
+
+  const loadMentorSuggestions = useCallback(async () => {
+    if (!vault) {
+      setMentorSuggestions([]);
+      return;
+    }
+    setMentorSuggestionsLoading(true);
+    try {
+      const entries = await mentorSuggestionsService.listSuggestions(
+        vault.path,
+        vault.path,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        20,
+      );
+      setMentorSuggestions(entries);
+    } catch (err) {
+      console.error('[MentorDock] 加载 mentor suggestions 失败:', err);
+    } finally {
+      setMentorSuggestionsLoading(false);
+    }
+  }, [vault]);
+
+  useEffect(() => {
+    loadMentorSuggestions();
+  }, [loadMentorSuggestions]);
+
+  useEffect(() => {
+    const unsubs = [
+      mentorEventBus.on('mentor_suggestion_created', () => {
+        setRecentSuggestionsOpen(true);
+        loadMentorSuggestions();
+      }),
+      mentorEventBus.on('mentor_suggestion_actioned', () => {
+        loadMentorSuggestions();
+      }),
+    ];
+    return () => unsubs.forEach(unsub => unsub());
+  }, [loadMentorSuggestions]);
 
   // 当 trigger 或 relatedResults 变化时调整折叠优先级
   useEffect(() => {
@@ -520,8 +565,10 @@ function MentorView({
     }).catch(() => { /* 信号失败不影响 UI */ });
   };
 
-  // 最近建议（只显示3条）
-  const recentSuggestions = [...suggestions].reverse().slice(0, 3);
+  // 最近建议（新 MentorSuggestion store 优先，旧 AISuggestion 作为兼容兜底）
+  const recentMentorSuggestions = mentorSuggestions.slice(0, 3);
+  const recentLegacySuggestions = [...legacySuggestions].reverse().slice(0, Math.max(0, 3 - recentMentorSuggestions.length));
+  const suggestionsLoading = mentorSuggestionsLoading || (recentMentorSuggestions.length === 0 && legacySuggestionsLoading);
   const visibleKnowledgeTypeCandidates = knowledgeTypeCandidates.filter(candidate => (
     !handledKnowledgeTypes.has(`${candidate.knowledge_type}:${candidate.chunk_id ?? candidate.document_path}`)
   ));
@@ -535,14 +582,42 @@ function MentorView({
     }
   };
 
+  const mentorIntentLabel = (intent: string): string => {
+    switch (intent) {
+      case 'clarify': return '澄清';
+      case 'classify': return '分类';
+      case 'extract': return '提取';
+      case 'summarize': return '总结';
+      case 'review': return '复查';
+      case 'connect': return '关联';
+      case 'output': return '输出';
+      case 'archive': return '归档';
+      case 'resolve_conflict': return '冲突';
+      default: return intent;
+    }
+  };
+
   const suggestionStatusBadge = (s: string) => {
     switch (s) {
       case 'pending': return <span className="text-[9px] px-1 py-0.5 rounded bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400">待处理</span>;
       case 'accepted': return <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400">已采纳</span>;
+      case 'dismissed':
       case 'rejected': return <span className="text-[9px] px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400">已忽略</span>;
+      case 'snoozed': return <span className="text-[9px] px-1 py-0.5 rounded bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">稍后</span>;
+      case 'expired': return <span className="text-[9px] px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400">已过期</span>;
+      case 'executed': return <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400">已执行</span>;
       case 'edited': return <span className="text-[9px] px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400">已编辑</span>;
       default: return null;
     }
+  };
+
+  const handleMentorSuggestionStatus = async (id: string, status: 'accepted' | 'dismissed') => {
+    if (!vault) return;
+    await mentorSuggestionsService.updateSuggestionStatus(vault.path, id, status);
+    setMentorSuggestions(prev => prev.map(s => (
+      s.id === id ? { ...s, status, updated_at: new Date().toISOString() } : s
+    )));
+    mentorEventBus.emit('mentor_suggestion_actioned', { suggestionId: id, status });
   };
 
   return (
@@ -893,10 +968,45 @@ function MentorView({
             <div className="flex items-center justify-center py-2">
               <Loader2 size={12} className="animate-spin text-stone-400" />
             </div>
-          ) : recentSuggestions.length === 0 ? (
+          ) : recentMentorSuggestions.length === 0 && recentLegacySuggestions.length === 0 ? (
             <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">暂无 AI 建议</p>
           ) : (
-            recentSuggestions.map(s => (
+            <>
+            {recentMentorSuggestions.map(s => (
+              <div key={s.id} className="border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-lg p-2 space-y-1">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[9px] px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-[#5a5a56] dark:text-[#a0a0a0]">
+                    {mentorIntentLabel(s.intent)}
+                  </span>
+                  {suggestionStatusBadge(s.status)}
+                </div>
+                <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] line-clamp-2 leading-normal">
+                  {s.short_message || s.message}
+                </p>
+                <p className="text-[9px] text-stone-400 dark:text-stone-500">
+                  {new Date(s.created_at).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                </p>
+                {s.status === 'pending' && (
+                  <div className="flex items-center gap-1 pt-0.5">
+                    <button
+                      onClick={() => handleMentorSuggestionStatus(s.id, 'accepted')}
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors"
+                    >
+                      <Check size={10} />
+                      采纳
+                    </button>
+                    <button
+                      onClick={() => handleMentorSuggestionStatus(s.id, 'dismissed')}
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+                    >
+                      <XCircle size={10} />
+                      忽略
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+            {recentLegacySuggestions.map(s => (
               <div key={s.id} className="border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-lg p-2 space-y-1">
                 <div className="flex items-center justify-between gap-1">
                   <span className="text-[9px] px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-[#5a5a56] dark:text-[#a0a0a0]">
@@ -913,14 +1023,14 @@ function MentorView({
                 {s.status === 'pending' && (
                   <div className="flex items-center gap-1 pt-0.5">
                     <button
-                      onClick={() => updateSuggestionStatus(s.id, 'accepted')}
+                      onClick={() => updateLegacySuggestionStatus(s.id, 'accepted')}
                       className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors"
                     >
                       <Check size={10} />
                       采纳
                     </button>
                     <button
-                      onClick={() => updateSuggestionStatus(s.id, 'rejected')}
+                      onClick={() => updateLegacySuggestionStatus(s.id, 'rejected')}
                       className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
                     >
                       <XCircle size={10} />
@@ -929,7 +1039,8 @@ function MentorView({
                   </div>
                 )}
               </div>
-            ))
+            ))}
+            </>
           )}
         </ExplorerSection>
       </div>

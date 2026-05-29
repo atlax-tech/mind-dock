@@ -151,6 +151,16 @@ export const mentorSuggestionsService = {
     });
   },
 
+  async updateSuggestionLastShown(
+    vaultPath: string,
+    suggestionId: string
+  ): Promise<void> {
+    return invoke('update_mentor_suggestion_last_shown', {
+      vaultPath,
+      suggestionId,
+    });
+  },
+
   async snoozeSuggestion(
     vaultPath: string,
     suggestionId: string,

@@ -333,6 +333,35 @@ pub fn snooze_mentor_suggestion(
 }
 
 #[command]
+pub fn update_mentor_suggestion_last_shown(
+    vault_path: String,
+    suggestion_id: String,
+) -> Result<(), String> {
+    assert_path_inside_vault(&vault_path, &vault_path)?;
+
+    let conn = open_db(&vault_path)?;
+    create_tables(&conn)?;
+
+    let now = Utc::now().to_rfc3339();
+
+    let affected = conn
+        .execute(
+            "UPDATE mentor_suggestions SET last_shown_at = ?1, updated_at = ?1 WHERE id = ?2",
+            params![now, suggestion_id],
+        )
+        .map_err(|e| format!("更新 mentor_suggestion last_shown_at 失败: {}", e))?;
+
+    if affected == 0 {
+        return Err(format!(
+            "未找到 id 为 '{}' 的 mentor_suggestion",
+            suggestion_id
+        ));
+    }
+
+    Ok(())
+}
+
+#[command]
 pub fn delete_mentor_suggestion(
     vault_path: String,
     suggestion_id: String,
