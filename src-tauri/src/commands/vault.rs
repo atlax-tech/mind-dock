@@ -241,8 +241,8 @@ pub fn select_vault(path: String) -> Result<VaultInfo, String> {
     };
     write_app_config(&config)?;
 
-    // 统计 .md 文件数量
-    let doc_count = count_markdown_files(vault_path);
+    // 统计支持的文档文件数量
+    let doc_count = count_supported_document_files(vault_path);
 
     let name = vault_path
         .file_name()
@@ -282,14 +282,23 @@ pub fn set_last_vault_path(path: String) -> Result<(), String> {
     write_app_config(&config)
 }
 
-fn count_markdown_files(dir: &Path) -> usize {
+fn is_supported_document_file(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase()),
+        Some(ext) if matches!(ext.as_str(), "md" | "markdown" | "txt" | "html" | "htm" | "json")
+    )
+}
+
+fn count_supported_document_files(dir: &Path) -> usize {
     let mut count = 0;
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                count += count_markdown_files(&path);
-            } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                count += count_supported_document_files(&path);
+            } else if is_supported_document_file(&path) {
                 count += 1;
             }
         }
@@ -379,22 +388,28 @@ fn scan_dir_recursive(
         if path.is_dir() {
             let mut children = Vec::new();
             scan_dir_recursive(base, &path, &mut children)?;
-            // 只包含有 .md 文件的目录
-            if has_markdown_files(&path) {
-                entries.push(DocEntry {
-                    name,
-                    title: None,
-                    path: relative,
-                    absolute_path: path.to_string_lossy().to_string(),
-                    is_dir: true,
-                    children,
-                });
-            }
-        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
-            // 读取文件内容提取 frontmatter title
-            let title = fs::read_to_string(&path)
-                .ok()
-                .and_then(|content| extract_frontmatter_title(&content));
+            entries.push(DocEntry {
+                name,
+                title: None,
+                path: relative,
+                absolute_path: path.to_string_lossy().to_string(),
+                is_dir: true,
+                children,
+            });
+        } else if is_supported_document_file(&path) {
+            // Markdown 文件读取 frontmatter title；其他文本文件使用文件名显示
+            let title = if matches!(
+                path.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_lowercase()),
+                Some(ext) if matches!(ext.as_str(), "md" | "markdown")
+            ) {
+                fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|content| extract_frontmatter_title(&content))
+            } else {
+                None
+            };
             entries.push(DocEntry {
                 name,
                 title,
@@ -407,20 +422,4 @@ fn scan_dir_recursive(
     }
 
     Ok(())
-}
-
-fn has_markdown_files(dir: &Path) -> bool {
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if has_markdown_files(&path) {
-                    return true;
-                }
-            } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
-                return true;
-            }
-        }
-    }
-    false
 }

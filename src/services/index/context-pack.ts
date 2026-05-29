@@ -156,10 +156,11 @@ export const contextPackService = {
     lines.push('');
 
     const confirmedItems = pack.items.filter(i => !i.is_suggestion);
-    for (const item of confirmedItems) {
+    confirmedItems.forEach((item, index) => {
+      const sourceId = `S${index + 1}`;
       const displayTitle = item.heading ?? item.title ?? item.document_path.split('/').pop()?.replace('.md', '') ?? '未命名';
-      lines.push(`## ${displayTitle}`);
-      lines.push(`> 来源: ${item.document_path}`);
+      lines.push(`## [${sourceId}] ${displayTitle}`);
+      lines.push(`> 来源: [${sourceId}] ${item.document_path}`);
       if (item.start_line != null && item.end_line != null) {
         lines.push(`> 位置: L${item.start_line}–L${item.end_line}`);
       }
@@ -177,7 +178,7 @@ export const contextPackService = {
       }
       lines.push('---');
       lines.push('');
-    }
+    });
 
     return lines.join('\n');
   },

@@ -41,9 +41,13 @@ pub fn create_document(vault_path: String, file_path: String) -> Result<String, 
 
     let path = Path::new(&file_path);
 
-    // 确保文件扩展名为 .md
-    if path.extension().and_then(|e| e.to_str()) != Some("md") {
-        return Err("只能创建 .md 文件".to_string());
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if !matches!(ext.as_str(), "md" | "markdown" | "txt" | "html" | "htm" | "json") {
+        return Err("只能创建 .md、.markdown、.txt、.html 或 .json 文件".to_string());
     }
 
     // 检查文件是否已存在
@@ -60,14 +64,18 @@ pub fn create_document(vault_path: String, file_path: String) -> Result<String, 
             .map_err(|e| format!("创建父目录失败: {}", e))?;
     }
 
-    // 从文件名提取标题（去掉 .md 后缀）
+    // 从文件名提取标题（去掉扩展名）
     let title = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("");
 
-    // 创建文件，写入默认 frontmatter（title 填入文件名）
-    let default_content = format!("---\ntitle: {}\ncreated: \ntags: []\n---\n\n", title);
+    // Markdown 创建默认 frontmatter；其他文本类型创建空文件。
+    let default_content = if matches!(ext.as_str(), "md" | "markdown") {
+        format!("---\ntitle: {}\ncreated: \ntags: []\n---\n\n", title)
+    } else {
+        String::new()
+    };
     fs::write(path, default_content)
         .map_err(|e| format!("创建文件失败: {}", e))?;
 
@@ -102,7 +110,41 @@ pub fn write_document(vault_path: String, file_path: String, content: String) ->
         .map_err(|e| format!("写入文件失败: {}", e))
 }
 
-/// 重命名文档（同时更新 frontmatter title）
+/// 导出文本文件到用户通过系统保存对话框选择的位置。
+#[command]
+pub fn export_text_file(file_path: String, content: String) -> Result<(), String> {
+    let path = Path::new(&file_path);
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if !matches!(ext.as_str(), "md" | "markdown" | "txt") {
+        return Err("只能导出 .md、.markdown 或 .txt 文件".to_string());
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| "无法获取导出文件的父目录".to_string())?;
+    if !parent.exists() {
+        return Err("导出目录不存在".to_string());
+    }
+
+    fs::write(path, content)
+        .map_err(|e| format!("导出文件失败: {}", e))
+}
+
+fn is_markdown_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase()),
+        Some(ext) if matches!(ext.as_str(), "md" | "markdown")
+    )
+}
+
+/// 重命名文档（Markdown 同时更新 frontmatter title）
 #[command]
 pub fn rename_document(vault_path: String, old_path: String, new_name: String) -> Result<String, String> {
     assert_path_inside_vault(&vault_path, &old_path)?;
@@ -112,11 +154,14 @@ pub fn rename_document(vault_path: String, old_path: String, new_name: String) -
         return Err(format!("文件 '{}' 不存在", old_path));
     }
 
-    // 确保新名称以 .md 结尾
-    let new_name = if new_name.ends_with(".md") {
+    let old_ext = old
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("md");
+    let new_name = if Path::new(&new_name).extension().is_some() {
         new_name
     } else {
-        format!("{}.md", new_name)
+        format!("{}.{}", new_name, old_ext)
     };
 
     let new_path = old.parent()
@@ -133,10 +178,15 @@ pub fn rename_document(vault_path: String, old_path: String, new_name: String) -
     }
 
     // 先更新文件内容中的 frontmatter title
-    let title_stem = new_name.trim_end_matches(".md");
-    if let Ok(content) = fs::read_to_string(old) {
-        let updated = update_frontmatter_title(&content, title_stem);
-        let _ = fs::write(old, updated);
+    let title_stem = Path::new(&new_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&new_name);
+    if is_markdown_path(old) && is_markdown_path(&new_path) {
+        if let Ok(content) = fs::read_to_string(old) {
+            let updated = update_frontmatter_title(&content, title_stem);
+            let _ = fs::write(old, updated);
+        }
     }
 
     fs::rename(old, &new_path)
@@ -145,18 +195,23 @@ pub fn rename_document(vault_path: String, old_path: String, new_name: String) -
     Ok(new_path_str)
 }
 
-/// 删除文档
+/// 删除文档或文件夹
 #[command]
 pub fn delete_document(vault_path: String, file_path: String) -> Result<(), String> {
     assert_path_inside_vault(&vault_path, &file_path)?;
 
     let path = Path::new(&file_path);
     if !path.exists() {
-        return Err(format!("文件 '{}' 不存在", file_path));
+        return Err(format!("路径 '{}' 不存在", file_path));
     }
 
-    fs::remove_file(path)
-        .map_err(|e| format!("删除文件失败: {}", e))
+    if path.is_dir() {
+        fs::remove_dir_all(path)
+            .map_err(|e| format!("删除文件夹失败: {}", e))
+    } else {
+        fs::remove_file(path)
+            .map_err(|e| format!("删除文件失败: {}", e))
+    }
 }
 
 /// 获取文档元数据（文件大小和最后修改时间）

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Package, Plus, Trash2, Pencil, ChevronUp, ChevronDown,
-  Loader2, FileText, ArrowRight, Download, Sparkles, Check,
+  Loader2, FileText, ArrowRight, Download, Sparkles, Check, ExternalLink, X,
 } from 'lucide-react';
 
 import { useVault } from '@/modules/vault/VaultProvider';
@@ -17,6 +17,7 @@ import {
   chunkingService,
 } from '@/services/index/chunking';
 import { personalizationService } from '@/services/index/personalization';
+import { metadataService, type KnowledgeTypeCandidate } from '@/services/index/metadata';
 
 /** selected_reason 的中文标签映射 */
 const REASON_LABELS: Record<string, { label: string; colorClass: string }> = {
@@ -36,6 +37,8 @@ function getReasonBadge(reason: string) {
 
 interface ContextPackPanelProps {
   onGeneratePrompt?: (pack: ContextPack) => void;
+  onOpenInEditor?: (documentPath: string, sourceType: string) => void;
+  onActivePackChange?: (packId: string | null) => void;
   pendingItem?: {
     documentPath: string;
     title: string | null;
@@ -53,6 +56,7 @@ interface ContextPackPanelProps {
 interface DocCandidate {
   document_path: string;
   title?: string;
+  heading?: string;
   summary?: string;
   tags?: string;
   content?: string;
@@ -61,12 +65,51 @@ interface DocCandidate {
   chunk_id?: number;
   start_line?: number;
   end_line?: number;
+  knowledge_type?: string;
+  knowledge_type_label?: string;
 }
 
-export function ContextPackPanel({ onGeneratePrompt, pendingItem, refreshKey }: ContextPackPanelProps) {
+function candidateKey(candidate: Pick<DocCandidate, 'chunk_id' | 'document_path' | 'start_line'>) {
+  return candidate.chunk_id != null
+    ? `chunk:${candidate.chunk_id}`
+    : `doc:${candidate.document_path}:${candidate.start_line ?? 'unknown'}`;
+}
+
+function headingLabel(headingPath: string | null | undefined) {
+  if (!headingPath) return undefined;
+  return headingPath
+    .split('/')
+    .map(part => part.trim())
+    .filter(Boolean)
+    .join(' / ');
+}
+
+function getRecommendationReason(candidate: DocCandidate) {
+  const score = Math.round(candidate.similarity_score * 100);
+  const location = candidate.start_line != null && candidate.end_line != null
+    ? `，位置 L${candidate.start_line}-${candidate.end_line}`
+    : '';
+  const heading = candidate.heading ? `「${candidate.heading}」` : '这个片段';
+  return `${heading} 与当前 Pack 已选材料语义相近（相关度 ${score}%${location}），可作为补充来源。`;
+}
+
+function personalizationScore(candidate: DocCandidate, weights: Awaited<ReturnType<typeof personalizationService.getWeights>>) {
+  const accepted = weights.acceptedByDocument[candidate.document_path] ?? 0;
+  const rejected = weights.rejectedByDocument[candidate.document_path] ?? 0;
+  const recent = weights.recentDocumentBoost[candidate.document_path] ?? 0;
+  const typeBoost = candidate.knowledge_type ? (weights.knowledgeTypeAccepted[candidate.knowledge_type] ?? 0) * 0.04 : 0;
+  const typePenalty = candidate.knowledge_type ? (weights.knowledgeTypeRejected[candidate.knowledge_type] ?? 0) * 0.06 : 0;
+  return candidate.similarity_score + accepted * 0.06 + Math.min(recent * 0.02, 0.08) + typeBoost - rejected * 0.12 - typePenalty;
+}
+
+export function ContextPackPanel({ onGeneratePrompt, onOpenInEditor, onActivePackChange, pendingItem, refreshKey }: ContextPackPanelProps) {
   const { vault } = useVault();
   const [packs, setPacks] = useState<ContextPack[]>([]);
   const [activePackId, setActivePackId] = useState<string | null>(null);
+
+  useEffect(() => {
+    onActivePackChange?.(activePackId);
+  }, [activePackId, onActivePackChange]);
   const [suggestions, setSuggestions] = useState<DocCandidate[]>([]);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
@@ -77,6 +120,7 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem, refreshKey }: 
   const [renameDraft, setRenameDraft] = useState('');
   const [exportError, setExportError] = useState<string | null>(null);
   const [justAdded, setJustAdded] = useState(false);
+  const [ignoredCandidateKeys, setIgnoredCandidateKeys] = useState<Set<string>>(new Set());
 
   const activePack = packs.find(p => p.id === activePackId) ?? null;
 
@@ -160,16 +204,19 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem, refreshKey }: 
           .map(i => i.chunk_id)
           .filter((id): id is number => id != null);
 
-        // 2. 对于没有 chunk_id 的文档级 item，查询该文档的 chunks 取第一个
+        // 2. 对于没有 chunk_id 的文档级 item，读取该文档全部 chunks 作为推荐种子
         const docItemsWithoutChunk = confirmedItems.filter(i => i.chunk_id == null);
-        for (const item of docItemsWithoutChunk) {
+        const chunkGroups = await Promise.all(docItemsWithoutChunk.map(async (item) => {
           try {
-            const chunks = await chunkingService.getDocumentChunks(vault.path, item.document_path);
-            if (chunks.length > 0) {
-              existingChunkIds.push(chunks[0].id);
-            }
+            return await chunkingService.getDocumentChunks(vault.path, item.document_path);
           } catch {
             // 文档可能未索引，跳过
+            return [];
+          }
+        }));
+        for (const chunks of chunkGroups) {
+          for (const chunk of chunks) {
+            existingChunkIds.push(chunk.id);
           }
         }
 
@@ -178,32 +225,69 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem, refreshKey }: 
           return;
         }
 
+        const uniqueChunkIds = Array.from(new Set(existingChunkIds));
+
         // 3. 用收集到的 chunkIds 调用推荐
         const candidates = await vectorIndexService.suggestContextPackCandidates(
           vault.path,
-          existingChunkIds,
+          uniqueChunkIds,
           20,
         );
+        const [typeCandidates, personalizationWeights] = await Promise.all([
+          metadataService.suggestKnowledgeTypeCandidates(vault.path, null, 80).catch(() => [] as KnowledgeTypeCandidate[]),
+          personalizationService.getWeights(vault.path).catch(() => ({
+            acceptedByDocument: {},
+            rejectedByDocument: {},
+            recentDocumentBoost: {},
+            outputTypeCounts: {},
+            knowledgeTypeAccepted: {},
+            knowledgeTypeRejected: {},
+          })),
+        ]);
+        const typeByChunk = new Map<number, KnowledgeTypeCandidate>();
+        for (const candidate of typeCandidates) {
+          if (candidate.chunk_id != null && !typeByChunk.has(candidate.chunk_id)) {
+            typeByChunk.set(candidate.chunk_id, candidate);
+          }
+        }
 
-        // 4. 按 document_path 去重，排除已有文档
-        const existingDocPaths = new Set(confirmedItems.map(i => i.document_path));
+        // 4. 按 chunk 粒度去重，排除已有来源与已忽略候选
+        const existingChunkSet = new Set(uniqueChunkIds);
+        const documentLevelDocPaths = new Set(
+          confirmedItems
+            .filter(i => i.chunk_id == null && !i.content)
+            .map(i => i.document_path),
+        );
         const seen = new Set<string>();
         const docCandidates: DocCandidate[] = [];
         for (const c of candidates) {
-          if (seen.has(c.document_path) || existingDocPaths.has(c.document_path)) continue;
-          seen.add(c.document_path);
+          const key = candidateKey(c);
+          if (
+            seen.has(key) ||
+            ignoredCandidateKeys.has(key) ||
+            existingChunkSet.has(c.chunk_id) ||
+            documentLevelDocPaths.has(c.document_path)
+          ) continue;
+          seen.add(key);
+          const heading = headingLabel(c.heading_path);
+          const typeCandidate = typeByChunk.get(c.chunk_id);
           docCandidates.push({
             document_path: c.document_path,
-            title: c.heading_path ?? undefined,
+            title: heading ?? c.document_path.split('/').pop()?.replace('.md', ''),
+            heading,
             content: c.content,
             selected_reason: c.selected_reason,
             similarity_score: c.similarity_score,
             chunk_id: c.chunk_id,
             start_line: c.start_line,
             end_line: c.end_line,
+            knowledge_type: typeCandidate?.knowledge_type,
+            knowledge_type_label: typeCandidate?.label,
           });
         }
-        setSuggestions(docCandidates.slice(0, 5));
+        const ranked = docCandidates
+          .sort((a, b) => personalizationScore(b, personalizationWeights) - personalizationScore(a, personalizationWeights));
+        setSuggestions(ranked.slice(0, 5));
       } catch {
         setSuggestions([]);
       } finally {
@@ -286,7 +370,10 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem, refreshKey }: 
   }, [vault, activePackId, refreshPacks]);
 
   // 编辑条目：如果有 content（段落/选区），编辑 content；否则编辑 summary
-  const startEditItem = useCallback((item: ContextPackItem) => {
+  const [editPopoverId, setEditPopoverId] = useState<string | null>(null);
+
+  const startEditInline = useCallback((item: ContextPackItem) => {
+    setEditPopoverId(null);
     setEditingItemId(item.id);
     setEditSummary(item.content ?? item.summary ?? '');
   }, []);
@@ -318,18 +405,19 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem, refreshKey }: 
         summary: candidate.summary ?? null,
         tags: candidate.tags ?? null,
         content: candidate.content ?? null,
-        heading: candidate.title ?? null,
+        heading: candidate.heading ?? candidate.title ?? null,
         start_line: candidate.start_line ?? null,
         end_line: candidate.end_line ?? null,
         chunk_id: candidate.chunk_id ?? null,
         source_type: 'suggestion',
         score: candidate.similarity_score,
-        reasoning_note: null,
+        reasoning_note: getRecommendationReason(candidate),
         selected_reason: candidate.selected_reason,
         is_suggestion: false,
       });
       // 从建议列表中移除
-      setSuggestions(prev => prev.filter(s => s.document_path !== candidate.document_path));
+      const key = candidateKey(candidate);
+      setSuggestions(prev => prev.filter(s => candidateKey(s) !== key));
       await refreshPacks();
     } catch (err) {
       console.error('添加推荐失败:', err);
@@ -342,9 +430,41 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem, refreshKey }: 
         document_path: candidate.document_path,
         chunk_id: candidate.chunk_id ?? null,
         search_query: null,
+        knowledge_type: candidate.knowledge_type ?? null,
       }).catch(() => { /* 信号记录失败不影响操作 */ });
     }
   }, [vault, activePackId, refreshPacks]);
+
+  // 忽略建议
+  const handleIgnoreSuggestion = useCallback((candidate: DocCandidate) => {
+    if (!vault) return;
+    const key = candidateKey(candidate);
+    setIgnoredCandidateKeys(prev => {
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+    setSuggestions(prev => prev.filter(s => candidateKey(s) !== key));
+    personalizationService.recordSignal(vault.path, {
+      action_type: 'context_pack_item_rejected',
+      document_path: candidate.document_path,
+      chunk_id: candidate.chunk_id ?? null,
+      search_query: null,
+      knowledge_type: candidate.knowledge_type ?? null,
+    }).catch(() => { /* 信号记录失败不影响操作 */ });
+  }, [vault]);
+
+  const handleOpenSuggestionSource = useCallback((candidate: DocCandidate) => {
+    if (vault) {
+      personalizationService.recordSignal(vault.path, {
+        action_type: 'opened_result',
+        document_path: candidate.document_path,
+        chunk_id: candidate.chunk_id ?? null,
+        search_query: null,
+      }).catch(() => { /* 信号记录失败不影响打开 */ });
+    }
+    onOpenInEditor?.(candidate.document_path, 'suggestion');
+  }, [onOpenInEditor, vault]);
 
   // 导出 Markdown
   const handleExportMarkdown = useCallback(async () => {
@@ -605,13 +725,37 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem, refreshKey }: 
                       >
                         <ChevronDown size={10} />
                       </button>
-                      <button
-                        onClick={() => startEditItem(item)}
-                        className="p-0.5 text-[#7e7e78] dark:text-[#8e8e8e] hover:text-stone-800 dark:hover:text-stone-200"
-                        title="编辑"
-                      >
-                        <Pencil size={10} />
-                      </button>
+                      <div className="relative">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setEditPopoverId(editPopoverId === item.id ? null : item.id); }}
+                          className="p-0.5 text-[#7e7e78] dark:text-[#8e8e8e] hover:text-stone-800 dark:hover:text-stone-200"
+                          title="编辑"
+                        >
+                          <Pencil size={10} />
+                        </button>
+                        {editPopoverId === item.id && (
+                          <div className="absolute right-0 top-6 z-50 bg-white dark:bg-[#212121] border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-lg shadow-lg py-1 text-[10px] min-w-[140px] whitespace-nowrap">
+                            <button
+                              className="w-full text-left px-3 py-1.5 hover:bg-stone-50 dark:hover:bg-stone-800/50 flex items-center gap-2"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onOpenInEditor?.(item.document_path, item.source_type || 'document');
+                                setEditPopoverId(null);
+                              }}
+                            >
+                              <ExternalLink size={10} />
+                              在编辑器中打开
+                            </button>
+                            <button
+                              className="w-full text-left px-3 py-1.5 hover:bg-stone-50 dark:hover:bg-stone-800/50 flex items-center gap-2"
+                              onClick={(e) => { e.stopPropagation(); startEditInline(item); }}
+                            >
+                              <Pencil size={10} />
+                              行内编辑
+                            </button>
+                          </div>
+                        )}
+                      </div>
                       <button
                         onClick={() => handleRemoveItem(item.id)}
                         className="p-0.5 text-[#7e7e78] dark:text-[#8e8e8e] hover:text-red-500 dark:hover:text-red-400"
@@ -667,7 +811,7 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem, refreshKey }: 
             <div className="space-y-1.5">
               {suggestions.map(candidate => (
                 <div
-                  key={candidate.document_path}
+                  key={candidateKey(candidate)}
                   className="border-l-2 border-l-amber-500 bg-amber-50/30 dark:bg-amber-900/10 px-2 py-1.5 space-y-1"
                 >
                   <div className="flex items-start justify-between gap-1">
@@ -680,6 +824,11 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem, refreshKey }: 
                         <span className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e]">
                           相关度 {(candidate.similarity_score * 100).toFixed(0)}%
                         </span>
+                        {candidate.knowledge_type_label && (
+                          <span className="text-[9px] px-1 py-0.5 rounded bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400">
+                            {candidate.knowledge_type_label}
+                          </span>
+                        )}
                       </div>
                       <p className="text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] truncate mt-0.5">
                         {candidate.title ?? candidate.document_path.split('/').pop()?.replace('.md', '') ?? '未命名'}
@@ -695,14 +844,33 @@ export function ContextPackPanel({ onGeneratePrompt, pendingItem, refreshKey }: 
                           {candidate.content}
                         </p>
                       )}
+                      <p className="text-[9px] text-amber-700 dark:text-amber-300/90 line-clamp-2 mt-1 leading-normal">
+                        为什么推荐：{getRecommendationReason(candidate)}
+                      </p>
                     </div>
-                    <button
-                      onClick={() => handleAcceptSuggestion(candidate)}
-                      className="p-1 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded transition-colors shrink-0"
-                      title="加入"
-                    >
-                      <ArrowRight size={12} />
-                    </button>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <button
+                        onClick={() => handleOpenSuggestionSource(candidate)}
+                        className="p-1 text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-100 dark:hover:bg-stone-800 rounded transition-colors"
+                        title="查看来源"
+                      >
+                        <ExternalLink size={12} />
+                      </button>
+                      <button
+                        onClick={() => handleIgnoreSuggestion(candidate)}
+                        className="p-1 text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-100 dark:hover:bg-stone-800 rounded transition-colors"
+                        title="忽略"
+                      >
+                        <X size={12} />
+                      </button>
+                      <button
+                        onClick={() => handleAcceptSuggestion(candidate)}
+                        className="p-1 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded transition-colors"
+                        title="加入当前 Pack"
+                      >
+                        <ArrowRight size={12} />
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}

@@ -623,7 +623,7 @@ pub fn generate_embedding_signal_tags(
 /// Uses ollama_chat to generate a short summary.
 /// If LLM is not available, returns error (no silent fallback).
 #[command]
-pub fn generate_llm_summary(
+pub async fn generate_llm_summary(
     vault_path: String,
     document_path: String,
 ) -> Result<SummaryTagsLayer, String> {
@@ -668,7 +668,7 @@ pub fn generate_llm_summary(
     }];
 
     // Call ollama_chat directly (it's a Rust function, not a Tauri command here)
-    let result = ollama_chat(endpoint, model, messages, "summary_generation".to_string())?;
+    let result = ollama_chat(endpoint, model, messages, "summary_generation".to_string()).await?;
 
     Ok(SummaryTagsLayer {
         source: "local_llm".to_string(),
@@ -685,7 +685,7 @@ pub fn generate_llm_summary(
 /// then tries LLM summary (if configured).
 /// Reasoning model is NOT called by default.
 #[command]
-pub fn generate_summary_tags(
+pub async fn generate_summary_tags(
     vault_path: String,
     document_path: String,
 ) -> Result<SummaryTagsResult, String> {
@@ -712,7 +712,7 @@ pub fn generate_summary_tags(
     }
 
     // Layer 3: LLM summary (if configured)
-    match generate_llm_summary(vault_path.clone(), document_path.clone()) {
+    match generate_llm_summary(vault_path.clone(), document_path.clone()).await {
         Ok(llm_layer) => layers.push(llm_layer),
         Err(e) => {
             // LLM not available, record error

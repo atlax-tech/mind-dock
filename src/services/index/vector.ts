@@ -96,6 +96,9 @@ export const vectorIndexService = {
     chunkIds: number[],
     limit?: number,
   ): Promise<CandidateResult[]> {
+    if (chunkIds.length === 0) {
+      return [];
+    }
     return invoke<CandidateResult[]>('suggest_context_pack_candidates', {
       vaultPath,
       chunkIds,

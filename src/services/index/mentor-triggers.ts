@@ -9,6 +9,13 @@ export interface TriggerResult {
   last_seen: string | null;
   status: string;             // "suggestion" | "threshold_exceeded"
   threshold: number | null;
+  document_path?: string;
+  affected_count?: number;
+  chunk_id?: number;
+  chunk_heading?: string | null;
+  start_line?: number | null;
+  end_line?: number | null;
+  chunk_content?: string | null;
 }
 
 /** 触发器状态条目（对应 Rust TriggerStateEntry） */
@@ -21,6 +28,7 @@ export interface TriggerStateEntry {
   hash_change_count: number;
   last_word_count: number;
   dismissed: boolean;
+  dismissed_until: string | null;
 }
 
 export const mentorTriggersService = {

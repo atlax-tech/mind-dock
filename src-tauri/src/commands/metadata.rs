@@ -22,6 +22,21 @@ pub struct DocumentRecord {
     pub word_count: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct KnowledgeTypeCandidate {
+    pub knowledge_type: String,
+    pub label: String,
+    pub scope: String,
+    pub document_path: String,
+    pub chunk_id: Option<i64>,
+    pub heading_path: Option<String>,
+    pub start_line: Option<i64>,
+    pub end_line: Option<i64>,
+    pub snippet: String,
+    pub confidence: f64,
+    pub reason: String,
+}
+
 /// 获取 metadata.db 的路径，并确保 .minddock 目录存在
 fn get_db_path(vault_path: &str) -> Result<std::path::PathBuf, String> {
     let vault = Path::new(vault_path);
@@ -350,6 +365,183 @@ pub fn list_documents_metadata(vault_path: String) -> Result<Vec<DocumentRecord>
     }
 
     Ok(records)
+}
+
+fn match_type_score(content: &str, knowledge_type: &str) -> (f64, Vec<&'static str>) {
+    let lower = content.to_lowercase();
+    let keywords: &[&str] = match knowledge_type {
+        "constraint" => &["必须", "不能", "不允许", "约束", "限制", "原则", "规则", "禁止", "must", "should not"],
+        "task" => &["任务", "需要", "实现", "完成", "todo", "下一步", "步骤", "改动", "范围"],
+        "question" => &["?", "？", "为什么", "如何", "是否", "能否", "问题", "疑问"],
+        "decision" => &["结论", "决定", "选择", "取舍", "方案", "采用", "不采用", "decision"],
+        "risk" => &["风险", "问题", "阻塞", "注意", "隐患", "失败", "限制", "不确定"],
+        "requirement" => &["验收", "目标", "需求", "标准", "通过", "acceptance", "requirement"],
+        _ => &[],
+    };
+
+    let mut hits = Vec::new();
+    for keyword in keywords {
+        if lower.contains(&keyword.to_lowercase()) {
+            hits.push(*keyword);
+        }
+    }
+
+    let base = match hits.len() {
+        0 => 0.0,
+        1 => 0.56,
+        2 => 0.72,
+        3 => 0.84,
+        _ => 0.92,
+    };
+    (base, hits)
+}
+
+fn best_knowledge_type(content: &str) -> Option<(String, String, f64, String)> {
+    let labels = [
+        ("constraint", "约束"),
+        ("task", "任务"),
+        ("question", "问题"),
+        ("decision", "决策"),
+        ("risk", "风险"),
+        ("requirement", "需求/验收"),
+    ];
+
+    let mut best: Option<(String, String, f64, String)> = None;
+    for (kind, label) in labels {
+        let (score, hits) = match_type_score(content, kind);
+        if score < 0.5 {
+            continue;
+        }
+        let reason = if hits.is_empty() {
+            "结构和措辞接近该知识类型".to_string()
+        } else {
+            format!("命中关键词：{}", hits.join("、"))
+        };
+        match &best {
+            Some((_, _, current_score, _)) if *current_score >= score => {}
+            _ => best = Some((kind.to_string(), label.to_string(), score, reason)),
+        }
+    }
+    best
+}
+
+fn snippet(content: &str) -> String {
+    let normalized = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    normalized.chars().take(220).collect()
+}
+
+#[command]
+pub fn suggest_knowledge_type_candidates(
+    vault_path: String,
+    document_path: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<KnowledgeTypeCandidate>, String> {
+    let conn = open_db(&vault_path)?;
+    create_tables(&conn)?;
+
+    if let Some(path) = &document_path {
+        assert_path_inside_vault(&vault_path, path)?;
+    }
+
+    let limit = limit.unwrap_or(10).max(1) as usize;
+    let mut candidates: Vec<KnowledgeTypeCandidate> = Vec::new();
+
+    if let Some(path) = &document_path {
+        if let Ok((title, summary, tags)) = conn.query_row(
+            "SELECT title, summary, tags FROM documents WHERE path = ?1",
+            params![path],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?)),
+        ) {
+            let doc_text = [title, summary, tags]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("\n");
+            if let Some((kind, label, confidence, reason)) = best_knowledge_type(&doc_text) {
+                candidates.push(KnowledgeTypeCandidate {
+                    knowledge_type: kind,
+                    label,
+                    scope: "document".to_string(),
+                    document_path: path.clone(),
+                    chunk_id: None,
+                    heading_path: None,
+                    start_line: None,
+                    end_line: None,
+                    snippet: snippet(&doc_text),
+                    confidence,
+                    reason,
+                });
+            }
+        }
+    }
+
+    let chunk_rows: Vec<(i64, String, Option<String>, i64, i64, String)> =
+        if let Some(path) = &document_path {
+            let mut stmt = conn.prepare(
+                "SELECT id, document_path, heading_path, start_line, end_line, content FROM chunks WHERE document_path = ?1 ORDER BY start_line",
+            )
+            .map_err(|e| format!("准备类型候选查询失败: {}", e))?;
+            let rows = stmt
+                .query_map(params![path], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                })
+                .map_err(|e| format!("查询类型候选失败: {}", e))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("读取类型候选行失败: {}", e))?
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT id, document_path, heading_path, start_line, end_line, content FROM chunks ORDER BY document_path, start_line",
+            )
+            .map_err(|e| format!("准备类型候选查询失败: {}", e))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                })
+                .map_err(|e| format!("查询类型候选失败: {}", e))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("读取类型候选行失败: {}", e))?
+        };
+
+    for (chunk_id, doc_path, heading_path, start_line, end_line, content) in chunk_rows {
+        if let Some((kind, label, confidence, reason)) = best_knowledge_type(&content) {
+            candidates.push(KnowledgeTypeCandidate {
+                knowledge_type: kind,
+                label,
+                scope: "chunk".to_string(),
+                document_path: doc_path,
+                chunk_id: Some(chunk_id),
+                heading_path,
+                start_line: Some(start_line),
+                end_line: Some(end_line),
+                snippet: snippet(&content),
+                confidence,
+                reason,
+            });
+        }
+    }
+
+    candidates.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+    candidates.truncate(limit);
+    Ok(candidates)
 }
 
 /// 运行 verify-index.sh 脚本验证索引完整性

@@ -11,6 +11,11 @@ export interface ChunkResult {
   content_hash: string;
 }
 
+export interface ReindexDocumentResult {
+  chunk_count: number;
+  changed_chunks: ChunkResult[];
+}
+
 export const chunkingService = {
   /** 对文档进行分块，返回分块数量 */
   async chunkDocument(vaultPath: string, documentPath: string): Promise<number> {
@@ -18,8 +23,8 @@ export const chunkingService = {
   },
 
   /** 重新索引文档（分块 + 更新索引），返回分块数量 */
-  async reindexDocument(vaultPath: string, documentPath: string): Promise<number> {
-    return invoke<number>('reindex_document', { vaultPath, documentPath });
+  async reindexDocument(vaultPath: string, documentPath: string): Promise<ReindexDocumentResult> {
+    return invoke<ReindexDocumentResult>('reindex_document', { vaultPath, documentPath });
   },
 
   /** 获取文档的所有分块 */

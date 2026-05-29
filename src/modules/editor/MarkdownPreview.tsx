@@ -3,11 +3,30 @@ import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useTheme } from '@/app/theme';
 
-interface MarkdownPreviewProps {
+interface DocumentPreviewProps {
   content: string;
+  filePath?: string;
 }
 
-export function MarkdownPreview({ content }: MarkdownPreviewProps) {
+export function DocumentPreview({ content, filePath }: DocumentPreviewProps) {
+  const type = getDocumentType(filePath);
+  if (type === 'markdown') {
+    return <MarkdownPreviewContent content={content} />;
+  }
+  if (type === 'json') {
+    return <JsonPreview content={content} />;
+  }
+  if (type === 'html') {
+    return <HtmlPreview content={content} />;
+  }
+  return <TextPreview content={content} />;
+}
+
+export function MarkdownPreview({ content, filePath }: DocumentPreviewProps) {
+  return <DocumentPreview content={content} filePath={filePath} />;
+}
+
+function MarkdownPreviewContent({ content }: { content: string }) {
   const { isDark } = useTheme();
 
   // 解析 frontmatter，只显示正文部分
@@ -61,6 +80,63 @@ export function MarkdownPreview({ content }: MarkdownPreviewProps) {
       </article>
     </div>
   );
+}
+
+function JsonPreview({ content }: { content: string }) {
+  let formatted = content;
+  let error: string | null = null;
+  try {
+    formatted = JSON.stringify(JSON.parse(content), null, 2);
+  } catch (err) {
+    error = `JSON 解析失败：${err instanceof Error ? err.message : String(err)}`;
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto p-8 text-[#2c2c2a] dark:text-[#e3e3e3]">
+      {error && (
+        <div className="mb-3 rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/20 px-3 py-2 text-[11px] text-red-600 dark:text-red-400">
+          {error}
+        </div>
+      )}
+      <pre className="text-[12px] leading-relaxed font-mono whitespace-pre-wrap rounded-lg bg-stone-50 dark:bg-stone-900 border border-[#e6e6dc] dark:border-[#2f2f2f] p-4 overflow-x-auto">
+        {formatted}
+      </pre>
+    </div>
+  );
+}
+
+function HtmlPreview({ content }: { content: string }) {
+  return (
+    <div className="flex-1 min-h-0 grid grid-rows-[auto_1fr]">
+      <div className="px-4 py-2 border-b border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
+        HTML 预览
+      </div>
+      <iframe
+        title="HTML Preview"
+        sandbox=""
+        srcDoc={content}
+        className="w-full h-full bg-white border-0"
+      />
+    </div>
+  );
+}
+
+function TextPreview({ content }: { content: string }) {
+  return (
+    <div className="flex-1 overflow-y-auto p-8 text-[#2c2c2a] dark:text-[#e3e3e3]">
+      <pre className="text-[12px] leading-relaxed font-mono whitespace-pre-wrap rounded-lg bg-stone-50 dark:bg-stone-900 border border-[#e6e6dc] dark:border-[#2f2f2f] p-4 overflow-x-auto">
+        {content || '空文档'}
+      </pre>
+    </div>
+  );
+}
+
+function getDocumentType(filePath?: string): 'markdown' | 'json' | 'html' | 'text' {
+  const ext = filePath?.split('.').pop()?.toLowerCase();
+  if (ext === 'md' || ext === 'markdown') return 'markdown';
+  if (ext === 'json') return 'json';
+  if (ext === 'html' || ext === 'htm') return 'html';
+  return 'text';
 }
 
 /** 从 Markdown 内容中提取正文（跳过 frontmatter） */

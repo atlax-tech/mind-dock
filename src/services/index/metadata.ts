@@ -16,6 +16,22 @@ export interface DocumentRecord {
   word_count: number;
 }
 
+export type KnowledgeType = 'constraint' | 'task' | 'question' | 'decision' | 'risk' | 'requirement';
+
+export interface KnowledgeTypeCandidate {
+  knowledge_type: KnowledgeType;
+  label: string;
+  scope: 'document' | 'chunk';
+  document_path: string;
+  chunk_id: number | null;
+  heading_path: string | null;
+  start_line: number | null;
+  end_line: number | null;
+  snippet: string;
+  confidence: number;
+  reason: string;
+}
+
 export const metadataService = {
   /** 初始化 metadata 数据库（vault 打开时调用） */
   async initMetadataDb(vaultPath: string): Promise<void> {
@@ -63,5 +79,17 @@ export const metadataService = {
   /** 列出所有文档元数据 */
   async listDocumentsMetadata(vaultPath: string): Promise<DocumentRecord[]> {
     return invoke<DocumentRecord[]>('list_documents_metadata', { vaultPath });
+  },
+
+  async suggestKnowledgeTypeCandidates(
+    vaultPath: string,
+    documentPath?: string | null,
+    limit?: number,
+  ): Promise<KnowledgeTypeCandidate[]> {
+    return invoke<KnowledgeTypeCandidate[]>('suggest_knowledge_type_candidates', {
+      vaultPath,
+      documentPath: documentPath ?? null,
+      limit: limit ?? null,
+    });
   },
 };

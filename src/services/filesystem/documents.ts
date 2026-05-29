@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { injectFrontmatter, parseFrontMatter, extractTitle } from '@/services/markdown/frontmatter';
 import { metadataService } from '@/services/index/metadata';
-import { chunkingService } from '@/services/index/chunking';
+import { chunkingService, type ChunkResult } from '@/services/index/chunking';
 
 /** 计算内容的 SHA-256 哈希值，用于检测文档内容是否变化 */
 async function computeContentHash(content: string): Promise<string> {
@@ -12,8 +12,12 @@ async function computeContentHash(content: string): Promise<string> {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function isMarkdownFile(filePath: string): boolean {
+  return /\.(md|markdown)$/i.test(filePath);
+}
+
 /** Post-reindex 钩子：在 reindex 完成后执行 embedding 和 trigger 检查 */
-type PostReindexHook = (vaultPath: string, documentPath: string) => Promise<void>;
+type PostReindexHook = (vaultPath: string, documentPath: string, changedChunks: ChunkResult[]) => Promise<void>;
 
 let _postReindexHook: PostReindexHook | null = null;
 
@@ -23,10 +27,10 @@ export function setPostReindexHook(hook: PostReindexHook | null): void {
 }
 
 /** 执行 post-reindex 流程：embedding + check_triggers */
-async function runPostReindexFlow(vaultPath: string, documentPath: string): Promise<void> {
+async function runPostReindexFlow(vaultPath: string, documentPath: string, changedChunks: ChunkResult[]): Promise<void> {
   if (_postReindexHook) {
     try {
-      await _postReindexHook(vaultPath, documentPath);
+      await _postReindexHook(vaultPath, documentPath, changedChunks);
     } catch (err) {
       console.error('Post-reindex 钩子执行失败:', err);
     }
@@ -79,6 +83,10 @@ export const documentService = {
       }
     }
 
+    if (!isMarkdownFile(filePath)) {
+      return { filePath };
+    }
+
     // 3. 同步 metadata 到数据库
     const finalContent = content || '';
     const title = extractTitle(frontmatter ? injectFrontmatter(finalContent, frontmatter) : finalContent) || null;
@@ -96,7 +104,7 @@ export const documentService = {
 
     // 4. 新文档自动触发索引，完成后执行 post-reindex 流程（异步，不阻塞 UI）
     chunkingService.reindexDocument(vaultPath, filePath)
-      .then(() => runPostReindexFlow(vaultPath, filePath))
+      .then(result => runPostReindexFlow(vaultPath, filePath, result.changed_chunks))
       .catch(err => {
         console.error('新文档索引失败:', err);
       });
@@ -110,6 +118,8 @@ export const documentService = {
 
   async writeDocument(vaultPath: string, filePath: string, content: string): Promise<void> {
     await invoke('write_document', { vaultPath, filePath, content });
+    if (!isMarkdownFile(filePath)) return;
+
     // 同步 metadata：提取标题、frontmatter、字数
     try {
       const { data: fmData } = parseFrontMatter(content);
@@ -134,7 +144,7 @@ export const documentService = {
       // 内容变化时自动触发重新索引，完成后执行 post-reindex 流程（异步，不阻塞 UI）
       if (contentChanged) {
         chunkingService.reindexDocument(vaultPath, filePath)
-          .then(() => runPostReindexFlow(vaultPath, filePath))
+          .then(result => runPostReindexFlow(vaultPath, filePath, result.changed_chunks))
           .catch(err => {
             console.error('文档重新索引失败:', err);
           });

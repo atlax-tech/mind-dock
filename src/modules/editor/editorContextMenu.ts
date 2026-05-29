@@ -1,9 +1,23 @@
 import { EditorView } from '@codemirror/view';
 
+export interface EditorSelectionAnchorRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+export interface EditorSelectionPayload {
+  from: number;
+  to: number;
+  text: string;
+  anchorRect?: EditorSelectionAnchorRect;
+}
+
 export interface EditorContextMenuAction {
-  label: string;
+  label: string | (() => string);
   icon?: string; // lucide icon name
-  action: (view: EditorView, selection: { from: number; to: number; text: string }) => void;
+  action: (view: EditorView, selection: EditorSelectionPayload) => void;
   separator?: false;
 }
 
@@ -46,6 +60,21 @@ export function editorContextMenu(items: EditorContextMenuItem[]) {
       // Only show menu if there's selected text
       if (!selectedText.trim()) return;
 
+      const clickCoords = view.coordsAtPos(pos);
+      const anchorRect = clickCoords
+        ? {
+            left: clickCoords.left,
+            top: clickCoords.top,
+            right: clickCoords.right,
+            bottom: clickCoords.bottom,
+          }
+        : {
+            left: event.clientX,
+            top: event.clientY,
+            right: event.clientX,
+            bottom: event.clientY,
+          };
+
       // Remove existing menu
       const existing = document.getElementById('editor-context-menu');
       if (existing) existing.remove();
@@ -87,7 +116,7 @@ export function editorContextMenu(items: EditorContextMenuItem[]) {
         }
 
         const btn = document.createElement('button');
-        btn.textContent = item.label;
+        btn.textContent = typeof item.label === 'function' ? item.label() : item.label;
         btn.style.cssText = `
           display: flex; align-items: center; gap: 6px; width: 100%;
           padding: 6px 10px; border: none; background: none; cursor: pointer;
@@ -104,7 +133,7 @@ export function editorContextMenu(items: EditorContextMenuItem[]) {
         });
 
         btn.addEventListener('click', () => {
-          item.action(view, { from, to, text: selectedText });
+          item.action(view, { from, to, text: selectedText, anchorRect });
           menu.remove();
         });
 

@@ -110,6 +110,120 @@ export function buildClarityInterviewMessages(
   ];
 }
 
+// ── SelectionReasoningSkill ──
+// 目标：对用户显式选区做解释/总结/生成，输入包含当前文档摘要和 embedding 召回片段
+// 约束：必须引用来源，不自动修改原文，不进入长对话
+
+export type SelectionReasoningTask = 'explain' | 'summarize';
+
+export function buildSelectionReasoningMessages(
+  task: SelectionReasoningTask,
+  promptContext: string,
+): Array<{ role: string; content: string }> {
+  const taskPrompt = task === 'explain'
+    ? '解释用户选区：说明含义、上下文作用、隐含前提或可能影响。不要泛泛复述。'
+    : '总结用户选区：提炼核心观点、关键事实、约束和可执行结论。不要扩写成新文章。';
+
+  return [
+    {
+      role: 'system',
+      content: `你是 MindDock 的 AI Mentor。你不是聊天机器人，而是当前文档里的上下文导师。
+
+规则：
+1. 只处理用户明确选中的文本。
+2. 使用当前文档摘要、章节和 embedding 召回片段作为辅助背景。
+3. 必须给出可追踪的来源引用，引用格式使用 [S1]、[R1]。
+4. 不自动修改原文，不要求用户进入长对话。
+5. 中文输出，控制在 6 段以内。`,
+    },
+    {
+      role: 'user',
+      content: `${taskPrompt}\n\n${promptContext}`,
+    },
+  ];
+}
+
+export function buildSelectionGenerationMessages(
+  outputType: string,
+  intent: string,
+  promptContext: string,
+): Array<{ role: string; content: string }> {
+  return [
+    {
+      role: 'system',
+      content: `你是 MindDock 的 AI Mentor。用户已经在编辑器中选中一段内容，并给出生成意图。
+
+规则：
+1. 生成一份可编辑草稿，不要自动替换原文。
+2. 以用户选区 [S1] 为主，embedding 召回片段 [R1]/[R2] 只作为补充背景。
+3. 输出中必须保留来源引用，引用格式使用 [S1]、[R1]。
+4. 不做长对话，不反问，直接生成草稿。
+5. 使用中文，结构清晰。`,
+    },
+    {
+      role: 'user',
+      content: `输出类型: ${outputType}\n生成意图: ${intent}\n\n${promptContext}`,
+    },
+  ];
+}
+
+export function buildSelectionQAMessages(
+  question: string,
+  promptContext: string,
+): Array<{ role: string; content: string }> {
+  return [
+    {
+      role: 'system',
+      content: `你是 MindDock 的 AI Mentor。用户正在阅读编辑器中的选区，并针对这段内容提出一个问题。
+
+规则：
+1. 优先基于用户选区 [S1] 回答问题。
+2. 可以使用 embedding 召回片段 [R1]/[R2] 作为辅助背景，但不得凭空扩展。
+3. 回答必须短而清楚，直接回应用户问题。
+4. 如果选区信息不足，明确说明缺口，并给出最小补充建议。
+5. 必须保留来源引用，引用格式使用 [S1]、[R1]。
+6. 不进入长对话，不自动修改原文。`,
+    },
+    {
+      role: 'user',
+      content: `用户问题：${question}\n\n${promptContext}`,
+    },
+  ];
+}
+
+// ── SourceDrivenOutputSkill ──
+// 目标：基于 Context Pack 来源和输出意图生成可编辑草稿
+// 约束：保留 source map，做来源覆盖检查，不进入复杂 agent workflow
+
+export function buildSourceDrivenOutputMessages(
+  outputType: string,
+  outputIntent: string,
+  sourceContext: string,
+): Array<{ role: string; content: string }> {
+  return [
+    {
+      role: 'system',
+      content: `你是 MindDock 的 AI Mentor。你负责把用户整理好的 Context Pack 来源转成一份可编辑、可导出的高质量草稿。
+
+严格规则：
+1. 必须基于来源生成，不得凭空补充关键事实。
+2. 输出必须包含清晰结构，并保留来源引用，引用格式使用 [S1]、[S2]。
+3. 必须包含一个“来源覆盖检查”小节，列出已覆盖来源和未覆盖/证据不足的来源。
+4. 如果输出类型是 dev agent prompt，必须包含：任务目标、范围、不做、涉及文件/模块、实现约束、验收标准、验证命令、来源。
+5. 如果输出类型是 PRD/SPEC/checklist，也必须包含任务、范围、约束、验收和来源。
+6. 不自动提交给 dev agent，不生成复杂 agent workflow，只生成用户可编辑草稿。
+7. 用中文输出。`,
+    },
+    {
+      role: 'user',
+      content: `输出类型: ${outputType}
+用户生成意图: ${outputIntent}
+
+${sourceContext}`,
+    },
+  ];
+}
+
 // ── 结构化输出解析 ──
 
 export interface StructuredCapture {

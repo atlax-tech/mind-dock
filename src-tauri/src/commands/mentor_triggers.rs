@@ -1,7 +1,7 @@
 use crate::commands::metadata::{create_tables, open_db};
 use crate::commands::vault::assert_path_inside_vault;
 use crate::commands::vector_index::{cosine_similarity, read_all_ready_embeddings, read_embedding, EmbeddingRow};
-use chrono::Utc;
+use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -32,6 +32,7 @@ pub struct TriggerStateEntry {
     pub hash_change_count: i32,
     pub last_word_count: i64,
     pub dismissed: bool,
+    pub dismissed_until: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -132,8 +133,29 @@ fn find_or_create_entry_idx(
         hash_change_count: 0,
         last_word_count: 0,
         dismissed: false,
+        dismissed_until: None,
     });
     entries.len() - 1
+}
+
+fn is_trigger_cooled_down(entry: &mut TriggerStateEntry, now: &DateTime<Utc>) -> bool {
+    if !entry.dismissed {
+        return false;
+    }
+
+    if let Some(until) = &entry.dismissed_until {
+        if let Ok(parsed) = DateTime::parse_from_rfc3339(until) {
+            if parsed.with_timezone(&Utc) > *now {
+                return true;
+            }
+        }
+    } else {
+        return true;
+    }
+
+    entry.dismissed = false;
+    entry.dismissed_until = None;
+    false
 }
 
 /// Get document metadata from the database
@@ -505,36 +527,46 @@ pub fn check_triggers(
     let vault = Path::new(&vault_path);
     let mut results: Vec<TriggerResult> = Vec::new();
     let mut entries = read_trigger_state(vault)?;
-    let now = Utc::now().to_rfc3339();
+    let now_dt = Utc::now();
+    let now = now_dt.to_rfc3339();
 
     // Trigger A: Semantic Repeat (requires chunk_id)
     if let Some(cid) = chunk_id {
         if let Ok(Some(result)) = check_semantic_repeat(&vault_path, &document_path, cid) {
             let idx = find_or_create_entry_idx(&mut entries, &document_path, "semantic_repeat");
-            entries[idx].repeat_count = result.repeat_count.unwrap_or(0);
-            entries[idx].last_seen = now.clone();
-            entries[idx].dismissed = false;
-            results.push(result);
+            if !is_trigger_cooled_down(&mut entries[idx], &now_dt) {
+                entries[idx].repeat_count = result.repeat_count.unwrap_or(0);
+                entries[idx].last_seen = now.clone();
+                entries[idx].dismissed = false;
+                entries[idx].dismissed_until = None;
+                results.push(result);
+            }
         }
     }
 
     // Trigger B: New Topic
     if let Ok(Some(result)) = check_new_topic(&vault_path, &document_path) {
         let idx = find_or_create_entry_idx(&mut entries, &document_path, "new_topic");
-        entries[idx].repeat_count += 1;
-        entries[idx].last_seen = now.clone();
-        entries[idx].dismissed = false;
-        results.push(result);
+        if !is_trigger_cooled_down(&mut entries[idx], &now_dt) {
+            entries[idx].repeat_count += 1;
+            entries[idx].last_seen = now.clone();
+            entries[idx].dismissed = false;
+            entries[idx].dismissed_until = None;
+            results.push(result);
+        }
     }
 
     // Trigger C: Context Drift (requires chunk_id)
     if let Some(cid) = chunk_id {
         if let Ok(Some(result)) = check_context_drift(&vault_path, &document_path, cid) {
             let idx = find_or_create_entry_idx(&mut entries, &document_path, "context_drift");
-            entries[idx].repeat_count += 1;
-            entries[idx].last_seen = now.clone();
-            entries[idx].dismissed = false;
-            results.push(result);
+            if !is_trigger_cooled_down(&mut entries[idx], &now_dt) {
+                entries[idx].repeat_count += 1;
+                entries[idx].last_seen = now.clone();
+                entries[idx].dismissed = false;
+                entries[idx].dismissed_until = None;
+                results.push(result);
+            }
         }
     }
 
@@ -580,6 +612,11 @@ pub fn update_trigger_state(
 
     if let Some(d) = dismissed {
         entries[idx].dismissed = d;
+        entries[idx].dismissed_until = if d {
+            Some((Utc::now() + Duration::hours(24)).to_rfc3339())
+        } else {
+            None
+        };
     }
 
     write_trigger_state(vault, &entries)?;

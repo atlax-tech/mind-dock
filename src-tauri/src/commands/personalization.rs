@@ -12,6 +12,8 @@ pub struct PersonalizationSignal {
     pub document_path: Option<String>,
     pub chunk_id: Option<i64>,
     pub search_query: Option<String>,
+    pub output_type: Option<String>,
+    pub knowledge_type: Option<String>,
     pub timestamp: String,
 }
 
@@ -130,4 +132,22 @@ pub fn count_signals(vault_path: String) -> Result<i64, String> {
         .count() as i64;
 
     Ok(count)
+}
+
+#[command]
+pub fn reset_personalization_signals(vault_path: String) -> Result<(), String> {
+    let vault = Path::new(&vault_path);
+    let minddock_dir = vault.join(".minddock");
+    let log_path = minddock_dir.join("personalization-signals.jsonl");
+
+    let log_path_str = log_path.to_string_lossy().to_string();
+    assert_path_inside_vault(&vault_path, &log_path_str)?;
+
+    fs::create_dir_all(&minddock_dir)
+        .map_err(|e| format!("创建 .minddock 目录失败: {}", e))?;
+
+    fs::write(&log_path, "")
+        .map_err(|e| format!("重置 personalization-signals.jsonl 失败: {}", e))?;
+
+    Ok(())
 }

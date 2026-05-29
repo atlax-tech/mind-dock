@@ -3,6 +3,7 @@ use crate::commands::vault::assert_path_inside_vault;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use tauri::command;
@@ -16,6 +17,12 @@ pub struct ChunkRecord {
     pub end_line: i64,
     pub content: String,
     pub content_hash: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReindexDocumentResult {
+    pub chunk_count: usize,
+    pub changed_chunks: Vec<ChunkRecord>,
 }
 
 /// 表示一个 Markdown 文档的分块
@@ -207,49 +214,7 @@ fn write_chunks_to_db(
     Ok(chunks.len())
 }
 
-/// 对文档进行分块索引
-#[command]
-pub fn chunk_document(vault_path: String, document_path: String) -> Result<usize, String> {
-    assert_path_inside_vault(&vault_path, &document_path)?;
-
-    let content = read_document_content(&vault_path, &document_path)?;
-    let chunks = chunk_markdown(&content);
-
-    let conn = open_db(&vault_path)?;
-    create_tables(&conn)?;
-
-    let count = write_chunks_to_db(&conn, &document_path, &chunks)?;
-
-    Ok(count)
-}
-
-/// 重新索引文档（与 chunk_document 相同逻辑，显式命名用于重索引流程）
-#[command]
-pub fn reindex_document(vault_path: String, document_path: String) -> Result<usize, String> {
-    assert_path_inside_vault(&vault_path, &document_path)?;
-
-    let content = read_document_content(&vault_path, &document_path)?;
-    let chunks = chunk_markdown(&content);
-
-    let conn = open_db(&vault_path)?;
-    create_tables(&conn)?;
-
-    let count = write_chunks_to_db(&conn, &document_path, &chunks)?;
-
-    Ok(count)
-}
-
-/// 获取文档的所有分块
-#[command]
-pub fn get_document_chunks(
-    vault_path: String,
-    document_path: String,
-) -> Result<Vec<ChunkRecord>, String> {
-    assert_path_inside_vault(&vault_path, &document_path)?;
-
-    let conn = open_db(&vault_path)?;
-    create_tables(&conn)?;
-
+fn read_chunk_records(conn: &Connection, document_path: &str) -> Result<Vec<ChunkRecord>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, document_path, heading_path, start_line, end_line, content, content_hash FROM chunks WHERE document_path = ?1 ORDER BY start_line",
@@ -276,4 +241,73 @@ pub fn get_document_chunks(
     }
 
     Ok(records)
+}
+
+/// 对文档进行分块索引
+#[command]
+pub fn chunk_document(vault_path: String, document_path: String) -> Result<usize, String> {
+    assert_path_inside_vault(&vault_path, &document_path)?;
+
+    let content = read_document_content(&vault_path, &document_path)?;
+    let chunks = chunk_markdown(&content);
+
+    let conn = open_db(&vault_path)?;
+    create_tables(&conn)?;
+
+    let count = write_chunks_to_db(&conn, &document_path, &chunks)?;
+
+    Ok(count)
+}
+
+/// 重新索引文档（与 chunk_document 相同逻辑，显式命名用于重索引流程）
+#[command]
+pub fn reindex_document(vault_path: String, document_path: String) -> Result<ReindexDocumentResult, String> {
+    assert_path_inside_vault(&vault_path, &document_path)?;
+
+    let content = read_document_content(&vault_path, &document_path)?;
+    let chunks = chunk_markdown(&content);
+
+    let conn = open_db(&vault_path)?;
+    create_tables(&conn)?;
+
+    let old_hashes: HashSet<String> = read_chunk_records(&conn, &document_path)?
+        .into_iter()
+        .filter_map(|chunk| chunk.content_hash)
+        .collect();
+
+    let count = write_chunks_to_db(&conn, &document_path, &chunks)?;
+    let new_records = read_chunk_records(&conn, &document_path)?;
+    let changed_chunks = if old_hashes.is_empty() {
+        new_records
+    } else {
+        new_records
+            .into_iter()
+            .filter(|chunk| {
+                chunk
+                    .content_hash
+                    .as_ref()
+                    .map(|hash| !old_hashes.contains(hash))
+                    .unwrap_or(true)
+            })
+            .collect()
+    };
+
+    Ok(ReindexDocumentResult {
+        chunk_count: count,
+        changed_chunks,
+    })
+}
+
+/// 获取文档的所有分块
+#[command]
+pub fn get_document_chunks(
+    vault_path: String,
+    document_path: String,
+) -> Result<Vec<ChunkRecord>, String> {
+    assert_path_inside_vault(&vault_path, &document_path)?;
+
+    let conn = open_db(&vault_path)?;
+    create_tables(&conn)?;
+
+    read_chunk_records(&conn, &document_path)
 }

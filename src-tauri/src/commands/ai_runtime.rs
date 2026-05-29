@@ -3,7 +3,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::command;
 // ── Data Structures ──
 
@@ -99,6 +99,22 @@ fn validate_non_empty(name: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn format_reqwest_error(prefix: &str, err: reqwest::Error) -> String {
+    if err.is_timeout() {
+        format!(
+            "{}: 请求超过客户端超时限制。Coding Plan 长上下文生成可能需要更久，请稍后重试或减少来源内容。底层错误: {}",
+            prefix, err
+        )
+    } else if err.is_connect() {
+        format!(
+            "{}: 无法连接到服务，请检查网络、代理、DNS 或 Base URL。底层错误: {}",
+            prefix, err
+        )
+    } else {
+        format!("{}: {}", prefix, err)
+    }
+}
+
 fn ensure_minddock_dir(vault_path: &str) -> Result<(), String> {
     let vault = Path::new(vault_path);
     let minddock_dir = vault.join(".minddock");
@@ -119,8 +135,7 @@ fn safe_write_json(path: &Path, data: &str) -> Result<(), String> {
 // ── Ollama Commands ──
 
 #[command]
-pub fn ollama_check_connection(endpoint: String) -> OllamaConnectionResult {
-    // 校验 endpoint URL 格式
+pub async fn ollama_check_connection(endpoint: String) -> OllamaConnectionResult {
     if let Err(e) = validate_endpoint_url(&endpoint) {
         return OllamaConnectionResult {
             connected: false,
@@ -133,10 +148,11 @@ pub fn ollama_check_connection(endpoint: String) -> OllamaConnectionResult {
     let url = format!("{}/api/tags", endpoint.trim_end_matches('/'));
     let remote = is_remote_endpoint(&endpoint);
 
-    match reqwest::blocking::Client::new()
+    match reqwest::Client::new()
         .get(&url)
         .timeout(std::time::Duration::from_secs(10))
         .send()
+        .await
     {
         Ok(resp) => {
             if !resp.status().is_success() {
@@ -148,7 +164,6 @@ pub fn ollama_check_connection(endpoint: String) -> OllamaConnectionResult {
                 };
             }
 
-            // 解析响应 JSON
             #[derive(Deserialize)]
             struct TagsResponse {
                 models: Option<Vec<OllamaModelRaw>>,
@@ -161,7 +176,7 @@ pub fn ollama_check_connection(endpoint: String) -> OllamaConnectionResult {
                 modified_at: Option<String>,
             }
 
-            match resp.json::<TagsResponse>() {
+            match resp.json::<TagsResponse>().await {
                 Ok(tags) => {
                     let models = tags
                         .models
@@ -199,7 +214,7 @@ pub fn ollama_check_connection(endpoint: String) -> OllamaConnectionResult {
 }
 
 #[command]
-pub fn ollama_chat(
+pub async fn ollama_chat(
     endpoint: String,
     model: String,
     messages: Vec<ChatMessage>,
@@ -227,18 +242,19 @@ pub fn ollama_chat(
 
     let start = Instant::now();
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = reqwest::Client::new()
         .post(&url)
         .json(&body)
         .timeout(std::time::Duration::from_secs(120))
         .send()
+        .await
         .map_err(|e| format!("请求 Ollama chat 失败: {}", e))?;
 
     let latency_ms = start.elapsed().as_millis() as u64;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body_text = resp.text().unwrap_or_default();
+        let body_text = resp.text().await.unwrap_or_default();
         return Err(format!(
             "Ollama chat 请求失败，状态码: {}，响应: {}",
             status, body_text
@@ -258,6 +274,7 @@ pub fn ollama_chat(
 
     let chat_resp: ChatResponse = resp
         .json()
+        .await
         .map_err(|e| format!("解析 Ollama chat 响应失败: {}", e))?;
 
     let content = chat_resp
@@ -267,7 +284,6 @@ pub fn ollama_chat(
 
     let resp_model = chat_resp.model.unwrap_or(model);
 
-    // prompt_type 用于日志记录，此处不使用但保留参数签名
     let _ = prompt_type;
 
     Ok(OllamaChatResult {
@@ -278,7 +294,7 @@ pub fn ollama_chat(
 }
 
 #[command]
-pub fn ollama_embed(
+pub async fn ollama_embed(
     endpoint: String,
     model: String,
     input: String,
@@ -287,7 +303,6 @@ pub fn ollama_embed(
 
     let base_url = endpoint.trim_end_matches('/');
 
-    // 优先调用 /api/embed（当前主 endpoint）
     let embed_url = format!("{}/api/embed", base_url);
     let embed_body = serde_json::json!({
         "model": model,
@@ -296,11 +311,12 @@ pub fn ollama_embed(
 
     let start = Instant::now();
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = reqwest::Client::new()
         .post(&embed_url)
         .json(&embed_body)
         .timeout(std::time::Duration::from_secs(60))
-        .send();
+        .send()
+        .await;
 
     let latency_ms = start.elapsed().as_millis() as u64;
 
@@ -313,7 +329,7 @@ pub fn ollama_embed(
                     model: Option<String>,
                 }
 
-                match response.json::<EmbedResponse>() {
+                match response.json::<EmbedResponse>().await {
                     Ok(embed_resp) => {
                         let embeddings = embed_resp
                             .embeddings
@@ -328,12 +344,10 @@ pub fn ollama_embed(
                         });
                     }
                     Err(e) => {
-                        // /api/embed 解析失败，尝试 fallback 到 /api/embeddings
                         log::warn!("解析 /api/embed 响应失败: {}，尝试 fallback 到 /api/embeddings", e);
                     }
                 }
             } else {
-                // /api/embed 请求失败，尝试 fallback 到 /api/embeddings
                 log::warn!(
                     "/api/embed 请求失败，状态码: {}，尝试 fallback 到 /api/embeddings",
                     response.status()
@@ -341,12 +355,10 @@ pub fn ollama_embed(
             }
         }
         Err(e) => {
-            // /api/embed 请求失败，尝试 fallback 到 /api/embeddings
             log::warn!("/api/embed 请求失败: {}，尝试 fallback 到 /api/embeddings", e);
         }
     }
 
-    // Fallback: /api/embeddings（deprecated）
     let deprecated_url = format!("{}/api/embeddings", base_url);
     let deprecated_body = serde_json::json!({
         "model": model,
@@ -355,18 +367,19 @@ pub fn ollama_embed(
 
     let start_fallback = Instant::now();
 
-    let resp_deprecated = reqwest::blocking::Client::new()
+    let resp_deprecated = reqwest::Client::new()
         .post(&deprecated_url)
         .json(&deprecated_body)
         .timeout(std::time::Duration::from_secs(60))
         .send()
+        .await
         .map_err(|e| format!("请求 Ollama embeddings (deprecated) 失败: {}", e))?;
 
     let latency_ms = start_fallback.elapsed().as_millis() as u64;
 
     if !resp_deprecated.status().is_success() {
         let status = resp_deprecated.status();
-        let body_text = resp_deprecated.text().unwrap_or_default();
+        let body_text = resp_deprecated.text().await.unwrap_or_default();
         return Err(format!(
             "Ollama embeddings (deprecated) 请求失败，状态码: {}，响应: {}",
             status, body_text
@@ -381,6 +394,7 @@ pub fn ollama_embed(
 
     let embeddings_resp: EmbeddingsResponse = resp_deprecated
         .json()
+        .await
         .map_err(|e| format!("解析 Ollama embeddings (deprecated) 响应失败: {}", e))?;
 
     let embedding = embeddings_resp
@@ -398,7 +412,7 @@ pub fn ollama_embed(
 }
 
 #[command]
-pub fn spark_check_connection(base_url: String, api_key: String) -> OllamaConnectionResult {
+pub async fn spark_check_connection(base_url: String, api_key: String) -> OllamaConnectionResult {
     if let Err(e) = validate_endpoint_url(&base_url) {
         return OllamaConnectionResult {
             connected: false,
@@ -417,17 +431,18 @@ pub fn spark_check_connection(base_url: String, api_key: String) -> OllamaConnec
     }
 
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let resp = reqwest::blocking::Client::new()
+    let resp = reqwest::Client::new()
         .get(&url)
         .bearer_auth(api_key)
         .timeout(std::time::Duration::from_secs(15))
-        .send();
+        .send()
+        .await;
 
     match resp {
         Ok(response) => {
             if !response.status().is_success() {
                 let status = response.status();
-                let body_text = response.text().unwrap_or_default();
+                let body_text = response.text().await.unwrap_or_default();
                 return OllamaConnectionResult {
                     connected: false,
                     models: vec![],
@@ -448,7 +463,7 @@ pub fn spark_check_connection(base_url: String, api_key: String) -> OllamaConnec
                 id: Option<String>,
             }
 
-            match response.json::<ModelsResponse>() {
+            match response.json::<ModelsResponse>().await {
                 Ok(parsed) => {
                     let mut models: Vec<OllamaModel> = parsed
                         .data
@@ -495,7 +510,7 @@ pub fn spark_check_connection(base_url: String, api_key: String) -> OllamaConnec
 }
 
 #[command]
-pub fn spark_chat(
+pub async fn spark_chat(
     base_url: String,
     api_key: String,
     model: String,
@@ -523,18 +538,19 @@ pub fn spark_chat(
     });
 
     let start = Instant::now();
-    let resp = reqwest::blocking::Client::new()
+    let resp = reqwest::Client::new()
         .post(&url)
         .bearer_auth(api_key)
         .json(&body)
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(Duration::from_secs(600))
         .send()
-        .map_err(|e| format!("请求自定义 API chat 失败: {}", e))?;
+        .await
+        .map_err(|e| format_reqwest_error("请求自定义 API chat 失败", e))?;
     let latency_ms = start.elapsed().as_millis() as u64;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body_text = resp.text().unwrap_or_default();
+        let body_text = resp.text().await.unwrap_or_default();
         return Err(format!(
             "自定义 API chat 请求失败，状态码: {}，响应: {}",
             status, body_text
@@ -557,6 +573,7 @@ pub fn spark_chat(
 
     let chat_resp: ChatResponse = resp
         .json()
+        .await
         .map_err(|e| format!("解析自定义 API chat 响应失败: {}", e))?;
     let content = chat_resp
         .choices

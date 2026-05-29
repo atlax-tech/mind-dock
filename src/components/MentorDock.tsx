@@ -11,6 +11,7 @@ import { documentService, type DocumentMetadata } from '@/services/filesystem/do
 import { gitService, type GitCommit } from '@/services/filesystem/git';
 import { summaryTagsService, type SummaryTagsResult } from '@/services/index/summary-tags';
 import { personalizationService } from '@/services/index/personalization';
+import { metadataService, type KnowledgeTypeCandidate } from '@/services/index/metadata';
 import type { ContextPack } from '@/services/index/context-pack';
 import type { TriggerResult } from '@/services/index/mentor-triggers';
 
@@ -31,9 +32,12 @@ interface PlatterProps {
   onScrollToLine?: (line: number) => void;
   onOpenVersionDiff?: (commit: GitCommit) => void;
   onGeneratePrompt?: (pack: ContextPack) => void;
+  onOpenInEditor?: (documentPath: string, sourceType: string) => void;
+  onActivePackChange?: (packId: string | null) => void;
   triggerResults?: TriggerResult[];
   onDismissTrigger?: (triggerType: string) => void;
   onJudgeTrigger?: (trigger: TriggerResult) => Promise<string | null>;
+  onAddTriggerToPack?: (trigger: TriggerResult) => Promise<boolean>;
   onDocumentUpdated?: () => void;
   pendingContextPackItem?: {
     documentPath: string;
@@ -396,6 +400,7 @@ function MentorView({
   triggerResults,
   onDismissTrigger,
   onJudgeTrigger,
+  onAddTriggerToPack,
 }: {
   onAIConfig?: () => void;
   onAICheckConnection?: () => void;
@@ -412,31 +417,68 @@ function MentorView({
   triggerResults?: TriggerResult[];
   onDismissTrigger?: (triggerType: string) => void;
   onJudgeTrigger?: (trigger: TriggerResult) => Promise<string | null>;
+  onAddTriggerToPack?: (trigger: TriggerResult) => Promise<boolean>;
 }) {
   const { status } = useAIRuntime();
+  const { vault } = useVault();
   const { suggestions, loading: suggestionsLoading, updateSuggestionStatus } = useAISuggestions();
 
   // 折叠状态：默认只展开最高优先级
   const hasTriggers = triggerResults && triggerResults.length > 0;
-  const [currentSuggestionOpen, setCurrentSuggestionOpen] = useState(!hasTriggers);
+  const hasRelated = !!(relatedResults && relatedResults.length > 0);
+  const hasDocument = !!activeDocumentPath;
+  const [currentSuggestionOpen, setCurrentSuggestionOpen] = useState(!hasTriggers && hasDocument);
   const [pendingJudgmentOpen, setPendingJudgmentOpen] = useState(!!hasTriggers);
   const [availableActionsOpen, setAvailableActionsOpen] = useState(false);
+  const [relatedMaterialsOpen, setRelatedMaterialsOpen] = useState(!hasTriggers && hasRelated);
   const [recentSuggestionsOpen, setRecentSuggestionsOpen] = useState(false);
 
   // 判断结果状态
   const [judgingType, setJudgingType] = useState<string | null>(null);
+  const [addingTriggerType, setAddingTriggerType] = useState<string | null>(null);
+  const [addedTriggerTypes, setAddedTriggerTypes] = useState<Set<string>>(new Set());
   const [judgmentResults, setJudgmentResults] = useState<Record<string, string>>({});
+  const [dismissedRelated, setDismissedRelated] = useState<Set<number>>(new Set());
+  const [knowledgeTypeCandidates, setKnowledgeTypeCandidates] = useState<KnowledgeTypeCandidate[]>([]);
+  const [handledKnowledgeTypes, setHandledKnowledgeTypes] = useState<Set<string>>(new Set());
 
-  // 当 trigger 变化时自动展开待判断
+  // 当 trigger 或 relatedResults 变化时调整折叠优先级
   useEffect(() => {
     if (hasTriggers) {
       setPendingJudgmentOpen(true);
       setCurrentSuggestionOpen(false);
+      setRelatedMaterialsOpen(false);
     } else {
       setPendingJudgmentOpen(false);
-      setCurrentSuggestionOpen(true);
+      setCurrentSuggestionOpen(hasDocument);
+      setRelatedMaterialsOpen(hasRelated);
     }
   }, [hasTriggers]);
+
+  // 当 relatedResults 变化时重置忽略状态
+  useEffect(() => {
+    setDismissedRelated(new Set());
+  }, [relatedResults]);
+
+  useEffect(() => {
+    if (!activeDocumentPath || !vault) {
+      setKnowledgeTypeCandidates([]);
+      return;
+    }
+    let cancelled = false;
+    metadataService.suggestKnowledgeTypeCandidates(vault.path, activeDocumentPath, 3)
+      .then(candidates => {
+        if (!cancelled) setKnowledgeTypeCandidates(candidates);
+      })
+      .catch(() => {
+        if (!cancelled) setKnowledgeTypeCandidates([]);
+      });
+    return () => { cancelled = true; };
+  }, [activeDocumentPath, vault]);
+
+  useEffect(() => {
+    setHandledKnowledgeTypes(new Set());
+  }, [activeDocumentPath]);
 
   const handleJudge = async (trigger: TriggerResult) => {
     if (!onJudgeTrigger) return;
@@ -451,8 +493,38 @@ function MentorView({
     }
   };
 
+  const handleAddTriggerToPack = async (trigger: TriggerResult) => {
+    if (!onAddTriggerToPack) return;
+    setAddingTriggerType(trigger.trigger_type);
+    try {
+      const ok = await onAddTriggerToPack(trigger);
+      if (ok) {
+        setAddedTriggerTypes(prev => new Set(prev).add(trigger.trigger_type));
+      }
+    } finally {
+      setAddingTriggerType(null);
+    }
+  };
+
+  const handleKnowledgeTypeSignal = async (candidate: KnowledgeTypeCandidate, accepted: boolean) => {
+    if (!vault) return;
+    const key = `${candidate.knowledge_type}:${candidate.chunk_id ?? candidate.document_path}`;
+    setHandledKnowledgeTypes(prev => new Set(prev).add(key));
+    personalizationService.recordSignal(vault.path, {
+      action_type: accepted ? 'knowledge_type_accepted' : 'knowledge_type_rejected',
+      document_path: candidate.document_path,
+      chunk_id: candidate.chunk_id,
+      search_query: null,
+      output_type: null,
+      knowledge_type: candidate.knowledge_type,
+    }).catch(() => { /* 信号失败不影响 UI */ });
+  };
+
   // 最近建议（只显示3条）
   const recentSuggestions = [...suggestions].reverse().slice(0, 3);
+  const visibleKnowledgeTypeCandidates = knowledgeTypeCandidates.filter(candidate => (
+    !handledKnowledgeTypes.has(`${candidate.knowledge_type}:${candidate.chunk_id ?? candidate.document_path}`)
+  ));
 
   const suggestionTypeLabel = (type: string): string => {
     switch (type) {
@@ -502,45 +574,83 @@ function MentorView({
           contentClassName="px-3 pb-2 space-y-2"
         >
           {activeDocumentName ? (
-            <>
-              <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3]">
-                正在查看: {activeDocumentName}
-              </p>
-              {/* 相关内容 */}
-              {relatedResults && relatedResults.length > 0 && (
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e]">
-                      相关内容
+            hasRelated || visibleKnowledgeTypeCandidates.length > 0 ? (
+              <>
+                {hasRelated && (
+                  <div className="border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-lg p-2.5 space-y-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <Search size={11} className="text-blue-600 dark:text-blue-400" />
+                      <span className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
+                        发现相关材料
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] leading-normal">
+                      当前文档「{activeDocumentName}」与 {relatedResults!.length} 条已索引内容相关。
                     </p>
-                    <button onClick={onClearRelatedResults} className="p-0.5 text-[#7e7e78] hover:text-stone-800">
-                      <X size={10} />
-                    </button>
+                    <div className="flex items-center gap-1.5 pt-1">
+                      <button
+                        onClick={() => setRelatedMaterialsOpen(true)}
+                        className="flex items-center gap-1 px-2 py-1 rounded-lg bg-blue-50 dark:bg-blue-900/30 text-[10px] font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors"
+                      >
+                        <Eye size={10} />
+                        查看相关材料
+                      </button>
+                      <button
+                        onClick={onClearRelatedResults}
+                        className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+                      >
+                        忽略
+                      </button>
+                    </div>
                   </div>
-                  {relatedResults.slice(0, 3).map((result, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => onDocSelect?.(result.document_path)}
-                      className="w-full text-left px-2 py-1.5 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
-                    >
-                      <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] truncate">
-                        {result.heading_path || result.document_path}
-                      </p>
-                      <p className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e] truncate">
-                        {result.document_path}
-                        {result.similarity_score && ` · 相关度 ${(result.similarity_score * 100).toFixed(0)}%`}
-                      </p>
-                    </button>
-                  ))}
-                </div>
-              )}
-              {/* 无相关内容且无 trigger 时的默认建议 */}
-              {(!relatedResults || relatedResults.length === 0) && !hasTriggers && (
-                <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
-                  暂无新建议。你可以使用下方"可用动作"操作当前文档。
-                </p>
-              )}
-            </>
+                )}
+                {visibleKnowledgeTypeCandidates.length > 0 && (
+                  <div className="border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-lg p-2.5 space-y-2">
+                    <div className="flex items-center gap-1.5">
+                      <Tags size={11} className="text-purple-600 dark:text-purple-400" />
+                      <span className="text-[10px] font-mono uppercase font-bold text-[#2c2c2a] dark:text-[#e3e3e3]">
+                        类型候选
+                      </span>
+                    </div>
+                    {visibleKnowledgeTypeCandidates.slice(0, 3).map(candidate => (
+                      <div key={`${candidate.knowledge_type}-${candidate.chunk_id ?? candidate.document_path}`} className="space-y-1 border-t first:border-t-0 border-[#e6e6dc] dark:border-[#2f2f2f] pt-1.5 first:pt-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[10px] text-[#2c2c2a] dark:text-[#e3e3e3]">
+                            这{candidate.scope === 'document' ? '篇文档' : '段'}像
+                            <span className="ml-1 px-1 py-0.5 rounded bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400">{candidate.label}</span>
+                          </p>
+                          <span className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e]">
+                            {(candidate.confidence * 100).toFixed(0)}%
+                          </span>
+                        </div>
+                        <p className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e] line-clamp-2">
+                          {candidate.snippet}
+                        </p>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => handleKnowledgeTypeSignal(candidate, true)}
+                            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-purple-50 dark:bg-purple-900/30 text-[10px] font-medium text-purple-600 dark:text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-900/50 transition-colors"
+                          >
+                            <Check size={10} />
+                            应用类型
+                          </button>
+                          <button
+                            onClick={() => handleKnowledgeTypeSignal(candidate, false)}
+                            className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+                          >
+                            忽略
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
+                暂无新建议。你可以使用下方"可用动作"操作当前文档。
+              </p>
+            )
           ) : (
             <div className="py-2 text-center space-y-1.5">
               <Bot size={20} className="mx-auto text-stone-300 dark:text-stone-600" />
@@ -594,6 +704,11 @@ function MentorView({
                   <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] leading-normal">
                     {trigger.reason}
                   </p>
+                  {trigger.affected_count && trigger.affected_count > 1 && (
+                    <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
+                      已聚合 {trigger.affected_count} 个同类片段
+                    </p>
+                  )}
                   {trigger.theme && (
                     <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
                       主题: {trigger.theme}
@@ -602,22 +717,30 @@ function MentorView({
                   <div className="flex items-center gap-1.5 pt-0.5">
                     <button
                       onClick={() => handleJudge(trigger)}
-                      disabled={judgingType === trigger.trigger_type}
+                      disabled={status !== 'connected' || judgingType === trigger.trigger_type}
                       className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      title="帮我判断"
+                      title={status === 'connected' ? '帮我判断' : '需连接 AI Reasoning'}
                     >
                       {judgingType === trigger.trigger_type ? (
                         <Loader2 size={10} className="animate-spin" />
                       ) : (
                         <Eye size={10} />
                       )}
-                      {judgingType === trigger.trigger_type ? '判断中...' : '帮我判断'}
+                      {judgingType === trigger.trigger_type ? '判断中...' : status === 'connected' ? '帮我判断' : '需连接 AI'}
+                    </button>
+                    <button
+                      onClick={() => handleAddTriggerToPack(trigger)}
+                      disabled={addingTriggerType === trigger.trigger_type || addedTriggerTypes.has(trigger.trigger_type)}
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {addingTriggerType === trigger.trigger_type ? <Loader2 size={10} className="animate-spin" /> : addedTriggerTypes.has(trigger.trigger_type) ? <Check size={10} /> : <Package size={10} />}
+                      {addedTriggerTypes.has(trigger.trigger_type) ? '已加入 Pack' : '加入 Pack'}
                     </button>
                     <button
                       onClick={() => onDismissTrigger?.(trigger.trigger_type)}
                       className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
                     >
-                      忽略
+                      稍后复查
                     </button>
                   </div>
                   {/* 判断结果卡片 */}
@@ -633,6 +756,20 @@ function MentorView({
                         {judgmentResults[trigger.trigger_type]}
                       </p>
                       <div className="flex items-center gap-1.5 pt-0.5">
+                        <button
+                          onClick={() => handleAddTriggerToPack(trigger)}
+                          disabled={addingTriggerType === trigger.trigger_type || addedTriggerTypes.has(trigger.trigger_type)}
+                          className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {addedTriggerTypes.has(trigger.trigger_type) ? <Check size={10} /> : <Package size={10} />}
+                          {addedTriggerTypes.has(trigger.trigger_type) ? '已加入 Pack' : '加入 Pack'}
+                        </button>
+                        <button
+                          onClick={() => onDismissTrigger?.(trigger.trigger_type)}
+                          className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+                        >
+                          稍后复查
+                        </button>
                         <button
                           onClick={() => onDismissTrigger?.(trigger.trigger_type)}
                           className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
@@ -684,7 +821,67 @@ function MentorView({
           )}
         </ExplorerSection>
 
-        {/* ── 4. 最近建议 ── */}
+        {/* ── 4. 相关材料 ── */}
+        <ExplorerSection
+          title={`相关材料${hasRelated ? ` (${relatedResults!.length})` : ''}`}
+          icon={Search}
+          expanded={relatedMaterialsOpen}
+          onToggle={() => setRelatedMaterialsOpen(prev => !prev)}
+          contentClassName="px-3 pb-2 space-y-1.5"
+        >
+          {hasRelated ? (
+            <>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e]">
+                  {relatedResults!.length} 条材料，基于语义相似度召回
+                </span>
+                <button onClick={onClearRelatedResults} className="p-0.5 text-[#7e7e78] hover:text-stone-800">
+                  <X size={10} />
+                </button>
+              </div>
+              {relatedResults!.map((result, idx) => {
+                if (dismissedRelated.has(idx)) return null;
+                return (
+                  <div
+                    key={idx}
+                    className="border border-[#e6e6dc] dark:border-[#2f2f2f] rounded-lg p-2 space-y-1 hover:border-stone-300 dark:hover:border-stone-600 transition-colors"
+                  >
+                    <p className="text-[11px] text-[#2c2c2a] dark:text-[#e3e3e3] truncate leading-normal">
+                      {result.heading_path || result.document_path.split('/').pop()?.replace('.md', '')}
+                    </p>
+                    <p className="text-[9px] text-[#7e7e78] dark:text-[#8e8e8e] truncate">
+                      {result.document_path}
+                      {result.similarity_score != null && (
+                        <span className="ml-1 text-blue-600 dark:text-blue-400">
+                          · 相关度 {(result.similarity_score * 100).toFixed(0)}%
+                        </span>
+                      )}
+                    </p>
+                    <div className="flex items-center gap-1 pt-0.5">
+                      <button
+                        onClick={() => onDocSelect?.(result.document_path)}
+                        className="flex items-center gap-1 px-2 py-1 rounded-lg bg-stone-50 dark:bg-stone-800/50 text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-100 dark:hover:bg-stone-700/50 transition-colors"
+                      >
+                        <Eye size={10} />
+                        查看
+                      </button>
+                      <button
+                        onClick={() => setDismissedRelated(prev => new Set(prev).add(idx))}
+                        className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#7e7e78] dark:text-[#8e8e8e] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors"
+                      >
+                        忽略
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          ) : (
+            <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">暂无相关材料。打开文档后可使用"查找相关"触发检索。</p>
+          )}
+        </ExplorerSection>
+
+        {/* ── 5. 最近建议 ── */}
         <ExplorerSection
           title="最近建议"
           icon={PencilLine}
@@ -1339,9 +1536,12 @@ export function MentorDock({
   onScrollToLine,
   onOpenVersionDiff,
   onGeneratePrompt,
+  onOpenInEditor,
+  onActivePackChange,
   triggerResults,
   onDismissTrigger,
   onJudgeTrigger,
+  onAddTriggerToPack,
   onDocumentUpdated,
   pendingContextPackItem,
   onOpenSettings,
@@ -1637,6 +1837,7 @@ export function MentorDock({
               triggerResults={triggerResults}
               onDismissTrigger={onDismissTrigger}
               onJudgeTrigger={onJudgeTrigger}
+              onAddTriggerToPack={onAddTriggerToPack}
             />
           </div>
           <div className={activeTab === 'notifications' ? '' : 'hidden'}>
@@ -1649,7 +1850,7 @@ export function MentorDock({
             <WidgetsView />
           </div>
           <div className={activeTab === 'context-pack' ? '' : 'hidden'}>
-            <ContextPackPanel onGeneratePrompt={onGeneratePrompt} pendingItem={pendingContextPackItem} refreshKey={contextPackRefreshKey} />
+            <ContextPackPanel onGeneratePrompt={onGeneratePrompt} onOpenInEditor={onOpenInEditor} onActivePackChange={onActivePackChange} pendingItem={pendingContextPackItem} refreshKey={contextPackRefreshKey} />
           </div>
         </div>
       )}

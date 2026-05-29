@@ -191,65 +191,32 @@ pub fn read_all_ready_embeddings(conn: &Connection) -> Result<Vec<EmbeddingRow>,
 }
 
 fn refresh_document_embedding_status(conn: &Connection, chunk_id: i64) -> Result<(), String> {
-    let document_path: String = conn
+    let (document_path, total_chunks, ready_chunks, error_chunks, stale_chunks, unavailable_chunks): (String, i64, i64, i64, i64, i64) = conn
         .query_row(
-            "SELECT document_path FROM chunks WHERE id = ?1",
+            "SELECT
+                c.document_path,
+                COUNT(*) as total_chunks,
+                SUM(CASE WHEN ce.embedding_status = 'ready' THEN 1 ELSE 0 END) as ready_chunks,
+                SUM(CASE WHEN ce.embedding_status = 'error' THEN 1 ELSE 0 END) as error_chunks,
+                SUM(CASE WHEN ce.embedding_status = 'stale' THEN 1 ELSE 0 END) as stale_chunks,
+                SUM(CASE WHEN ce.embedding_status = 'unavailable' THEN 1 ELSE 0 END) as unavailable_chunks
+             FROM chunks c
+             LEFT JOIN chunk_embeddings ce ON c.id = ce.chunk_id
+             WHERE c.id = ?1
+             GROUP BY c.document_path",
             params![chunk_id],
-            |row| row.get(0),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
         )
-        .map_err(|e| format!("查询 chunk 所属文档失败: {}", e))?;
-
-    let total_chunks: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM chunks WHERE document_path = ?1",
-            params![document_path],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("查询文档 chunk 数失败: {}", e))?;
-
-    let ready_chunks: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) \
-             FROM chunks c \
-             JOIN chunk_embeddings ce ON c.id = ce.chunk_id \
-             WHERE c.document_path = ?1 AND ce.embedding_status = 'ready'",
-            params![document_path],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("查询 ready embedding 数失败: {}", e))?;
-
-    let error_chunks: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) \
-             FROM chunks c \
-             JOIN chunk_embeddings ce ON c.id = ce.chunk_id \
-             WHERE c.document_path = ?1 AND ce.embedding_status = 'error'",
-            params![document_path],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("查询 error embedding 数失败: {}", e))?;
-
-    let stale_chunks: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) \
-             FROM chunks c \
-             JOIN chunk_embeddings ce ON c.id = ce.chunk_id \
-             WHERE c.document_path = ?1 AND ce.embedding_status = 'stale'",
-            params![document_path],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("查询 stale embedding 数失败: {}", e))?;
-
-    let unavailable_chunks: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) \
-             FROM chunks c \
-             JOIN chunk_embeddings ce ON c.id = ce.chunk_id \
-             WHERE c.document_path = ?1 AND ce.embedding_status = 'unavailable'",
-            params![document_path],
-            |row| row.get(0),
-        )
-        .map_err(|e| format!("查询 unavailable embedding 数失败: {}", e))?;
+        .map_err(|e| format!("查询文档 embedding 状态统计失败: {}", e))?;
 
     let status = if total_chunks > 0 && ready_chunks == total_chunks {
         "ready"

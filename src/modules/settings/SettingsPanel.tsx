@@ -24,6 +24,7 @@ import { useAIRuntime, type AIRuntimeStatus } from '@/modules/ai/AIRuntimeProvid
 import { metadataService } from '@/services/index/metadata';
 import { chunkingService } from '@/services/index/chunking';
 import { vectorIndexService, type DocumentEmbeddingResult } from '@/services/index/vector';
+import { personalizationService } from '@/services/index/personalization';
 import { aiLogsService, type AIRuntimeLog } from '@/services/ai/logs';
 import { onboardingService } from '@/services/ai/onboarding';
 import { documentService } from '@/services/filesystem/documents';
@@ -147,10 +148,19 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   const [sampleEmbedding, setSampleEmbedding] = useState<DocumentEmbeddingResult | null>(null);
   const [verifyResult, setVerifyResult] = useState<string | null>(null);
   const [verifyRunning, setVerifyRunning] = useState(false);
+  const [personalizationCount, setPersonalizationCount] = useState<number | null>(null);
+  const [personalizationResetting, setPersonalizationResetting] = useState(false);
 
   // ── 运行日志 ──
   const [logs, setLogs] = useState<AIRuntimeLog[]>([]);
   const [logsLoading, setLogsLoading] = useState(false);
+
+  useEffect(() => {
+    if (!vault || !open) return;
+    personalizationService.countSignals(vault.path)
+      .then(setPersonalizationCount)
+      .catch(() => setPersonalizationCount(null));
+  }, [open, vault]);
 
   // ── 同步 config 到 draft ──
   useEffect(() => { setEndpointDraft(config.endpoint); }, [config.endpoint]);
@@ -842,6 +852,35 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
                   {verifyResult}
                 </pre>
               )}
+            </div>
+
+            {/* 个性化学习记录 */}
+            <div className="border-t border-[#e6e6dc] dark:border-[#2f2f2f] pt-2 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-[9px] font-mono uppercase text-[#7e7e78] dark:text-[#8e8e8e]">学习记录</p>
+                  <p className="text-[10px] text-[#7e7e78] dark:text-[#8e8e8e]">
+                    本地记录 {personalizationCount ?? 0} 条，用于推荐排序和默认输出类型；不会上传云端。
+                  </p>
+                </div>
+                <button
+                  onClick={async () => {
+                    if (!vault) return;
+                    setPersonalizationResetting(true);
+                    try {
+                      await personalizationService.resetSignals(vault.path);
+                      setPersonalizationCount(0);
+                    } finally {
+                      setPersonalizationResetting(false);
+                    }
+                  }}
+                  disabled={personalizationResetting || !vault}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg border border-[#e6e6dc] dark:border-[#2f2f2f] text-[10px] font-medium text-[#2c2c2a] dark:text-[#e3e3e3] hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {personalizationResetting ? <Loader2 size={10} className="animate-spin" /> : <RotateCcw size={10} />}
+                  重置
+                </button>
+              </div>
             </div>
           </ExplorerSection>
 
